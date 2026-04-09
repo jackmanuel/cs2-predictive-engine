@@ -37,7 +37,7 @@ MAX_RETRIES = 3
 DEFAULT_PAGE_SIZE = 100  # PandaScore max per page
 
 # --- Feature Engineering ---
-MIN_MATCHES_THRESHOLD = 10  # Only include teams with at least this many matches
+MIN_MATCHES_THRESHOLD = 1   # Only include teams with at least this many matches
 ROLLING_WINDOW_DAYS = 30    # Window for recent-form features
 
 # --- Model Hyperparameters ---

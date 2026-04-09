@@ -28,3 +28,8 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Debug / Example data
+match_page_debug.html
+hltv_match_example.json
+scratch/
