@@ -1,8 +1,12 @@
+import os
+import sys
 import logging
 import pandas as pd
 import numpy as np
 from pathlib import Path
 
+# Ensure project root is in path for config import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROCESSED_DIR, MIN_MATCHES_THRESHOLD, ROLLING_WINDOW_DAYS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")

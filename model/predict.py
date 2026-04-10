@@ -1,3 +1,5 @@
+import os
+import sys
 import argparse
 import logging
 import torch
@@ -7,6 +9,8 @@ import numpy as np
 from datetime import datetime, timezone
 from typing import List, Tuple
 
+# Ensure project root is in path for config import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROCESSED_DIR, CHECKPOINT_DIR, ROLLING_WINDOW_DAYS
 from model.net import MatchPredictor
 

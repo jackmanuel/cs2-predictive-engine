@@ -1,9 +1,13 @@
-import json
+import os
+import sys
 import logging
 import re
+import json
 from pathlib import Path
 import pandas as pd
 
+# Ensure project root is in path for config import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import RAW_DIR, PROCESSED_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")

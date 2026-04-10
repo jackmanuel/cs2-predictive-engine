@@ -6,6 +6,7 @@ import random
 import time
 import argparse
 from typing import List, Dict
+from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ingestion.hltv_client import HLTVClient
@@ -35,26 +36,33 @@ def normalize_name(name: str, mappings: Dict[str, str]) -> str:
 def match_games(pandascore_match: Dict, hltv_results: List[Dict], mappings: Dict[str, str]) -> str:
     """
     Attempts to cross-reference a PandaScore match against the pulled HLTV results list.
-    Returns the HLTV 'url' if matched, else None.
+    Enforces team name equivalence and a +/- 24h date window.
     """
     if "opponents" not in pandascore_match or len(pandascore_match["opponents"]) < 2:
         return None
         
     p_team1 = pandascore_match["opponents"][0]["opponent"]["name"]
     p_team2 = pandascore_match["opponents"][1]["opponent"]["name"]
+    # PandaScore timestamp: "2026-04-09T08:00:00Z"
+    p_date_str = pandascore_match.get("begin_at", "").split("T")[0]
     
     n_p1 = normalize_name(p_team1, mappings)
     n_p2 = normalize_name(p_team2, mappings)
     
     for hltv in hltv_results:
-        # HLTV results are already abbreviated mostly, but we normalize for safety
         n_h1 = hltv['team1'].upper().strip()
         n_h2 = hltv['team2'].upper().strip()
+        h_date = hltv.get('date') # "YYYY-MM-DD"
         
-        # Check permutations (Team A vs Team B) or (Team B vs Team A)
-        # Using exact normalized matches is safer now that we have a mapping tool
+        # Team match
         if (n_p1 == n_h1 and n_p2 == n_h2) or (n_p1 == n_h2 and n_p2 == n_h1):
-             return hltv['url']
+             # Date match (+/- 1 day to account for timezone shifts between APIs)
+             if p_date_str and h_date:
+                 p_dt = datetime.strptime(p_date_str, "%Y-%m-%d")
+                 h_dt = datetime.strptime(h_date, "%Y-%m-%d")
+                 diff_days = abs((p_dt - h_dt).days)
+                 if diff_days <= 1:
+                     return hltv['url']
              
     return None
 

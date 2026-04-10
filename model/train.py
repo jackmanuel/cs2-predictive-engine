@@ -1,3 +1,5 @@
+import os
+import sys
 import logging
 import torch
 import torch.nn as nn
@@ -7,6 +9,8 @@ import pandas as pd
 import joblib
 from sklearn.preprocessing import StandardScaler
 
+# Ensure project root is in path for config import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROCESSED_DIR, CHECKPOINT_DIR, BATCH_SIZE, EPOCHS, LEARNING_RATE, EARLY_STOPPING_PATIENCE, TRAIN_RATIO, VAL_RATIO
 from model.dataset import MatchDataset
 from model.net import MatchPredictor

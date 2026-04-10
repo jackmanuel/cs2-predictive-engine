@@ -45,7 +45,7 @@ class HLTVClient:
     def fetch_recent_results(self, pages: int = 1) -> List[Dict]:
         """
         Fetches the recent match results from HLTV's /results page.
-        Returns a list of match dictionaries containing URL and team names.
+        Returns a list of match dictionaries containing URL, team names, and date.
         """
         if not self.driver:
             self.start()
@@ -63,25 +63,46 @@ class HLTVClient:
             
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
             
-            # HLTV results parsing
-            result_links = soup.find_all('a', class_='a-reset')
-            for a in result_links:
-                href = a.get('href', '')
-                if '/matches/' in href:
-                    match_url = "https://www.hltv.org" + href
-                    
-                    team1_div = a.find('div', class_='team1')
-                    team2_div = a.find('div', class_='team2')
-                    
-                    team1_name = team1_div.text.strip() if team1_div else "Unknown"
-                    team2_name = team2_div.text.strip() if team2_div else "Unknown"
-                    
-                    # Store minimal data needed for matching
-                    results.append({
-                        'team1': team1_name,
-                        'team2': team2_name,
-                        'url': match_url
-                    })
+            # The results are grouped by date sublists
+            all_sublists = soup.find_all('div', class_='results-sublist')
+            for sublist in all_sublists:
+                # The date is in a standard-box subtitle
+                # Format: "Matches for February 5th 2026"
+                date_el = sublist.find('div', class_='standard-box subtitle')
+                if not date_el:
+                    continue
+                
+                raw_date = date_el.text.replace("Matches for ", "").strip()
+                # Remove ordinals (st, nd, rd, th) for easier parsing
+                clean_date = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', raw_date)
+                
+                # Convert to YYYY-MM-DD for standard comparison
+                try:
+                    dt_obj = time.strptime(clean_date, "%B %d %Y")
+                    match_date_str = time.strftime("%Y-%m-%d", dt_obj)
+                except Exception as e:
+                    logger.warning(f"Failed to parse HLTV date '{raw_date}': {e}")
+                    match_date_str = None
+                
+                # Extract matches for this date
+                result_links = sublist.find_all('a', class_='a-reset')
+                for a in result_links:
+                    href = a.get('href', '')
+                    if '/matches/' in href:
+                        match_url = "https://www.hltv.org" + href
+                        
+                        t1_div = a.find('div', class_='team1')
+                        t2_div = a.find('div', class_='team2')
+                        
+                        t1_name = t1_div.text.strip() if t1_div else "Unknown"
+                        t2_name = t2_div.text.strip() if t2_div else "Unknown"
+                        
+                        results.append({
+                            'team1': t1_name,
+                            'team2': t2_name,
+                            'url': match_url,
+                            'date': match_date_str
+                        })
                     
         return results
 
