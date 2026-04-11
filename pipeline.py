@@ -37,7 +37,7 @@ def run_pipeline():
     try:
         # --- PHASE 1: CLEANING ---
         print(f"\n\033[1;33m[PHASE 1] CLEANING\033[0m")
-        print("Scrubbing raw HLTV and PandaScore data, normalising team names...")
+        print("Scrubbing raw HLTV data, normalising team names...")
         clean_data()
         
         # --- PHASE 2: FEATURE ENGINEERING ---

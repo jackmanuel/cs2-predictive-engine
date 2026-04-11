@@ -6,8 +6,8 @@ Currently implemented as a Minimum Viable Product (MVP) using a PyTorch binary c
 
 ## Architecture
 
-1. **Ingestion Layer:** Connects to the PandaScore API to quickly build a massive history of general team records and winrates, while scraping HLTV natively to serve as the highly-detailed "Canonical Match Database" (with round histories, player metrics, map vetoes, and match blurbs).
-2. **Processing Layer:** Cleaners and Transformers operate on both datasets. Engineers temporal features (rolling win rates, current streaks, Head-to-Head records). Cross-references macro-team stats from PandaScore with micro-match stats from HLTV. Operates chronologically to absolutely guarantee no future data leakage.
+1. **Ingestion Layer:** Scraping HLTV natively to serve as the highly-detailed "Canonical Match Database" (with round histories, player metrics, map vetoes, and match summaries).
+2. **Processing Layer:** Cleaners and Transformers operate on the HLTV dataset. Engineers temporal features (rolling win rates, current streaks, Head-to-Head records). Operates chronologically to absolutely guarantee no future data leakage.
 3. **Model Layer:** A PyTorch neural network `MatchPredictor` with a custom `Dataset`. Designed to be easily swappable with more complex architectures (like PyTorch entity embeddings) in future scope.
 4. **Evaluation Layer:** Walk-forward backtesting system evaluating the model's accuracy, log-loss, and Brier score (crucial for probability calibration).
 
@@ -26,30 +26,26 @@ Currently implemented as a Minimum Viable Product (MVP) using a PyTorch binary c
    pip install -r requirements.txt
    ```
 
-2. Copy `.env.example` to `.env` and insert your PandaScore API key.
+2. Copy `.env.example` to `.env`.
    ```bash
    cp .env.example .env
-   # Edit .env and set PANDASCORE_API_KEY
    ```
 
 ## Usage
 
 Run the modules sequentially:
 
-1. **Fetch Contextual Match Data (PandaScore):**
-   *(Note: Free tier is limited to ~1,000 req/hr. This uses a 3.6s delay between requests.)*
-   ```bash
-   python -m ingestion.fetch_matches
-   ```
-
-2. **Scrape Canonical Match Data (HLTV):**
+1. **Scrape Canonical Match Data (HLTV):**
    *(Scrapes detailed round, player, ranking, and map info natively. Use `--matches` and `--pages` to batch safely.)*
    ```bash
    python -m ingestion.fetch_hltv_matches --pages 5 --matches 50
    ```
 
+2. **[DEPRECATED] Fetch Contextual Match Data (PandaScore):**
+   *PandaScore integration is deprecated and no longer used in the main pipeline.*
+
 3. **Run Unified Pipeline (Clean, Feature, Train):**
-   Instead of running steps 3-5 manually, you can run the whole pipeline after you've ingested new data:
+   Instead of running steps manually, you can run the whole pipeline after you've ingested new data:
    ```bash
    python pipeline.py
    ```

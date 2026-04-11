@@ -21,20 +21,14 @@ CHECKPOINT_DIR = DATA_DIR / "checkpoints"
 for d in [RAW_DIR, PROCESSED_DIR, CHECKPOINT_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# --- PandaScore API ---
-PANDASCORE_API_KEY = os.getenv("PANDASCORE_API_KEY")
-PANDASCORE_BASE_URL = "https://api.pandascore.co"
-# CS2 data lives under the legacy /csgo/ prefix
-PANDASCORE_CSGO_PREFIX = "/csgo"
-
-# Rate limiting (free "Fixtures" tier: ~1000 req/hr)
-RATE_LIMIT_PER_HOUR = 1000
-# Delay between requests in seconds (3600s / 1000 = 3.6s safe minimum)
-REQUEST_DELAY_S = 3.6
-MAX_RETRIES = 3
-
-# Pagination
-DEFAULT_PAGE_SIZE = 100  # PandaScore max per page
+# --- PandaScore API (DEPRECATED: Use HLTV only) ---
+# PANDASCORE_API_KEY = os.getenv("PANDASCORE_API_KEY")
+# PANDASCORE_BASE_URL = "https://api.pandascore.co"
+# PANDASCORE_CSGO_PREFIX = "/csgo"
+# RATE_LIMIT_PER_HOUR = 1000
+# REQUEST_DELAY_S = 3.6
+# MAX_RETRIES = 3
+# DEFAULT_PAGE_SIZE = 100
 
 # --- Feature Engineering ---
 MIN_MATCHES_THRESHOLD = 1   # Only include teams with at least this many matches

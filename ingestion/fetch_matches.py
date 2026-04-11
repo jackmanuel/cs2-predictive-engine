@@ -9,6 +9,8 @@ from ingestion.client import PandaScoreClient
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+logger.warning("DEPRECATION: ingestion.fetch_matches (PandaScore) is deprecated. Use ingestion.fetch_hltv_matches instead.")
+
 def fetch_past_matches(client: PandaScoreClient, days_back: int = 90):
     """
     Fetches raw JSON matches from the past `days_back` days.

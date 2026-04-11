@@ -14,6 +14,8 @@ from ingestion.hltv_client import HLTVClient
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+logger.warning("DEPRECATION: ingestion.fetch_hltv_features is deprecated. Canonical HLTV data is now fetched directly via ingestion.fetch_hltv_matches.")
+
 MAPPING_FILE = "data/team_mappings.json"
 
 def load_mappings() -> Dict[str, str]:

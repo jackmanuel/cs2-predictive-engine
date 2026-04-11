@@ -12,6 +12,8 @@ from config import RAW_DIR, PROCESSED_DIR, DATA_DIR
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+logger.warning("DEPRECATION: processing.historical_stats is deprecated. Long-term winrates are calculated from the canonical HLTV dataset in processing.features.")
+
 MAPPING_FILE = DATA_DIR / "team_mappings.json"
 
 def load_mappings() -> dict:

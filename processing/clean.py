@@ -147,40 +147,11 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
     }
 
 def load_raw_maps() -> pd.DataFrame:
-    """Loads all raw JSON match files (Augmented & Pure HLTV) and explodes them into map rows."""
+    """Loads raw HLTV match JSON and explodes them into map rows."""
     all_maps = []
     mappings = load_mappings()
     
-    # 1. Augmented PandaScore files
-    for file_path in RAW_DIR.glob("matches_*_augmented.json"):
-        with open(file_path, "r", encoding="utf-8") as f:
-            matches_data = json.load(f)
-            
-        for match in matches_data:
-            if match.get("status") != "finished" or match.get("forfeit"):
-                continue
-            opponents = match.get("opponents", [])
-            if not opponents or len(opponents) != 2:
-                continue
-                
-            t_a_name = opponents[0].get("opponent", {}).get("name")
-            t_b_name = opponents[1].get("opponent", {}).get("name")
-            t_a_id = normalize_name(t_a_name, mappings)
-            t_b_id = normalize_name(t_b_name, mappings)
-            
-            m_id = str(match.get("id"))
-            m_date = pd.to_datetime(match.get("begin_at"), utc=True)
-            ranks = match.get("team_ranks")
-            
-            # Determine PandaScore format
-            num_games = match.get("number_of_games", 0)
-            ps_format = normalize_format(f"bo{num_games}" if num_games > 0 else "unknown")
-            
-            for m_data in match.get("hltv_maps", []):
-                row = process_hltv_map_data(m_data, t_a_name, t_b_name, t_a_id, t_b_id, m_id, m_date, mappings, ranks, match_format=ps_format)
-                if row: all_maps.append(row)
-
-    # 2. Pure HLTV files
+    # Pure HLTV files (Canonical Source)
     hltv_pure_path = RAW_DIR / "hltv_matches.json"
     if hltv_pure_path.exists():
         with open(hltv_pure_path, "r", encoding="utf-8") as f:
