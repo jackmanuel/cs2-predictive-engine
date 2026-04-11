@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import DATA_DIR, PROCESSED_DIR, CHECKPOINT_DIR, BATCH_SIZE, EPOCHS, LEARNING_RATE, EARLY_STOPPING_PATIENCE, TRAIN_RATIO, VAL_RATIO
+from processing.features import mirror_data
 from model.dataset import MatchDataset
 from model.net import MatchPredictor
 
@@ -82,7 +83,12 @@ def train_model():
     val_df = df.iloc[train_idx:val_idx]
     test_df = df.iloc[val_idx:]
     
-    logger.info(f"Split sizes -> Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+    # Apply data mirroring (augmentation) to make model order-robust
+    logger.info("Applying data mirroring to training and validation sets...")
+    train_df = mirror_data(train_df)
+    val_df = mirror_data(val_df)
+    
+    logger.info(f"Split sizes (after mirroring) -> Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
     # Initialize scaler & Datasets
     scaler = StandardScaler()

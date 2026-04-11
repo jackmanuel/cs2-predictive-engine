@@ -33,6 +33,44 @@ MODEL_FEATURES = [
 
 TARGET_COL = "label"
 
+def mirror_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Creates a mirrored copy of the dataset to make the model robust to team order.
+    Swaps team A/B features and flips the label.
+    Doubles the size of the input DataFrame.
+    """
+    mirrored_df = df.copy()
+    
+    # 1. Flip Differentials (columns ending in _diff or _delta)
+    diff_cols = [c for c in df.columns if c.endswith("_diff") or c.endswith("_delta")]
+    for col in diff_cols:
+        mirrored_df[col] = -df[col]
+        
+    # 2. Swap Team-specific features (team_a_* <-> team_b_*)
+    a_cols = [c for c in df.columns if c.startswith("team_a_")]
+    for a_col in a_cols:
+        suffix = a_col[7:] # remove "team_a_"
+        b_col = f"team_b_{suffix}"
+        if b_col in df.columns:
+            mirrored_df[a_col] = df[b_col]
+            mirrored_df[b_col] = df[a_col]
+            
+    # 3. Swap H2H specific columns
+    if "h2h_a_wins" in df.columns and "h2h_b_wins" in df.columns:
+        mirrored_df["h2h_a_wins"] = df["h2h_b_wins"]
+        mirrored_df["h2h_b_wins"] = df["h2h_a_wins"]
+        
+    # 4. Swap score metadata if present
+    if "score_a" in df.columns and "score_b" in df.columns:
+        mirrored_df["score_a"] = df["score_b"]
+        mirrored_df["score_b"] = df["score_a"]
+        
+    # 5. Flip the target label
+    if TARGET_COL in df.columns:
+        mirrored_df[TARGET_COL] = 1 - df[TARGET_COL]
+        
+    return pd.concat([df, mirrored_df], ignore_index=True)
+
 # These columns are preserved in the parquet for stats/filtering (e.g. training_state.json)
 # but are NOT used as features for the model.
 METADATA_COLS = [
