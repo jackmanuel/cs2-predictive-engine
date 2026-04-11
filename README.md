@@ -48,20 +48,19 @@ Run the modules sequentially:
    python -m ingestion.fetch_hltv_matches --pages 5 --matches 50
    ```
 
-3. **Clean & Parse Data:**
+3. **Run Unified Pipeline (Clean, Feature, Train):**
+   Instead of running steps 3-5 manually, you can run the whole pipeline after you've ingested new data:
    ```bash
-   python -m processing.clean
+   python pipeline.py
    ```
 
-4. **Engineer Temporal Features:**
-   ```bash
-   python -m processing.features
-   ```
+   This sequentially runs the cleaning, feature engineering, and model training modules.
 
-5. **Train the MVP Model:**
-   ```bash
-   python -m model.train
-   ```
+4. **Individual Steps (Optional):**
+   If you need to run specific parts of the pipeline:
+   - **Clean & Parse Data:** `python -m processing.clean`
+   - **Engineer Temporal Features:** `python -m processing.features`
+   - **Train the MVP Model:** `python -m model.train`
 
 6. **Evaluate (Backtest) on Held-Out Data:**
    ```bash
