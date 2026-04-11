@@ -238,9 +238,11 @@ class HLTVClient:
                         c = span.get('class', [])
                         side = ''
                         if 't' in c: side = 'T'
-                        if 'ct' in c: side = 'CT'
-                        if side and span.text.isdigit():
-                            score_items.append({"score": int(span.text), "side": side})
+                        elif 'ct' in c: side = 'CT'
+                        
+                        text = span.text.strip()
+                        if text.isdigit():
+                            score_items.append({"score": int(text), "side": side})
                             
                     for i in range(0, len(score_items), 2):
                         if i+1 < len(score_items):
@@ -382,17 +384,17 @@ class HLTVClient:
         
         soup = BeautifulSoup(self.driver.page_source, 'html.parser')
         
-        # 1. Round history
+        # 1. Round history (Can be multiple containers if there was OT)
         rounds = []
-        rh_con = soup.find('div', class_='round-history-con')
-        if rh_con:
+        rh_cons = soup.find_all('div', class_='round-history-con')
+        for rh_con in rh_cons:
             team_rows = rh_con.find_all('div', class_='round-history-team-row')
             if len(team_rows) >= 2:
                 t1_outcomes = team_rows[0].find_all('img', class_='round-history-outcome')
                 t2_outcomes = team_rows[1].find_all('img', class_='round-history-outcome')
                 
-                num_rounds = max(len(t1_outcomes), len(t2_outcomes))
-                for i in range(num_rounds):
+                num_rounds_in_con = max(len(t1_outcomes), len(t2_outcomes))
+                for i in range(num_rounds_in_con):
                     winner_team = None
                     winner_side = None
                     outcome_title = ""
@@ -413,12 +415,13 @@ class HLTVClient:
                             if 'counter-terrorist' in outcome_title.lower(): winner_side = 'CT'
                             elif 'terrorist' in outcome_title.lower(): winner_side = 'T'
                     
-                    rounds.append({
-                        "round_num": i + 1,
-                        "winner": winner_team,
-                        "winner_side": winner_side,
-                        "outcome": outcome_title
-                    })
+                    if winner_team:
+                        rounds.append({
+                            "round_num": len(rounds) + 1,
+                            "winner": winner_team,
+                            "winner_side": winner_side,
+                            "outcome": outcome_title
+                        })
         
         # 2. Player Stats (Map specific)
         player_stats = []

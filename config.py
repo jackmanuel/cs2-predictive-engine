@@ -39,6 +39,7 @@ DEFAULT_PAGE_SIZE = 100  # PandaScore max per page
 # --- Feature Engineering ---
 MIN_MATCHES_THRESHOLD = 1   # Only include teams with at least this many matches
 ROLLING_WINDOW_DAYS = 30    # Window for recent-form features
+DEFAULT_TEAM_RANK = 500     # Fallback for unranked or new teams
 
 # --- Model Hyperparameters ---
 LEARNING_RATE = 1e-3
