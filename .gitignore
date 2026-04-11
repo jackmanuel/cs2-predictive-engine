@@ -34,3 +34,4 @@ Thumbs.db
 debug_scraper.py
 hltv_match_example.json
 scratch/
+data/training_state.json

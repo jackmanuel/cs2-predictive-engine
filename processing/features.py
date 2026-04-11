@@ -119,6 +119,9 @@ def compute_features(df: pd.DataFrame, historical_stats: pd.DataFrame = None) ->
             "team_b_is_picker": 1 if row["team_b_picked"] else 0,
             "h2h_a_wins": h2h_a_wins,
             "h2h_b_wins": h2h_b_wins,
+            "match_format": row.get("match_format", "unknown"),
+            "score_a": row.get("score_a", 0),
+            "score_b": row.get("score_b", 0),
             "label": label
         }
         features_list.append(feat_dict)

@@ -44,8 +44,17 @@ def parse_rank(rank_str: str) -> int:
     except:
         return DEFAULT_TEAM_RANK
 
-def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, mappings, ranks=None):
+def normalize_format(fmt: str) -> str:
+    """Normalises format strings like 'bo3' or 'best_of_3' or 'def'."""
+    fmt = str(fmt).lower().strip()
+    if "bo3" in fmt or "best of 3" in fmt: return "bo3"
+    if "bo1" in fmt or "def" in fmt or "best of 1" in fmt: return "bo1"
+    if "bo5" in fmt or "best of 5" in fmt: return "bo5"
+    return fmt
+
+def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, mappings, ranks=None, match_format="unknown"):
     """Common logic to extract a map row from HLTV map object."""
+    # ... (no changes here, just showing context)
     map_name = m_data.get("map_name")
     if not map_name or map_name.lower() == "tbd":
         return None
@@ -133,7 +142,8 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
         "team_a_world_rank": r_a_world,
         "team_a_vrs_rank": r_a_vrs,
         "team_b_world_rank": r_b_world,
-        "team_b_vrs_rank": r_b_vrs
+        "team_b_vrs_rank": r_b_vrs,
+        "match_format": match_format
     }
 
 def load_raw_maps() -> pd.DataFrame:
@@ -162,8 +172,12 @@ def load_raw_maps() -> pd.DataFrame:
             m_date = pd.to_datetime(match.get("begin_at"), utc=True)
             ranks = match.get("team_ranks")
             
+            # Determine PandaScore format
+            num_games = match.get("number_of_games", 0)
+            ps_format = normalize_format(f"bo{num_games}" if num_games > 0 else "unknown")
+            
             for m_data in match.get("hltv_maps", []):
-                row = process_hltv_map_data(m_data, t_a_name, t_b_name, t_a_id, t_b_id, m_id, m_date, mappings, ranks)
+                row = process_hltv_map_data(m_data, t_a_name, t_b_name, t_a_id, t_b_id, m_id, m_date, mappings, ranks, match_format=ps_format)
                 if row: all_maps.append(row)
 
     # 2. Pure HLTV files
@@ -181,8 +195,11 @@ def load_raw_maps() -> pd.DataFrame:
             t2_id = normalize_name(t2, mappings)
             ranks = match.get("team_ranks")
 
+            # HLTV format is already in the match object
+            m_format = normalize_format(match.get("format", "unknown"))
+
             for m_data in match.get("hltv_maps", []):
-                row = process_hltv_map_data(m_data, t1, t2, t1_id, t2_id, m_id, m_date, mappings, ranks)
+                row = process_hltv_map_data(m_data, t1, t2, t1_id, t2_id, m_id, m_date, mappings, ranks, match_format=m_format)
                 if row: all_maps.append(row)
                 
     df = pd.DataFrame(all_maps)
