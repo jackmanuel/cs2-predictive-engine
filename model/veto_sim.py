@@ -116,46 +116,55 @@ def get_pick_weight(current_stats, pool):
         weights.append(max(w, 1e-6))
     return weights
 
-def simulate_veto(stats_a: dict, stats_b: dict) -> List[str]:
-    """Simulates a single Best-of-3 veto sequence."""
+def simulate_veto(stats_a: dict, stats_b: dict, series_format: str = "bo3") -> List[str]:
+    """
+    Simulates a Best-of-1, Best-of-3, or Best-of-5 veto sequence.
+    """
     pool = MAP_POOL.copy()
     played_maps = []
     
-    # 1. Team A Ban (First Ban Phase)
-    w_a_ban1 = get_ban_weight(stats_a, stats_b, pool, is_first_ban=True)
-    ban_a1 = random.choices(pool, weights=w_a_ban1, k=1)[0]
-    pool.remove(ban_a1)
-    
-    # 2. Team B Ban (First Ban Phase)
-    w_b_ban1 = get_ban_weight(stats_b, stats_a, pool, is_first_ban=True)
-    ban_b1 = random.choices(pool, weights=w_b_ban1, k=1)[0]
-    pool.remove(ban_b1)
-    
-    # 3. Team A Pick (Map 1)
-    w_a_pick = get_pick_weight(stats_a, pool)
-    pick_a = random.choices(pool, weights=w_a_pick, k=1)[0]
-    played_maps.append(pick_a)
-    pool.remove(pick_a)
-    
-    # 4. Team B Pick (Map 2)
-    w_b_pick = get_pick_weight(stats_b, pool)
-    pick_b = random.choices(pool, weights=w_b_pick, k=1)[0]
-    played_maps.append(pick_b)
-    pool.remove(pick_b)
-    
-    # 5. Team A Ban (Second Ban Phase)
-    w_a_ban2 = get_ban_weight(stats_a, stats_b, pool, is_first_ban=False)
-    ban_a2 = random.choices(pool, weights=w_a_ban2, k=1)[0]
-    pool.remove(ban_a2)
-    
-    # 6. Team B Ban (Second Ban Phase)
-    w_b_ban2 = get_ban_weight(stats_b, stats_a, pool, is_first_ban=False)
-    ban_b2 = random.choices(pool, weights=w_b_ban2, k=1)[0]
-    pool.remove(ban_b2)
-    
-    # 7. Remaining Map is Map 3 (Decider)
+    # Define the sequence of moves (Type, Team, isFirstBan)
+    if series_format == "bo1":
+        # User specified: A ban, A ban, B ban, B ban, B ban, A ban
+        steps = [
+            ("ban", "a", True), ("ban", "a", True),
+            ("ban", "b", True), ("ban", "b", True), ("ban", "b", True),
+            ("ban", "a", False)
+        ]
+    elif series_format == "bo5":
+        # User specified: A ban, B ban, A pick, B pick, etc.
+        steps = [
+            ("ban", "a", True), ("ban", "b", True),
+            ("pick", "a"), ("pick", "b"),
+            ("pick", "a"), ("pick", "b")
+        ]
+    else: # Default BO3
+        steps = [
+            ("ban", "a", True), ("ban", "b", True),
+            ("pick", "a"), ("pick", "b"),
+            ("ban", "a", False), ("ban", "b", False)
+        ]
+
+    for step in steps:
+        move_type = step[0]
+        team = step[1]
+        
+        if move_type == "ban":
+            is_first = step[2]
+            current = stats_a if team == "a" else stats_b
+            opponent = stats_b if team == "a" else stats_a
+            w = get_ban_weight(current, opponent, pool, is_first_ban=is_first)
+            m = random.choices(pool, weights=w, k=1)[0]
+            pool.remove(m)
+        else: # pick
+            current = stats_a if team == "a" else stats_b
+            w = get_pick_weight(current, pool)
+            m = random.choices(pool, weights=w, k=1)[0]
+            played_maps.append(m)
+            pool.remove(m)
+            
+    # Remaining map is the decider (for all formats)
     played_maps.append(pool[0])
-    
     return played_maps
 
 def main():
@@ -163,6 +172,7 @@ def main():
     parser.add_argument("team_a", help="Name of Team A")
     parser.add_argument("team_b", help="Name of Team B")
     parser.add_argument("--iters", type=int, default=SIMULATIONS, help="Number of iterations")
+    parser.add_argument("--format", choices=["bo1", "bo3", "bo5"], default="bo3", help="Series format")
     args = parser.parse_args()
     
     # Load team mappings for name normalization
@@ -186,7 +196,7 @@ def main():
     stats_b = get_team_stats(t_b_id, df)
     
     print(f"\n" + "="*60)
-    print(f" MONTE CARLO VETO SIMULATION: {t_a_id} vs {t_b_id}")
+    print(f" MONTE CARLO VETO SIMULATION: {t_a_id} vs {t_b_id} ({args.format.upper()})")
     print(f" Iterations: {args.iters:,}")
     print("="*60)
     
@@ -194,7 +204,7 @@ def main():
     
     # Run the simulation loop
     for _ in range(args.iters):
-        played = simulate_veto(stats_a, stats_b)
+        played = simulate_veto(stats_a, stats_b, args.format)
         for m in played:
             map_counts[m] += 1
             
