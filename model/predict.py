@@ -232,16 +232,31 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
 
     now = pd.to_datetime(datetime.now(timezone.utc))
     
+    # ANSI escape codes for coloring
+    RED = "\033[91m"
+    RESET = "\033[0m"
+
     print("\n" + "="*60)
     print(f" PREDICTION: {t_a_id} vs {t_b_id}")
     print("="*60)
+
+    # Global team sample size info
+    g_a_30d = get_recent_stats(gen_histories.get(t_a_id, []), now, 30)
+    g_b_30d = get_recent_stats(gen_histories.get(t_b_id, []), now, 30)
+    
+    for tid, stats in [(t_a_id, g_a_30d), (t_b_id, g_b_30d)]:
+        count = stats["matches"]
+        msg = f"{tid}: {count} maps in 30d window"
+        if count < 10:
+            print(f"{RED}{msg} (LOW SAMPLE SIZE){RESET}")
+        else:
+            print(msg)
+    print("-" * 60)
 
     map_probs = []
     
     for i, m_name in enumerate(maps):
         # Calculate features (MATCHES features.py compute_features)
-        g_a_30d = get_recent_stats(gen_histories.get(t_a_id, []), now, 30)
-        g_b_30d = get_recent_stats(gen_histories.get(t_b_id, []), now, 30)
         g_a_7d = get_recent_stats(gen_histories.get(t_a_id, []), now, 7)
         g_b_7d = get_recent_stats(gen_histories.get(t_b_id, []), now, 7)
         
@@ -275,9 +290,12 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             is_a_picker = 1 if i == 0 else 0
             is_b_picker = 1 if i == 1 else 0
 
-        # Map-Specific Win Rate (90d)
+        # Map-Specific Win Rate (90d for features, 30d for warning)
         m_a_90d = get_recent_stats(map_histories.get(t_a_id, {}).get(m_name, []), now, 90)
         m_b_90d = get_recent_stats(map_histories.get(t_b_id, {}).get(m_name, []), now, 90)
+        m_a_30d_matches = get_recent_stats(map_histories.get(t_a_id, {}).get(m_name, []), now, 30)["matches"]
+        m_b_30d_matches = get_recent_stats(map_histories.get(t_b_id, {}).get(m_name, []), now, 30)["matches"]
+        
         map_wr_diff = m_a_90d["win_rate"] - m_b_90d["win_rate"]
         
         # Map Comfort (30d)
@@ -321,7 +339,13 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             p_a = model(torch.tensor(scaled_f, dtype=torch.float32)).item()
             map_probs.append(p_a)
         
-        print(f"[{m_name:10}] {t_a_id}: {p_a*100:5.1f}% | {t_b_id}: {(1-p_a)*100:5.1f}%")
+        cnt_a_txt = f"({m_a_30d_matches} maps)"
+        if m_a_30d_matches < 3: cnt_a_txt = f"{RED}{cnt_a_txt}{RESET}"
+        
+        cnt_b_txt = f"({m_b_30d_matches} maps)"
+        if m_b_30d_matches < 3: cnt_b_txt = f"{RED}{cnt_b_txt}{RESET}"
+        
+        print(f"[{m_name:10}] {t_a_id}: {p_a*100:5.1f}% {cnt_a_txt} | {t_b_id}: {(1-p_a)*100:5.1f}% {cnt_b_txt}")
 
     if len(maps) > 1:
         series_prob_a = combine_probs(map_probs, len(maps))
