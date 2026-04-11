@@ -57,9 +57,12 @@ def load_latest_state():
     
     team_general_histories = {}
     team_map_histories = {}
+    team_first_picks = {}
+    team_total_series = {}
     team_latest_ranks = {} # team_id -> {"world": int}
     h2h_stats = {}
     current_streaks = {}   # team_id -> int
+    match_picked_seen = {} # match_id -> set
     
     # 1. Pre-calculate streaks by processing matches chronologically
     matches_df = df.groupby("match_id").agg({
@@ -111,12 +114,33 @@ def load_latest_state():
         team_latest_ranks[t_a] = {"world": row["team_a_world_rank"]}
         team_latest_ranks[t_b] = {"world": row["team_b_world_rank"]}
         
+        # Track Picks for Comfort
+        m_id = row["match_id"]
+        if m_id not in match_picked_seen:
+            match_picked_seen[m_id] = set()
+
+        if row["team_a_picked"] and t_a not in match_picked_seen[m_id]:
+            if t_a not in team_first_picks: team_first_picks[t_a] = {}
+            if map_name not in team_first_picks[t_a]: team_first_picks[t_a][map_name] = []
+            team_first_picks[t_a][map_name].append(date)
+            if t_a not in team_total_series: team_total_series[t_a] = []
+            team_total_series[t_a].append(date)
+            match_picked_seen[m_id].add(t_a)
+
+        if row["team_b_picked"] and t_b not in match_picked_seen[m_id]:
+            if t_b not in team_first_picks: team_first_picks[t_b] = {}
+            if map_name not in team_first_picks[t_b]: team_first_picks[t_b][map_name] = []
+            team_first_picks[t_b][map_name].append(date)
+            if t_b not in team_total_series: team_total_series[t_b] = []
+            team_total_series[t_b].append(date)
+            match_picked_seen[m_id].add(t_b)
+        
         if label == 1:
             h2h_stats[h2h_key][t_a] += 1
         else:
             h2h_stats[h2h_key][t_b] += 1
             
-    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks
+    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks, team_first_picks, team_total_series
 
 def combine_probs(probs: List[float], bo: int) -> float:
     """Combines map probs into series win prob."""
@@ -133,7 +157,7 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
     t_a_id = normalize_name(team_raw_a, mappings)
     t_b_id = normalize_name(team_raw_b, mappings)
     
-    gen_histories, map_histories, latest_ranks, h2h_stats, latest_streaks = load_latest_state()
+    gen_histories, map_histories, latest_ranks, h2h_stats, latest_streaks, team_fpicks, team_tseries = load_latest_state()
     
     # Load model and scaler
     scaler_path = CHECKPOINT_DIR / "scaler.pkl"
@@ -184,6 +208,20 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             is_a_picker = 1 if i == 0 else 0
             is_b_picker = 1 if i == 1 else 0
 
+        # Map-Specific Win Rate (90d)
+        m_a_90d = get_recent_stats(map_histories.get(t_a_id, {}).get(m_name, []), now, 90)
+        m_b_90d = get_recent_stats(map_histories.get(t_b_id, {}).get(m_name, []), now, 90)
+        map_wr_diff = m_a_90d["win_rate"] - m_b_90d["win_rate"]
+        
+        # Map Comfort (30d)
+        def get_comfort(tid, m_n):
+            cutoff = now - pd.Timedelta(days=30)
+            picks = len([d for d in team_fpicks.get(tid, {}).get(m_n, []) if d >= cutoff])
+            total = len([d for d in team_tseries.get(tid, []) if d >= cutoff])
+            return picks / total if total > 0 else 0.0
+            
+        map_comfort_diff = get_comfort(t_a_id, m_name) - get_comfort(t_b_id, m_name)
+
         # Construct feature vector using the architecture-defined order
         feat_vals = {
             "rank_diff": rank_diff,
@@ -194,7 +232,9 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             "team_a_is_picker": is_a_picker,
             "team_b_is_picker": is_b_picker,
             "h2h_a_wins": h2h_a,
-            "h2h_b_wins": h2h_b
+            "h2h_b_wins": h2h_b,
+            "map_win_rate_diff": map_wr_diff,
+            "map_comfort_diff": map_comfort_diff
         }
         
         # Ensure correct order for the scaler/model
