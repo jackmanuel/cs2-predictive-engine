@@ -14,6 +14,7 @@ from typing import List, Tuple
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROCESSED_DIR, DATA_DIR, CHECKPOINT_DIR, ROLLING_WINDOW_DAYS, DEFAULT_TEAM_RANK
 from model.net import MatchPredictor
+from processing.features import MODEL_FEATURES
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -183,18 +184,21 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             is_a_picker = 1 if i == 0 else 0
             is_b_picker = 1 if i == 1 else 0
 
-        # Construct feature vector (Order MUST match features.py COMPUTE_FEATURES)
-        f_vec = np.array([[
-            rank_diff,
-            wr_30d_diff,
-            wr_7d_diff,
-            s_a,
-            s_b,
-            is_a_picker,
-            is_b_picker,
-            h2h_a,
-            h2h_b
-        ]], dtype=np.float32)
+        # Construct feature vector using the architecture-defined order
+        feat_vals = {
+            "rank_diff": rank_diff,
+            "win_rate_30d_diff": wr_30d_diff,
+            "win_rate_7d_diff": wr_7d_diff,
+            "team_a_win_streak": s_a,
+            "team_b_win_streak": s_b,
+            "team_a_is_picker": is_a_picker,
+            "team_b_is_picker": is_b_picker,
+            "h2h_a_wins": h2h_a,
+            "h2h_b_wins": h2h_b
+        }
+        
+        # Ensure correct order for the scaler/model
+        f_vec = np.array([[feat_vals[col] for col in MODEL_FEATURES]], dtype=np.float32)
         
         scaled_f = scaler.transform(f_vec)
         with torch.no_grad():

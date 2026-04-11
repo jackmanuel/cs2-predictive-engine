@@ -12,6 +12,38 @@ from config import PROCESSED_DIR, DATA_DIR, MIN_MATCHES_THRESHOLD, ROLLING_WINDO
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# --- ARCHITECTURE: Feature Definitions ---
+# These are the actual inputs to the neural network.
+# Order here determines the order in the feature vector.
+MODEL_FEATURES = [
+    "rank_diff",
+    "win_rate_30d_diff",
+    "win_rate_7d_diff",
+    "team_a_win_streak",
+    "team_b_win_streak",
+    "team_a_is_picker",
+    "team_b_is_picker",
+    "h2h_a_wins",
+    "h2h_b_wins"
+]
+
+TARGET_COL = "label"
+
+# These columns are preserved in the parquet for stats/filtering (e.g. training_state.json)
+# but are NOT used as features for the model.
+METADATA_COLS = [
+    "match_id",
+    "map_name",
+    "date",
+    "team_a_id",
+    "team_b_id",
+    "match_format",
+    "score_a",
+    "score_b",
+    "team_a_gen_matches_30d",
+    "team_b_gen_matches_30d"
+]
+
 def get_recent_stats(history, current_date, days):
     """Helper to calculate win rate and match count over a rolling window."""
     if not history:
@@ -110,39 +142,40 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         wr_30d_diff = gen_a_30d["win_rate"] - gen_b_30d["win_rate"]
         wr_7d_diff = gen_a_7d["win_rate"] - gen_b_7d["win_rate"]
         
+        # 1. Model Features (Actual network inputs)
+        # ----------------------------------------
         feat_dict = {
+            "rank_diff": rank_diff,
+            "win_rate_30d_diff": wr_30d_diff,
+            "win_rate_7d_diff": wr_7d_diff,
+            "team_a_win_streak": s_a,
+            "team_b_win_streak": s_b,
+            "team_a_is_picker": 1 if row["team_a_picked"] else 0,
+            "team_b_is_picker": 1 if row["team_b_picked"] else 0,
+            "h2h_a_wins": h2h_a_wins,
+            "h2h_b_wins": h2h_b_wins,
+        }
+        
+        # 2. Metadata & tracking (Not features, but needed for stats/filters)
+        # ----------------------------------------
+        meta_dict = {
             "match_id": m_id,
             "map_name": row["map_name"],
             "date": date,
             "team_a_id": t_a,
             "team_b_id": t_b,
-            
-            # Form Differentials
-            "rank_diff": rank_diff,
-            "win_rate_30d_diff": wr_30d_diff,
-            "win_rate_7d_diff": wr_7d_diff,
-            
-            # Momentum Features (Capped at 5)
-            "team_a_win_streak": s_a,
-            "team_b_win_streak": s_b,
-            
-            # Orthogonal Features (Retained as they are)
-            "team_a_is_picker": 1 if row["team_a_picked"] else 0,
-            "team_b_is_picker": 1 if row["team_b_picked"] else 0,
-            "h2h_a_wins": h2h_a_wins,
-            "h2h_b_wins": h2h_b_wins,
-            
-            # Labels and metadata
             "match_format": row.get("match_format", "unknown"),
             "score_a": row.get("score_a", 0),
             "score_b": row.get("score_b", 0),
-            "label": 1 if row["winner_id"] == t_a else 0,
-            
-            # Carry over match counts for filtering later (not used as features)
             "team_a_gen_matches_30d": gen_a_30d["matches"],
             "team_b_gen_matches_30d": gen_b_30d["matches"]
         }
-        features_list.append(feat_dict)
+        
+        # 3. Label (What we are predicting)
+        label_dict = {TARGET_COL: 1 if row["winner_id"] == t_a else 0}
+        
+        # Combine everything into one row
+        features_list.append({**feat_dict, **meta_dict, **label_dict})
         
         # UPDATE STATES AFTER THE MAP
         team_general_history[t_a].append((date, 1 if row["winner_id"] == t_a else 0))
