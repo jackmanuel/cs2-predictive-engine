@@ -22,46 +22,65 @@ def get_recent_stats(history, current_date, days):
     win_rate = sum(recent) / matches if matches > 0 else 0.5
     return {"matches": matches, "win_rate": win_rate}
 
-def compute_features(df: pd.DataFrame, historical_stats: pd.DataFrame = None) -> pd.DataFrame:
+def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Computes map-level temporal features without data leakage.
-    Tracks both general team form and map-specific form.
-    Integrates historical PandaScore stats and HLTV ranks.
+    Computes map-level temporal features with dimensionality reduction.
+    Uses differentials and momentum (streaks) instead of absolute values.
     """
     # Ensure it is sorted by date!
     df = df.sort_values("date").reset_index(drop=True)
     
+    # 1. Pre-calculate match-level streaks to avoid data leakage
+    # A team's streak for a map is their win streak BEFORE that match started.
+    matches_df = df.groupby("match_id").agg({
+        "date": "min",
+        "team_a_id": "first",
+        "team_b_id": "first",
+        "winner_id": lambda x: x.value_counts().index[0] # Series winner
+    }).sort_values("date")
+    
+    streaks_before_match = {} # match_id -> {team_id: streak}
+    current_streaks = {}      # team_id -> streak
+    
+    for m_id, row in matches_df.iterrows():
+        t_a = row["team_a_id"]
+        t_b = row["team_b_id"]
+        winner = row["winner_id"]
+        
+        # Store what streaks were BEFORE this match
+        streaks_before_match[m_id] = {
+            t_a: current_streaks.get(t_a, 0),
+            t_b: current_streaks.get(t_b, 0)
+        }
+        
+        # Update current streaks (capped at 5)
+        if winner == t_a:
+            current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, 5)
+            current_streaks[t_b] = 0
+        else:
+            current_streaks[t_b] = min(current_streaks.get(t_b, 0) + 1, 5)
+            current_streaks[t_a] = 0
+            
     features_list = []
     
-    # State trackers
+    # State trackers for form
     team_general_history = {} # team_id -> [(datetime, int_win)]
-    team_map_history = {}     # team_id -> map_name -> [(datetime, int_win)]
     h2h_stats = {}            # (team_x, team_y) (sorted) -> wins_x, wins_y
     
     def init_team(tid):
         if tid not in team_general_history:
             team_general_history[tid] = []
-        if tid not in team_map_history:
-            team_map_history[tid] = {}
 
-    # Pre-processing historical stats for fast lookup
-    hist_lookup = {}
-    if historical_stats is not None:
-        hist_lookup = historical_stats.set_index('team_name').to_dict('index')
-
-    logger.info("Computing map-level features (including ranks) temporally...")
+    logger.info("Computing reduced map-level features temporally...")
     
     for _, row in df.iterrows():
         t_a = row["team_a_id"]
         t_b = row["team_b_id"]
-        map_name = row["map_name"]
+        m_id = row["match_id"]
         date = row["date"]
         
         init_team(t_a)
         init_team(t_b)
-        
-        # 1 means Team A won, 0 means Team B won
-        label = 1 if row["winner_id"] == t_a else 0
         
         # Determine H2H prior
         h2h_key = tuple(sorted([str(t_a), str(t_b)]))
@@ -72,70 +91,64 @@ def compute_features(df: pd.DataFrame, historical_stats: pd.DataFrame = None) ->
         h2h_b_wins = h2h_stats[h2h_key].get(t_b, 0)
         
         # HLTV Recent Form (BEFORE the map start)
-        gen_a_90d = get_recent_stats(team_general_history[t_a], date, 90)
-        gen_b_90d = get_recent_stats(team_general_history[t_b], date, 90)
-        gen_a_30d = get_recent_stats(team_general_history[t_a], date, ROLLING_WINDOW_DAYS)
-        gen_b_30d = get_recent_stats(team_general_history[t_b], date, ROLLING_WINDOW_DAYS)
+        gen_a_30d = get_recent_stats(team_general_history[t_a], date, 30)
+        gen_b_30d = get_recent_stats(team_general_history[t_b], date, 30)
+        gen_a_7d = get_recent_stats(team_general_history[t_a], date, 7)
+        gen_b_7d = get_recent_stats(team_general_history[t_b], date, 7)
         
-        # Map-Specific Form
-        hist_a_map = team_map_history[t_a].get(map_name, [])
-        hist_b_map = team_map_history[t_b].get(map_name, [])
-        map_a_90d = get_recent_stats(hist_a_map, date, 90)
-        map_b_90d = get_recent_stats(hist_b_map, date, 90)
+        # Streaks (from pre-calc)
+        s_a = streaks_before_match[m_id].get(t_a, 0)
+        s_b = streaks_before_match[m_id].get(t_b, 0)
         
-        # PandaScore Long-Term Baseline (Static)
-        pa_stats = hist_lookup.get(t_a, {"pcore_wr": 0.5, "pcore_matches": 0})
-        pb_stats = hist_lookup.get(t_b, {"pcore_wr": 0.5, "pcore_matches": 0})
+        # Differentials
+        # Rank Diff: log(rank_b) - log(rank_a)
+        # Positive value means Team A is favoured (higher-ranked/lower rank number)
+        r_a = max(row["team_a_world_rank"], 1)
+        r_b = max(row["team_b_world_rank"], 1)
+        rank_diff = np.log(r_b) - np.log(r_a)
+        
+        wr_30d_diff = gen_a_30d["win_rate"] - gen_b_30d["win_rate"]
+        wr_7d_diff = gen_a_7d["win_rate"] - gen_b_7d["win_rate"]
         
         feat_dict = {
-            "match_id": row["match_id"],
-            "map_name": map_name,
+            "match_id": m_id,
+            "map_name": row["map_name"],
             "date": date,
             "team_a_id": t_a,
             "team_b_id": t_b,
-            # NEW: Ranks (Direct from cleaned data)
-            "team_a_world_rank": row["team_a_world_rank"],
-            "team_b_world_rank": row["team_b_world_rank"],
-            "team_a_vrs_rank": row["team_a_vrs_rank"],
-            "team_b_vrs_rank": row["team_b_vrs_rank"],
-            # PandaScore Tandem Features (Long-period baseline)
-            "team_a_pcore_wr": pa_stats["pcore_wr"],
-            "team_b_pcore_wr": pb_stats["pcore_wr"],
-            "team_a_pcore_matches": pa_stats["pcore_matches"],
-            "team_b_pcore_matches": pb_stats["pcore_matches"],
-            # HLTV-based Recent Features
-            "team_a_gen_matches_90d": gen_a_90d["matches"],
-            "team_b_gen_matches_90d": gen_b_90d["matches"],
-            "team_a_gen_wr_90d": gen_a_90d["win_rate"],
-            "team_b_gen_wr_90d": gen_b_90d["win_rate"],
-            "team_a_gen_wr_30d": gen_a_30d["win_rate"],
-            "team_b_gen_wr_30d": gen_b_30d["win_rate"],
-            "team_a_map_matches_90d": map_a_90d["matches"],
-            "team_b_map_matches_90d": map_b_90d["matches"],
-            "team_a_map_wr_90d": map_a_90d["win_rate"],
-            "team_b_map_wr_90d": map_b_90d["win_rate"],
-            # Picker Feature
+            
+            # Form Differentials
+            "rank_diff": rank_diff,
+            "win_rate_30d_diff": wr_30d_diff,
+            "win_rate_7d_diff": wr_7d_diff,
+            
+            # Momentum Features (Capped at 5)
+            "team_a_win_streak": s_a,
+            "team_b_win_streak": s_b,
+            
+            # Orthogonal Features (Retained as they are)
             "team_a_is_picker": 1 if row["team_a_picked"] else 0,
             "team_b_is_picker": 1 if row["team_b_picked"] else 0,
             "h2h_a_wins": h2h_a_wins,
             "h2h_b_wins": h2h_b_wins,
+            
+            # Labels and metadata
             "match_format": row.get("match_format", "unknown"),
             "score_a": row.get("score_a", 0),
             "score_b": row.get("score_b", 0),
-            "label": label
+            "label": 1 if row["winner_id"] == t_a else 0,
+            
+            # Carry over match counts for filtering later (not used as features)
+            "team_a_gen_matches_30d": gen_a_30d["matches"],
+            "team_b_gen_matches_30d": gen_b_30d["matches"]
         }
         features_list.append(feat_dict)
         
         # UPDATE STATES AFTER THE MAP
-        team_general_history[t_a].append((date, 1 if label == 1 else 0))
-        team_general_history[t_b].append((date, 1 if label == 0 else 0))
+        team_general_history[t_a].append((date, 1 if row["winner_id"] == t_a else 0))
+        team_general_history[t_b].append((date, 1 if row["winner_id"] == t_b else 0))
         
-        if map_name not in team_map_history[t_a]: team_map_history[t_a][map_name] = []
-        if map_name not in team_map_history[t_b]: team_map_history[t_b][map_name] = []
-        team_map_history[t_a][map_name].append((date, 1 if label == 1 else 0))
-        team_map_history[t_b][map_name].append((date, 1 if label == 0 else 0))
-        
-        if label == 1:
+        if row["winner_id"] == t_a:
             h2h_stats[h2h_key][t_a] += 1
         else:
             h2h_stats[h2h_key][t_b] += 1
@@ -150,24 +163,21 @@ def feature_pipeline():
         
     df = pd.read_parquet(clean_path)
     
-    # Load historical baseline
-    hist_path = PROCESSED_DIR / "historical_pandascore_stats.parquet"
-    hist_df = pd.read_parquet(hist_path) if hist_path.exists() else None
+    # Compute features with reduced dimensionality
+    feature_df = compute_features(df)
     
-    feature_df = compute_features(df, historical_stats=hist_df)
-    
-    # Filtering (Reduced threshold for small testing datasets)
+    # Filtering (using 30d window instead of 90d as requested)
     initial_len = len(feature_df)
     effective_threshold = min(MIN_MATCHES_THRESHOLD, 1) 
     
     feature_df = feature_df[
-        (feature_df["team_a_gen_matches_90d"] >= effective_threshold) & 
-        (feature_df["team_b_gen_matches_90d"] >= effective_threshold)
+        (feature_df["team_a_gen_matches_30d"] >= effective_threshold) & 
+        (feature_df["team_b_gen_matches_30d"] >= effective_threshold)
     ]
     
     out_path = PROCESSED_DIR / "features.parquet"
     feature_df.to_parquet(out_path, index=False)
-    logger.info(f"Map-level features (including Ranks) saved to {out_path} ({len(feature_df)} rows).")
+    logger.info(f"Reduced features saved to {out_path} ({len(feature_df)} rows).")
 
 if __name__ == "__main__":
     feature_pipeline()

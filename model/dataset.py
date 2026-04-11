@@ -9,7 +9,7 @@ class MatchDataset(Dataset):
     Separates features from identifiers and labels.
     """
     def __init__(self, df: pd.DataFrame, scaler=None, fit_scaler=False):
-        drop_cols = ["match_id", "date", "team_a_id", "team_b_id", "map_name", "label", "match_format", "score_a", "score_b"]
+        drop_cols = ["match_id", "date", "team_a_id", "team_b_id", "map_name", "label", "match_format", "score_a", "score_b", "team_a_gen_matches_30d", "team_b_gen_matches_30d"]
         # Filter to only actual features
         feature_cols = [c for c in df.columns if c not in drop_cols]
         

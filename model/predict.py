@@ -46,7 +46,7 @@ def get_recent_stats(history, current_date, days):
 def load_latest_state():
     """
     Simulates playing through the entire clean maps history to get the absolute 
-    latest state (general and map histories, plus latest ranks) for all teams.
+    latest state (form, ranks, and win streaks) for all teams.
     """
     clean_path = PROCESSED_DIR / "clean_maps.parquet"
     if not clean_path.exists():
@@ -56,9 +56,31 @@ def load_latest_state():
     
     team_general_histories = {}
     team_map_histories = {}
-    team_latest_ranks = {} # team_id -> {"world": int, "vrs": int}
+    team_latest_ranks = {} # team_id -> {"world": int}
     h2h_stats = {}
+    current_streaks = {}   # team_id -> int
     
+    # 1. Pre-calculate streaks by processing matches chronologically
+    matches_df = df.groupby("match_id").agg({
+        "date": "min",
+        "team_a_id": "first",
+        "team_b_id": "first",
+        "winner_id": lambda x: x.value_counts().index[0]
+    }).sort_values("date")
+    
+    for _, row in matches_df.iterrows():
+        t_a = row["team_a_id"]
+        t_b = row["team_b_id"]
+        winner = row["winner_id"]
+        
+        if winner == t_a:
+            current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, 5)
+            current_streaks[t_b] = 0
+        else:
+            current_streaks[t_b] = min(current_streaks.get(t_b, 0) + 1, 5)
+            current_streaks[t_a] = 0
+
+    # 2. Process maps for history tracking
     for _, row in df.iterrows():
         t_a = row["team_a_id"]
         t_b = row["team_b_id"]
@@ -85,15 +107,15 @@ def load_latest_state():
         team_map_histories[t_a][map_name].append((date, 1 if label == 1 else 0))
         team_map_histories[t_b][map_name].append((date, 1 if label == 0 else 0))
         
-        team_latest_ranks[t_a] = {"world": row["team_a_world_rank"], "vrs": row["team_a_vrs_rank"]}
-        team_latest_ranks[t_b] = {"world": row["team_b_world_rank"], "vrs": row["team_b_vrs_rank"]}
+        team_latest_ranks[t_a] = {"world": row["team_a_world_rank"]}
+        team_latest_ranks[t_b] = {"world": row["team_b_world_rank"]}
         
         if label == 1:
             h2h_stats[h2h_key][t_a] += 1
         else:
             h2h_stats[h2h_key][t_b] += 1
             
-    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats
+    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks
 
 def combine_probs(probs: List[float], bo: int) -> float:
     """Combines map probs into series win prob."""
@@ -105,22 +127,12 @@ def combine_probs(probs: List[float], bo: int) -> float:
         return (p1 * p2) + (p1 * (1-p2) * p3) + ((1-p1) * p2 * p3)
     return probs[0]
 
-def predict_matchup(team_a_raw: str, team_b_raw: str, maps: List[str], picker_override: str = "neutral"):
+def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_override: str = "neutral"):
     mappings = load_mappings()
-    team_a_norm = normalize_name(team_a_raw, mappings)
-    team_b_norm = normalize_name(team_b_raw, mappings)
+    t_a_id = normalize_name(team_raw_a, mappings)
+    t_b_id = normalize_name(team_raw_b, mappings)
     
-    t_a_id = team_a_norm
-    t_b_id = team_b_norm
-    
-    gen_histories, map_histories, latest_ranks, h2h_stats = load_latest_state()
-    
-    # Load historical baseline
-    hist_path = PROCESSED_DIR / "historical_pandascore_stats.parquet"
-    hist_lookup = {}
-    if hist_path.exists():
-        hist_df = pd.read_parquet(hist_path)
-        hist_lookup = hist_df.set_index('team_name').to_dict('index')
+    gen_histories, map_histories, latest_ranks, h2h_stats, latest_streaks = load_latest_state()
     
     # Load model and scaler
     scaler_path = CHECKPOINT_DIR / "scaler.pkl"
@@ -137,26 +149,27 @@ def predict_matchup(team_a_raw: str, team_b_raw: str, maps: List[str], picker_ov
     now = pd.to_datetime(datetime.now(timezone.utc))
     
     print("\n" + "="*60)
-    print(f" PREDICTION: {team_a_norm} vs {team_b_norm}")
+    print(f" PREDICTION: {t_a_id} vs {t_b_id}")
     print("="*60)
 
     map_probs = []
     
     for i, m_name in enumerate(maps):
-        # Calculate features (MATCHES features.py exactly)
-        g_a_90d = get_recent_stats(gen_histories.get(t_a_id, []), now, 90)
-        g_b_90d = get_recent_stats(gen_histories.get(t_b_id, []), now, 90)
-        g_a_30d = get_recent_stats(gen_histories.get(t_a_id, []), now, ROLLING_WINDOW_DAYS)
-        g_b_30d = get_recent_stats(gen_histories.get(t_b_id, []), now, ROLLING_WINDOW_DAYS)
+        # Calculate features (MATCHES features.py compute_features)
+        g_a_30d = get_recent_stats(gen_histories.get(t_a_id, []), now, 30)
+        g_b_30d = get_recent_stats(gen_histories.get(t_b_id, []), now, 30)
+        g_a_7d = get_recent_stats(gen_histories.get(t_a_id, []), now, 7)
+        g_b_7d = get_recent_stats(gen_histories.get(t_b_id, []), now, 7)
         
-        m_a_90d = get_recent_stats(map_histories.get(t_a_id, {}).get(m_name, []), now, 90)
-        m_b_90d = get_recent_stats(map_histories.get(t_b_id, {}).get(m_name, []), now, 90)
+        s_a = latest_streaks.get(t_a_id, 0)
+        s_b = latest_streaks.get(t_b_id, 0)
         
-        hist_a = hist_lookup.get(t_a_id, {"pcore_wr": 0.5, "pcore_matches": 0})
-        hist_b = hist_lookup.get(t_b_id, {"pcore_wr": 0.5, "pcore_matches": 0})
+        rank_a = latest_ranks.get(t_a_id, {"world": DEFAULT_TEAM_RANK})["world"]
+        rank_b = latest_ranks.get(t_b_id, {"world": DEFAULT_TEAM_RANK})["world"]
+        rank_diff = np.log(max(rank_b, 1)) - np.log(max(rank_a, 1))
         
-        rank_a = latest_ranks.get(t_a_id, {"world": DEFAULT_TEAM_RANK, "vrs": DEFAULT_TEAM_RANK})
-        rank_b = latest_ranks.get(t_b_id, {"world": DEFAULT_TEAM_RANK, "vrs": DEFAULT_TEAM_RANK})
+        wr_30d_diff = g_a_30d["win_rate"] - g_b_30d["win_rate"]
+        wr_7d_diff = g_a_7d["win_rate"] - g_b_7d["win_rate"]
         
         h2h_key = tuple(sorted([str(t_a_id), str(t_b_id)]))
         h2h_a = h2h_stats.get(h2h_key, {}).get(t_a_id, 0)
@@ -170,19 +183,17 @@ def predict_matchup(team_a_raw: str, team_b_raw: str, maps: List[str], picker_ov
             is_a_picker = 1 if i == 0 else 0
             is_b_picker = 1 if i == 1 else 0
 
-        # Construct feature vector (Order MUST match features.py compute_features)
+        # Construct feature vector (Order MUST match features.py COMPUTE_FEATURES)
         f_vec = np.array([[
-            rank_a["world"], rank_b["world"],
-            rank_a["vrs"], rank_b["vrs"],
-            hist_a["pcore_wr"], hist_b["pcore_wr"],
-            hist_a["pcore_matches"], hist_b["pcore_matches"],
-            g_a_90d["matches"], g_b_90d["matches"],
-            g_a_90d["win_rate"], g_b_90d["win_rate"],
-            g_a_30d["win_rate"], g_b_30d["win_rate"],
-            m_a_90d["matches"], m_b_90d["matches"],
-            m_a_90d["win_rate"], m_b_90d["win_rate"],
-            is_a_picker, is_b_picker,
-            h2h_a, h2h_b
+            rank_diff,
+            wr_30d_diff,
+            wr_7d_diff,
+            s_a,
+            s_b,
+            is_a_picker,
+            is_b_picker,
+            h2h_a,
+            h2h_b
         ]], dtype=np.float32)
         
         scaled_f = scaler.transform(f_vec)
@@ -190,12 +201,12 @@ def predict_matchup(team_a_raw: str, team_b_raw: str, maps: List[str], picker_ov
             p_a = model(torch.tensor(scaled_f, dtype=torch.float32)).item()
             map_probs.append(p_a)
         
-        print(f"[{m_name:10}] {team_a_norm}: {p_a*100:5.1f}% | {team_b_norm}: {(1-p_a)*100:5.1f}%")
+        print(f"[{m_name:10}] {t_a_id}: {p_a*100:5.1f}% | {t_b_id}: {(1-p_a)*100:5.1f}%")
 
     if len(maps) > 1:
         series_prob_a = combine_probs(map_probs, len(maps))
         print("-" * 60)
-        print(f"SERIES WIN PROBABILITY: {team_a_norm} {series_prob_a*100:.1f}%")
+        print(f"SERIES WIN PROBABILITY: {t_a_id} {series_prob_a*100:.1f}%")
     
     print("="*60 + "\n")
 
@@ -203,8 +214,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict a CS2 match outcome.")
     parser.add_argument("team_a", help="Name of Team A")
     parser.add_argument("team_b", help="Name of Team B")
-    parser.add_argument("--maps", help="Comma-separated list of maps (e.g. Mirage,Ancient,Dust2)", default="Mirage")
-    parser.add_argument("--picker", help="Who picked the map (team_a, team_b, or neutral)", default="neutral")
+    parser.add_argument("--maps", help="Comma-separated list of maps", default="Mirage")
+    parser.add_argument("--picker", help="Who picked (team_a, team_b, or neutral)", default="neutral")
     args = parser.parse_args()
     
     map_list = [m.strip() for m in args.maps.split(",")]
