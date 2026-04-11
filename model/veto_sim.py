@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Standard Active Duty Pool for CS2 (April 2024 onwards)
 # Note: Vertigo may be missing from some historical datasets but is part of the active pool.
-MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Vertigo"]
+MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass"]
 
 SIMULATIONS = 10000
 
