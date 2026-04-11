@@ -39,10 +39,40 @@ def get_recent_stats(history, current_date, days):
     if not history:
         return {"matches": 0, "win_rate": 0.5}
     cutoff = current_date - pd.Timedelta(days=days)
-    recent = [w for d, w in history if d >= cutoff]
-    matches = len(recent)
-    win_rate = sum(recent) / matches if matches > 0 else 0.5
+    
+    outcomes = []
+    for item in history:
+        if item[0] < cutoff:
+            continue
+        # Support both (date, win_bool) and (date, score_self, score_opp)
+        if len(item) == 3:
+            outcomes.append(1 if item[1] > item[2] else 0)
+        else:
+            outcomes.append(item[1])
+            
+    matches = len(outcomes)
+    win_rate = sum(outcomes) / matches if matches > 0 else 0.5
     return {"matches": matches, "win_rate": win_rate}
+
+def get_dominance_metrics(history, current_date, days):
+    """Calculates average win/loss margins over a rolling window."""
+    if not history:
+        return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
+        
+    cutoff = current_date - pd.Timedelta(days=days)
+    # history stores (date, score_self, score_opp)
+    recent = [(s_self, s_opp) for d, s_self, s_opp in history if d >= cutoff]
+    
+    if not recent:
+        return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
+    
+    wins = [my - opp for my, opp in recent if my > opp]
+    losses = [opp - my for my, opp in recent if opp > my]
+    
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    
+    return {"avg_win_margin": avg_win, "avg_loss_margin": avg_loss}
 
 def load_latest_state():
     """
@@ -106,8 +136,11 @@ def load_latest_state():
         if h2h_key not in h2h_stats:
             h2h_stats[h2h_key] = {h2h_key[0]: 0, h2h_key[1]: 0}
             
-        team_general_histories[t_a].append((date, 1 if label == 1 else 0))
-        team_general_histories[t_b].append((date, 1 if label == 0 else 0))
+        score_a = row.get("score_a", 0)
+        score_b = row.get("score_b", 0)
+            
+        team_general_histories[t_a].append((date, score_a, score_b))
+        team_general_histories[t_b].append((date, score_b, score_a))
         team_map_histories[t_a][map_name].append((date, 1 if label == 1 else 0))
         team_map_histories[t_b][map_name].append((date, 1 if label == 0 else 0))
         
@@ -255,6 +288,13 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             return picks / total if total > 0 else 0.0
             
         map_comfort_diff = get_comfort(t_a_id, m_name) - get_comfort(t_b_id, m_name)
+        
+        # Dominance & Resilience (30-day window)
+        dom_a = get_dominance_metrics(gen_histories.get(t_a_id, []), now, 30)
+        dom_b = get_dominance_metrics(gen_histories.get(t_b_id, []), now, 30)
+        
+        dominance_delta = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
+        resilience_delta = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
 
         # Construct feature vector using the architecture-defined order
         feat_vals = {
@@ -268,7 +308,9 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             "h2h_a_wins": h2h_a,
             "h2h_b_wins": h2h_b,
             "map_win_rate_diff": map_wr_diff,
-            "map_comfort_diff": map_comfort_diff
+            "map_comfort_diff": map_comfort_diff,
+            "dominance_delta": dominance_delta,
+            "resilience_delta": resilience_delta
         }
         
         # Ensure correct order for the scaler/model

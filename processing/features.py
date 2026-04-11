@@ -26,7 +26,9 @@ MODEL_FEATURES = [
     "h2h_a_wins",
     "h2h_b_wins",
     "map_win_rate_diff",
-    "map_comfort_diff"
+    "map_comfort_diff",
+    "dominance_delta",
+    "resilience_delta"
 ]
 
 TARGET_COL = "label"
@@ -51,10 +53,40 @@ def get_recent_stats(history, current_date, days):
     if not history:
         return {"matches": 0, "win_rate": 0.5}
     cutoff = current_date - pd.Timedelta(days=days)
-    recent = [w for d, w in history if d >= cutoff]
-    matches = len(recent)
-    win_rate = sum(recent) / matches if matches > 0 else 0.5
+    
+    outcomes = []
+    for item in history:
+        if item[0] < cutoff:
+            continue
+        # Support both (date, win_bool) and (date, score_self, score_opp)
+        if len(item) == 3:
+            outcomes.append(1 if item[1] > item[2] else 0)
+        else:
+            outcomes.append(item[1])
+            
+    matches = len(outcomes)
+    win_rate = sum(outcomes) / matches if matches > 0 else 0.5
     return {"matches": matches, "win_rate": win_rate}
+
+def get_dominance_metrics(history, current_date, days):
+    """Calculates average win/loss margins over a rolling window."""
+    if not history:
+        return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
+        
+    cutoff = current_date - pd.Timedelta(days=days)
+    # history stores (date, score_self, score_opp)
+    recent = [(s_self, s_opp) for d, s_self, s_opp in history if d >= cutoff]
+    
+    if not recent:
+        return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
+    
+    wins = [my - opp for my, opp in recent if my > opp]
+    losses = [opp - my for my, opp in recent if opp > my]
+    
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    
+    return {"avg_win_margin": avg_win, "avg_loss_margin": avg_loss}
 
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -172,6 +204,13 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         comfort_b = get_comfort(t_b, map_name)
         map_comfort_diff = comfort_a - comfort_b
         
+        # 3. Dominance & Resilience (30-day window)
+        dom_a = get_dominance_metrics(team_general_history[t_a], date, 30)
+        dom_b = get_dominance_metrics(team_general_history[t_b], date, 30)
+        
+        dominance_delta = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
+        resilience_delta = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
+        
         # 1. Model Features (Actual network inputs)
         # ----------------------------------------
         feat_dict = {
@@ -185,7 +224,9 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "h2h_a_wins": h2h_a_wins,
             "h2h_b_wins": h2h_b_wins,
             "map_win_rate_diff": map_wr_diff,
-            "map_comfort_diff": map_comfort_diff
+            "map_comfort_diff": map_comfort_diff,
+            "dominance_delta": dominance_delta,
+            "resilience_delta": resilience_delta
         }
         
         # 2. Metadata & tracking (Not features, but needed for stats/filters)
@@ -210,11 +251,13 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         features_list.append({**feat_dict, **meta_dict, **label_dict})
         
         # UPDATE STATES AFTER THE MAP (Prevent leakage)
+        score_a = row.get("score_a", 0)
+        score_b = row.get("score_b", 0)
         win_a = 1 if row["winner_id"] == t_a else 0
         win_b = 1 if row["winner_id"] == t_b else 0
         
-        team_general_history[t_a].append((date, win_a))
-        team_general_history[t_b].append((date, win_b))
+        team_general_history[t_a].append((date, score_a, score_b))
+        team_general_history[t_b].append((date, score_b, score_a))
         
         if map_name not in team_map_history[t_a]: team_map_history[t_a][map_name] = []
         if map_name not in team_map_history[t_b]: team_map_history[t_b][map_name] = []
