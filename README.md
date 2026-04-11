@@ -6,8 +6,8 @@ Currently implemented as a Minimum Viable Product (MVP) using a PyTorch binary c
 
 ## Architecture
 
-1. **Ingestion Layer:** Connects to the PandaScore API (free "Fixtures" tier compatible). Features a robust `requests.Session` client with token-bucket rate limiting and cursor-based pagination.
-2. **Processing Layer:** Cleans raw JSON responses into flat Parquet files. Engineers temporal features (rolling win rates, current streaks, Head-to-Head records). Operates chronologically to absolutely guarantee no future data leakage.
+1. **Ingestion Layer:** Connects to the PandaScore API to quickly build a massive history of general team records and winrates, while scraping HLTV natively to serve as the highly-detailed "Canonical Match Database" (with round histories, player metrics, map vetoes, and match blurbs).
+2. **Processing Layer:** Cleaners and Transformers operate on both datasets. Engineers temporal features (rolling win rates, current streaks, Head-to-Head records). Cross-references macro-team stats from PandaScore with micro-match stats from HLTV. Operates chronologically to absolutely guarantee no future data leakage.
 3. **Model Layer:** A PyTorch neural network `MatchPredictor` with a custom `Dataset`. Designed to be easily swappable with more complex architectures (like PyTorch entity embeddings) in future scope.
 4. **Evaluation Layer:** Walk-forward backtesting system evaluating the model's accuracy, log-loss, and Brier score (crucial for probability calibration).
 
@@ -15,8 +15,14 @@ Currently implemented as a Minimum Viable Product (MVP) using a PyTorch binary c
 
 1. Create a virtual environment and install dependencies:
    ```bash
+   # Linux/macOS
+   python3 -m venv venv
+   source venv/bin/activate
+
+   # Windows
    python -m venv venv
    .\venv\Scripts\activate
+
    pip install -r requirements.txt
    ```
 
@@ -30,28 +36,34 @@ Currently implemented as a Minimum Viable Product (MVP) using a PyTorch binary c
 
 Run the modules sequentially:
 
-1. **Fetch Match Data (Ingestion):**
+1. **Fetch Contextual Match Data (PandaScore):**
    *(Note: Free tier is limited to ~1,000 req/hr. This uses a 3.6s delay between requests.)*
    ```bash
    python -m ingestion.fetch_matches
    ```
 
-2. **Clean & Parse Data:**
+2. **Scrape Canonical Match Data (HLTV):**
+   *(Scrapes detailed round, player, ranking, and map info natively. Use `--matches` and `--pages` to batch safely.)*
+   ```bash
+   python -m ingestion.fetch_hltv_matches --pages 5 --matches 50
+   ```
+
+3. **Clean & Parse Data:**
    ```bash
    python -m processing.clean
    ```
 
-3. **Engineer Temporal Features:**
+4. **Engineer Temporal Features:**
    ```bash
    python -m processing.features
    ```
 
-4. **Train the MVP Model:**
+5. **Train the MVP Model:**
    ```bash
    python -m model.train
    ```
 
-5. **Evaluate (Backtest) on Held-Out Data:**
+6. **Evaluate (Backtest) on Held-Out Data:**
    ```bash
    python -m evaluation.backtest
    ```

@@ -30,6 +30,7 @@ build/
 Thumbs.db
 
 # Debug / Example data
-match_page_debug.html
+*.html
+debug_scraper.py
 hltv_match_example.json
 scratch/
