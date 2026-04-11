@@ -201,12 +201,16 @@ def main():
     print("="*60)
     
     map_counts = {m: 0 for m in MAP_POOL}
+    sequence_counts = {}
     
     # Run the simulation loop
     for _ in range(args.iters):
         played = simulate_veto(stats_a, stats_b, args.format)
         for m in played:
             map_counts[m] += 1
+        
+        seq_str = ",".join(played)
+        sequence_counts[seq_str] = sequence_counts.get(seq_str, 0) + 1
             
     # Sort results by probability
     sorted_results = sorted(map_counts.items(), key=lambda x: x[1], reverse=True)
@@ -222,7 +226,15 @@ def main():
         print(f"{m:12} | {prob:10.2f}% | {bar}")
     
     print("-" * 60)
-    print("Heuristics: Ban (Opp Wr + Own Lr), Pick (Own Wr * Own Pr), Permaban (<5% play)")
+    
+    # Display Top 3 Sequences
+    print(f"\nMOST LIKELY MAP SEQUENCES (TOP 3):")
+    sorted_seqs = sorted(sequence_counts.items(), key=lambda x: x[1], reverse=True)
+    for i, (seq, count) in enumerate(sorted_seqs[:3]):
+        prob = (count / args.iters) * 100
+        print(f" {i+1}. {prob:5.1f}% | {seq}")
+
+    print("\nHeuristics: Ban (Opp Wr + Own Lr), Pick (Own Wr * Own Pr), Permaban (<5% play)")
     print("="*60 + "\n")
 
 if __name__ == "__main__":

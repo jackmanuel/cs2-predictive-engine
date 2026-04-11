@@ -143,14 +143,40 @@ def load_latest_state():
     return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks, team_first_picks, team_total_series
 
 def combine_probs(probs: List[float], bo: int) -> float:
-    """Combines map probs into series win prob."""
-    if bo == 1: return probs[0]
-    if bo == 3:
-        p1 = probs[0]
-        p2 = probs[1]
-        p3 = probs[2] if len(probs) > 2 else 0.5
-        return (p1 * p2) + (p1 * (1-p2) * p3) + ((1-p1) * p2 * p3)
-    return probs[0]
+    """
+    Combines map-level win probabilities into a series win probability.
+    Uses dynamic programming to calculate the chance of reaching the 
+    required number of wins (first-to-2 for Bo3, first-to-3 for Bo5).
+    """
+    if not probs:
+        return 0.5
+    if bo == 1:
+        return probs[0]
+    
+    # Determine wins needed to clinche the series
+    wins_needed = (bo // 2) + 1
+    
+    # Pad probs if the input list is shorter than the BO format
+    # (e.g., simulating a Bo3 with only the first 2 maps known)
+    full_probs = probs + [0.5] * (bo - len(probs))
+    
+    # dp[j] is the probability of winning exactly j maps
+    dp = [0.0] * (bo + 1)
+    dp[0] = 1.0
+    
+    for p in full_probs:
+        new_dp = [0.0] * (bo + 1)
+        for j in range(bo + 1):
+            if dp[j] > 0:
+                # Scenario: Team A wins this map
+                if j + 1 <= bo:
+                    new_dp[j+1] += dp[j] * p
+                # Scenario: Team A loses this map
+                new_dp[j] += dp[j] * (1 - p)
+        dp = new_dp
+        
+    # Series win probability is the sum of winning 'wins_needed' or more maps
+    return sum(dp[wins_needed:])
 
 def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_override: str = "neutral"):
     mappings = load_mappings()
@@ -204,7 +230,15 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
         is_b_picker = 0
         if picker_override.lower() in ["team_a", "a"]: is_a_picker = 1
         elif picker_override.lower() in ["team_b", "b"]: is_b_picker = 1
-        elif len(maps) > 1:
+        elif len(maps) == 3: # Bo3: A pick, B pick, Decider
+            is_a_picker = 1 if i == 0 else 0
+            is_b_picker = 1 if i == 1 else 0
+        elif len(maps) == 5: # Bo5: A pick, B pick, A pick, B pick, Decider
+            is_a_picker = 1 if i in [0, 2] else 0
+            is_b_picker = 1 if i in [1, 3] else 0
+        elif len(maps) == 1: # Bo1: Neutral
+            pass
+        else: # Default fallback
             is_a_picker = 1 if i == 0 else 0
             is_b_picker = 1 if i == 1 else 0
 
