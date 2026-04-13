@@ -141,14 +141,8 @@ def get_ban_weight(current_stats, opponent_stats, pool, is_first_ban=False):
         weights = []
         for m in pool:
             if m in permabans:
-                # Check for Shared Permaban (Bluffing Logic)
-                # If the opponent also has a play rate < 0.05 on this map, we refuse to ban it,
-                # assuming they will be forced to ban it themselves.
-                if opponent_stats[m]['play_rate'] < PERMABAN_THRESHOLD:
-                    w = 0.0001
-                else:
-                    # Threat Tiebreaker: prioritize banning maps the opponent is statistically proficient at
-                    w = max(opponent_stats[m]['win_rate'], 0.01)
+                # Threat Tiebreaker: prioritize banning maps the opponent is statistically proficient at
+                w = max(opponent_stats[m]['win_rate'], 0.01)
                 weights.append(w)
             else:
                 # Maps not in the permaban list continue to get negligible weight during this override phase
