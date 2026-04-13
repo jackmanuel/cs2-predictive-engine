@@ -51,7 +51,7 @@ def normalize_format(fmt: str) -> str:
     if "bo5" in fmt or "best of 5" in fmt: return "bo5"
     
     # Specifically flag default (forfeit) wins so they can be excluded
-    if "def" in fmt: return "def"
+    if "def" in fmt or "default" in fmt: return "def"
     
     # Map abbreviations for BO1s on HLTV results page
     # Covers current active duty and common pool maps
@@ -152,7 +152,8 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
         "team_a_vrs_rank": r_a_vrs,
         "team_b_world_rank": r_b_world,
         "team_b_vrs_rank": r_b_vrs,
-        "match_format": match_format
+        "match_format": match_format,
+        "is_forfeit": map_name.lower() in ["default", "forfeit"]
     }
 
 def load_raw_maps() -> pd.DataFrame:
@@ -190,9 +191,18 @@ def clean_data():
     logger.info("Starting map-level data cleaning with rank features...")
     df = load_raw_maps()
     if not df.empty:
-        # Exclude forfeit/default wins as they contain no comparative gameplay data
         initial_count = len(df)
+        
+        # 1. Flag matches that contain a forfeited map
+        forfeit_match_ids = df[df["is_forfeit"] == True]["match_id"].unique()
+        df["match_has_forfeit"] = df["match_id"].isin(forfeit_match_ids)
+        
+        # 2. Exclude the "Default" map rows themselves as they contain no comparative gameplay data
+        df = df[df["is_forfeit"] == False]
+        
+        # 3. Exclude matches where the ENTIRE series was marked as 'def'
         df = df[df["match_format"] != "def"]
+        
         removed = initial_count - len(df)
         if removed > 0:
             logger.info(f"Excluded {removed} maps from default/forfeit wins.")

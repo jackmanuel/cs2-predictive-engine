@@ -84,7 +84,8 @@ METADATA_COLS = [
     "score_a",
     "score_b",
     "team_a_gen_matches_30d",
-    "team_b_gen_matches_30d"
+    "team_b_gen_matches_30d",
+    "match_has_forfeit"
 ]
 
 def get_recent_stats(history, current_date, days):
@@ -141,7 +142,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         "date": "min",
         "team_a_id": "first",
         "team_b_id": "first",
-        "winner_id": lambda x: x.value_counts().index[0] # Series winner
+        "winner_id": lambda x: x.value_counts().index[0], # Series winner
+        "match_has_forfeit": "first"
     }).sort_values("date")
     
     streaks_before_match = {} # match_id -> {team_id: streak}
@@ -159,6 +161,10 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         }
         
         # Update current streaks (capped at 5)
+        # SKIP updating streaks if the match outcome was influenced by a forfeit
+        if row.get("match_has_forfeit"):
+            continue
+
         if winner == t_a:
             current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, 5)
             current_streaks[t_b] = 0
@@ -282,7 +288,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "score_a": row.get("score_a", 0),
             "score_b": row.get("score_b", 0),
             "team_a_gen_matches_30d": gen_a_30d["matches"],
-            "team_b_gen_matches_30d": gen_b_30d["matches"]
+            "team_b_gen_matches_30d": gen_b_30d["matches"],
+            "match_has_forfeit": row.get("match_has_forfeit", False)
         }
         
         # 3. Label (What we are predicting)
