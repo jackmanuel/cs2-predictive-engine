@@ -48,9 +48,18 @@ def normalize_format(fmt: str) -> str:
     """Normalises format strings like 'bo3' or 'best_of_3' or 'def'."""
     fmt = str(fmt).lower().strip()
     if "bo3" in fmt or "best of 3" in fmt: return "bo3"
-    if "bo1" in fmt or "def" in fmt or "best of 1" in fmt: return "bo1"
     if "bo5" in fmt or "best of 5" in fmt: return "bo5"
-    return fmt
+    
+    # Specifically flag default (forfeit) wins so they can be excluded
+    if "def" in fmt: return "def"
+    
+    # Map abbreviations for BO1s on HLTV results page
+    # Covers current active duty and common pool maps
+    map_abbreviations = ["mrg", "anc", "inf", "nuke", "anb", "d2", "vtg", "ovp", "trn", "cbl", "cch"]
+    if "bo1" in fmt or "best of 1" in fmt or fmt in map_abbreviations:
+        return "bo1"
+        
+    return "unknown"
 
 def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, mappings, ranks=None, match_format="unknown"):
     """Common logic to extract a map row from HLTV map object."""
@@ -181,6 +190,13 @@ def clean_data():
     logger.info("Starting map-level data cleaning with rank features...")
     df = load_raw_maps()
     if not df.empty:
+        # Exclude forfeit/default wins as they contain no comparative gameplay data
+        initial_count = len(df)
+        df = df[df["match_format"] != "def"]
+        removed = initial_count - len(df)
+        if removed > 0:
+            logger.info(f"Excluded {removed} maps from default/forfeit wins.")
+
         out_path = PROCESSED_DIR / "clean_maps.parquet"
         df.to_parquet(out_path, index=False)
         logger.info(f"Cleaned map data saved to {out_path} with {len(df)} rows.")
