@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass"]
 
 SIMULATIONS = 10000
+TOP_SEQUENCES_DISPLAY = 5
+PERMABAN_THRESHOLD = 0.05
 
 def load_data():
     """Loads the processed match historical data."""
@@ -54,6 +56,9 @@ def get_team_stats(team_id: str, df: pd.DataFrame) -> Dict[str, Dict]:
     # Total unique series played by the team
     total_series = team_df['match_id'].nunique()
     
+    # Filter for series where teams actually pick maps (exclude BO1s)
+    pickable_series = team_df[team_df['match_format'] != 'bo1']['match_id'].nunique()
+    
     if total_series == 0:
         logger.warning(f"Warning: No historical data found for team '{team_id}'. Using default probabilities.")
     
@@ -67,13 +72,13 @@ def get_team_stats(team_id: str, df: pd.DataFrame) -> Dict[str, Dict]:
         wins = len(map_df[map_df['winner_id'] == team_id])
         win_rate = wins / matches_on_map if matches_on_map > 0 else 0.5
         
-        # 2. Pick Rate (Times the map was specifically picked by this team / Total series)
-        # Assuming 'team_a_picked' is True if team_a_id picked it.
+        # 2. Pick Rate (Times the map was specifically picked by this team / Total Pickable series)
+        # We apply Laplace Smoothing (+1/+len(MAP_POOL)) to ensure every map has a baseline weight.
         picks = len(map_df[
             ((map_df['team_a_id'] == team_id) & map_df['team_a_picked']) |
             ((map_df['team_b_id'] == team_id) & map_df['team_b_picked'])
         ])
-        pick_rate = picks / total_series if total_series > 0 else 0.0
+        pick_rate = (picks + 1) / (pickable_series + len(MAP_POOL))
         
         # 3. Play Rate (Maps played / Total series) - used for Permaban Override
         play_rate = matches_on_map / total_series if total_series > 0 else 0.0
@@ -82,22 +87,73 @@ def get_team_stats(team_id: str, df: pd.DataFrame) -> Dict[str, Dict]:
             'win_rate': win_rate,
             'pick_rate': pick_rate,
             'play_rate': play_rate,
-            'loss_rate': 1.0 - win_rate
+            'loss_rate': 1.0 - win_rate,
+            'sample_size': matches_on_map,
+            'picks': picks
         }
+    stats['metadata'] = {
+        'total_series': total_series,
+        'pickable_series': pickable_series
+    }
     return stats
+
+def print_team_summary(team_id: str, stats: dict):
+    """Prints a formatted table of historical statistics for a team."""
+    meta = stats['metadata']
+    print(f"\n HISTORICAL STATS: {team_id}")
+    print(f" Total Series: {meta['total_series']} | Pickable (BO3/BO5): {meta['pickable_series']}")
+    print(f"{'Map Name':12} | {'Win Rate':15} | {'Pick Rate':15} | {'Times Played':12}")
+    print("-" * 65)
+    
+    for m in MAP_POOL:
+        s = stats[m]
+        # Win Rate (Wins / Matches Played on Map)
+        wins = int(round(s['win_rate'] * s['sample_size'])) if s['sample_size'] > 0 else 0
+        wr_val = (s['win_rate'] * 100) if s['sample_size'] > 0 else 0.0
+        wr_str = f"{wr_val:5.1f}% ({wins}/{s['sample_size']})"
+        
+        # Pick Rate (Picks / Pickable Series)
+        pks = s['picks']
+        pr = (pks / meta['pickable_series'] * 100) if meta['pickable_series'] > 0 else 0.0
+        pr_str = f"{pr:5.1f}% ({pks}/{meta['pickable_series']})"
+        
+        print(f"{m:12} | {wr_str:15} | {pr_str:15} | {s['sample_size']:^12}")
+    print("-" * 65)
 
 def get_ban_weight(current_stats, opponent_stats, pool, is_first_ban=False):
     """
     Calculates weights for the Ban Phase: opponent_win_rate + own_loss_rate.
-    Applies Permaban Override (99.9% probability) for maps with < 5% play rate.
+    Applies Permaban Override with Opponent Threat Tiebreaker for maps with low play/pick rates.
     """
-    # Identify maps that meet the permaban criteria (< 5% play rate)
-    permabans = [m for m in pool if current_stats[m]['play_rate'] < 0.05]
+    # Identify maps that meet the permaban criteria (< 0.05 play rate and < 0.01 pick rate)
+    pickable = current_stats['metadata']['pickable_series']
+    permabans = []
+    for m in pool:
+        play_rate = current_stats[m]['play_rate']
+        picks = current_stats[m]['picks']
+        raw_pick_rate = picks / pickable if pickable > 0 else 0.0
+        
+        if play_rate < PERMABAN_THRESHOLD and raw_pick_rate < 0.01:
+            permabans.append(m)
     
     if is_first_ban and permabans:
-        # If permabans exist, they collectively take 99.9% of the probability.
-        # We distribute 1.0 weight to permabans and a negligible amount to others.
-        return [1.0 if m in permabans else (0.001 / len(pool)) for m in pool]
+        # Opponent Threat Tiebreaker with Shared Permaban Bluffing
+        weights = []
+        for m in pool:
+            if m in permabans:
+                # Check for Shared Permaban (Bluffing Logic)
+                # If the opponent also has a play rate < 0.05 on this map, we refuse to ban it,
+                # assuming they will be forced to ban it themselves.
+                if opponent_stats[m]['play_rate'] < PERMABAN_THRESHOLD:
+                    w = 0.0001
+                else:
+                    # Threat Tiebreaker: prioritize banning maps the opponent is statistically proficient at
+                    w = max(opponent_stats[m]['win_rate'], 0.01)
+                weights.append(w)
+            else:
+                # Maps not in the permaban list continue to get negligible weight during this override phase
+                weights.append(0.0001)
+        return weights
     
     # Standard heuristic: opponent_map_win_rate + own_map_loss_rate
     weights = []
@@ -173,6 +229,7 @@ def main():
     parser.add_argument("team_b", help="Name of Team B")
     parser.add_argument("--iters", type=int, default=SIMULATIONS, help="Number of iterations")
     parser.add_argument("--format", choices=["bo1", "bo3", "bo5"], default="bo3", help="Series format")
+    parser.add_argument("--starts-veto", help="Specific team name that starts the veto (defaults to 50/50 random)")
     args = parser.parse_args()
     
     # Load team mappings for name normalization
@@ -185,6 +242,17 @@ def main():
     t_a_id = normalize_name(args.team_a, mappings)
     t_b_id = normalize_name(args.team_b, mappings)
     
+    # Handle Starts Veto Logic
+    start_override = None
+    if args.starts_veto:
+        start_id = normalize_name(args.starts_veto, mappings)
+        if start_id == t_a_id:
+            start_override = "a"
+        elif start_id == t_b_id:
+            start_override = "b"
+        else:
+            logger.warning(f"Warning: --start-veto team '{args.start_veto}' matches neither '{t_a_id}' nor '{t_b_id}'. Using 50/50.")
+
     try:
         df = load_data()
     except Exception as e:
@@ -195,8 +263,17 @@ def main():
     stats_a = get_team_stats(t_a_id, df)
     stats_b = get_team_stats(t_b_id, df)
     
+    # Print Team Summaries
+    print_team_summary(t_a_id, stats_a)
+    print_team_summary(t_b_id, stats_b)
+    
     print(f"\n" + "="*60)
     print(f" MONTE CARLO VETO SIMULATION: {t_a_id} vs {t_b_id} ({args.format.upper()})")
+    if start_override:
+        starter = t_a_id if start_override == "a" else t_b_id
+        print(f" Starting Team: {starter} (Forced)")
+    else:
+        print(f" Starting Team: 50/50 Randomized")
     print(f" Iterations: {args.iters:,}")
     print("="*60)
     
@@ -205,7 +282,19 @@ def main():
     
     # Run the simulation loop
     for _ in range(args.iters):
-        played = simulate_veto(stats_a, stats_b, args.format)
+        # Determine who starts for this iteration
+        if start_override == "a":
+            first, second = stats_a, stats_b
+        elif start_override == "b":
+            first, second = stats_b, stats_a
+        else:
+            # Random selection
+            if random.random() < 0.5:
+                first, second = stats_a, stats_b
+            else:
+                first, second = stats_b, stats_a
+
+        played = simulate_veto(first, second, args.format)
         for m in played:
             map_counts[m] += 1
         
@@ -227,14 +316,14 @@ def main():
     
     print("-" * 60)
     
-    # Display Top 3 Sequences
-    print(f"\nMOST LIKELY MAP SEQUENCES (TOP 3):")
+    # Display Top Sequences
+    print(f"\nMOST LIKELY MAP SEQUENCES (TOP {TOP_SEQUENCES_DISPLAY}):")
     sorted_seqs = sorted(sequence_counts.items(), key=lambda x: x[1], reverse=True)
-    for i, (seq, count) in enumerate(sorted_seqs[:3]):
+    for i, (seq, count) in enumerate(sorted_seqs[:TOP_SEQUENCES_DISPLAY]):
         prob = (count / args.iters) * 100
         print(f" {i+1}. {prob:5.1f}% | {seq}")
 
-    print("\nHeuristics: Ban (Opp Wr + Own Lr), Pick (Own Wr * Own Pr), Permaban (<5% play)")
+    print(f"\nHeuristics: Ban (Bluffing / Threat / Opp Wr + Own Lr), Pick (Own Wr * Own Pr), Permaban (<{PERMABAN_THRESHOLD*100:.0f}% play & <1% pick)")
     print("="*60 + "\n")
 
 if __name__ == "__main__":
