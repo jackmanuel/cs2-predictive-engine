@@ -265,7 +265,11 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
         
         rank_a = latest_ranks.get(t_a_id, {"world": DEFAULT_TEAM_RANK})["world"]
         rank_b = latest_ranks.get(t_b_id, {"world": DEFAULT_TEAM_RANK})["world"]
-        rank_diff = np.log(max(rank_b, 1)) - np.log(max(rank_a, 1))
+        log_a = np.log(max(rank_a, 1))
+        log_b = np.log(max(rank_b, 1))
+        
+        rank_diff = log_b - log_a
+        avg_log_rank = (log_a + log_b) / 2
         
         wr_30d_diff = g_a_30d["win_rate"] - g_b_30d["win_rate"]
         wr_7d_diff = g_a_7d["win_rate"] - g_b_7d["win_rate"]
@@ -328,7 +332,8 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             "map_win_rate_diff": map_wr_diff,
             "map_comfort_diff": map_comfort_diff,
             "dominance_delta": dominance_delta,
-            "resilience_delta": resilience_delta
+            "resilience_delta": resilience_delta,
+            "avg_log_rank": avg_log_rank
         }
         
         # Ensure correct order for the scaler/model

@@ -28,7 +28,8 @@ MODEL_FEATURES = [
     "map_win_rate_diff",
     "map_comfort_diff",
     "dominance_delta",
-    "resilience_delta"
+    "resilience_delta",
+    "avg_log_rank"
 ]
 
 TARGET_COL = "label"
@@ -220,6 +221,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         r_a = max(row["team_a_world_rank"], 1)
         r_b = max(row["team_b_world_rank"], 1)
         rank_diff = np.log(r_b) - np.log(r_a)
+        avg_log_rank = (np.log(r_b) + np.log(r_a)) / 2
         
         wr_30d_diff = gen_a_30d["win_rate"] - gen_b_30d["win_rate"]
         wr_7d_diff = gen_a_7d["win_rate"] - gen_b_7d["win_rate"]
@@ -264,7 +266,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "map_win_rate_diff": map_wr_diff,
             "map_comfort_diff": map_comfort_diff,
             "dominance_delta": dominance_delta,
-            "resilience_delta": resilience_delta
+            "resilience_delta": resilience_delta,
+            "avg_log_rank": avg_log_rank
         }
         
         # 2. Metadata & tracking (Not features, but needed for stats/filters)
