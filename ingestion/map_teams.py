@@ -7,13 +7,14 @@ import argparse
 from typing import List, Dict
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import TEAM_MAPPINGS_FILE, RAW_DIR
 from ingestion.hltv_client import HLTVClient
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-MAPPING_FILE = "data/team_mappings.json"
-PANDASCORE_DATA = "data/raw/matches_20260409.json"
+MAPPING_FILE = TEAM_MAPPINGS_FILE
+PANDASCORE_DATA = RAW_DIR / "matches_20260409.json"
 
 def load_mappings():
     if os.path.exists(MAPPING_FILE):

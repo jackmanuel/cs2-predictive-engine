@@ -14,6 +14,8 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
+HLTV_MATCHES_FILE = RAW_DIR / "hltv_matches.json"
+TEAM_MAPPINGS_FILE = DATA_DIR / "team_mappings.json"
 PROCESSED_DIR = DATA_DIR / "processed"
 CHECKPOINT_DIR = DATA_DIR / "checkpoints"
 

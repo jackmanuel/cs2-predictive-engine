@@ -8,6 +8,7 @@ import argparse
 from typing import List, Dict
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import RAW_DIR, HLTV_MATCHES_FILE
 from ingestion.hltv_client import HLTVClient
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -19,8 +20,8 @@ def main():
     parser.add_argument("--matches", "--count", type=int, default=None, dest="count", help="Stop after scraping this many new matches.")
     args = parser.parse_args()
 
-    os.makedirs("data/raw", exist_ok=True)
-    output_data_file = "data/raw/hltv_matches.json"
+    os.makedirs(RAW_DIR, exist_ok=True)
+    output_data_file = HLTV_MATCHES_FILE
     
     # Load existing scraped data to skip repeats
     scraped_data = []
@@ -64,10 +65,10 @@ def main():
                     s_url = map_obj.get('stats_url')
                     if s_url:
                         map_stats = hltv.fetch_map_stats(s_url)
-                        map_obj['round_history'] = map_stats['rounds']
-                        map_obj['player_stats'] = map_stats['player_stats']
+                        map_obj['round_history'] = map_stats.get('round_history', "")
+                        map_obj['player_stats'] = map_stats.get('player_stats', [])
                     else:
-                        map_obj['round_history'] = []
+                        map_obj['round_history'] = ""
                         map_obj['player_stats'] = []
                  
                 match['match_info'] = details.get('match_info', [])

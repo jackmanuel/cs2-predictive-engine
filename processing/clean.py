@@ -8,12 +8,12 @@ import pandas as pd
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import RAW_DIR, PROCESSED_DIR, DATA_DIR, DEFAULT_TEAM_RANK
+from config import RAW_DIR, PROCESSED_DIR, DATA_DIR, DEFAULT_TEAM_RANK, HLTV_MATCHES_FILE, TEAM_MAPPINGS_FILE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-MAPPING_FILE = DATA_DIR / "team_mappings.json"
+MAPPING_FILE = TEAM_MAPPINGS_FILE
 
 def load_mappings() -> dict:
     if MAPPING_FILE.exists():
@@ -152,7 +152,7 @@ def load_raw_maps() -> pd.DataFrame:
     mappings = load_mappings()
     
     # Pure HLTV files (Canonical Source)
-    hltv_pure_path = RAW_DIR / "hltv_matches.json"
+    hltv_pure_path = HLTV_MATCHES_FILE
     if hltv_pure_path.exists():
         with open(hltv_pure_path, "r", encoding="utf-8") as f:
             hltv_data = json.load(f)

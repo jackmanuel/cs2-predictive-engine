@@ -376,7 +376,7 @@ class HLTVClient:
         and map-specific player stats.
         """
         if not self.driver or not stats_url:
-             return {"rounds": [], "player_stats": []}
+             return {"round_history": "", "player_stats": []}
              
         logger.info(f"Fetching map stats from: {stats_url}")
         self.driver.get(stats_url)
@@ -385,7 +385,7 @@ class HLTVClient:
         soup = BeautifulSoup(self.driver.page_source, 'html.parser')
         
         # 1. Round history (Can be multiple containers if there was OT)
-        rounds = []
+        round_history = ""
         rh_cons = soup.find_all('div', class_='round-history-con')
         for rh_con in rh_cons:
             team_rows = rh_con.find_all('div', class_='round-history-team-row')
@@ -416,12 +416,7 @@ class HLTVClient:
                             elif 'terrorist' in outcome_title.lower(): winner_side = 'T'
                     
                     if winner_team:
-                        rounds.append({
-                            "round_num": len(rounds) + 1,
-                            "winner": winner_team,
-                            "winner_side": winner_side,
-                            "outcome": outcome_title
-                        })
+                        round_history += "1" if winner_team == "Team1" else "2"
         
         # 2. Player Stats (Map specific)
         player_stats = []
@@ -479,7 +474,7 @@ class HLTVClient:
 
         time.sleep(random.uniform(2.0, 4.0))
         return {
-            "rounds": rounds,
+            "round_history": round_history,
             "player_stats": player_stats
         }
 
