@@ -217,7 +217,47 @@ def simulate_veto(stats_a: dict, stats_b: dict, series_format: str = "bo3") -> L
     played_maps.append(pool[0])
     return played_maps
 
+def run_simulations(stats_a: dict, stats_b: dict, iters: int = 10000, series_format: str = "bo3", starts_veto: str = None):
+    """
+    Runs multiple Monte Carlo simulations of the map veto process.
+    Returns sequence_counts (dict) and map_counts (dict).
+    """
+    map_counts = {m: 0 for m in MAP_POOL}
+    sequence_counts = {}
+    
+    # Handle Starts Veto Logic
+    start_override = None
+    if starts_veto:
+        if starts_veto.lower() in ["a", "team_a"]:
+            start_override = "a"
+        elif starts_veto.lower() in ["b", "team_b"]:
+            start_override = "b"
+
+    # Run the simulation loop
+    for _ in range(iters):
+        # Determine who starts for this iteration
+        if start_override == "a":
+            first, second = stats_a, stats_b
+        elif start_override == "b":
+            first, second = stats_b, stats_a
+        else:
+            # Random selection
+            if random.random() < 0.5:
+                first, second = stats_a, stats_b
+            else:
+                first, second = stats_b, stats_a
+
+        played = simulate_veto(first, second, series_format)
+        for m in played:
+            map_counts[m] += 1
+        
+        seq_str = ",".join(played)
+        sequence_counts[seq_str] = sequence_counts.get(seq_str, 0) + 1
+        
+    return sequence_counts, map_counts
+
 def main():
+
     parser = argparse.ArgumentParser(description="Monte Carlo Map Veto Simulation for CS2")
     parser.add_argument("team_a", help="Name of Team A")
     parser.add_argument("team_b", help="Name of Team B")
@@ -263,6 +303,7 @@ def main():
     
     print(f"\n" + "="*60)
     print(f" MONTE CARLO VETO SIMULATION: {t_a_id} vs {t_b_id} ({args.format.upper()})")
+    
     if start_override:
         starter = t_a_id if start_override == "a" else t_b_id
         print(f" Starting Team: {starter} (Forced)")
@@ -271,29 +312,10 @@ def main():
     print(f" Iterations: {args.iters:,}")
     print("="*60)
     
-    map_counts = {m: 0 for m in MAP_POOL}
-    sequence_counts = {}
-    
-    # Run the simulation loop
-    for _ in range(args.iters):
-        # Determine who starts for this iteration
-        if start_override == "a":
-            first, second = stats_a, stats_b
-        elif start_override == "b":
-            first, second = stats_b, stats_a
-        else:
-            # Random selection
-            if random.random() < 0.5:
-                first, second = stats_a, stats_b
-            else:
-                first, second = stats_b, stats_a
-
-        played = simulate_veto(first, second, args.format)
-        for m in played:
-            map_counts[m] += 1
-        
-        seq_str = ",".join(played)
-        sequence_counts[seq_str] = sequence_counts.get(seq_str, 0) + 1
+    # Run simulation
+    sequence_counts, map_counts = run_simulations(
+        stats_a, stats_b, iters=args.iters, series_format=args.format, starts_veto=start_override
+    )
             
     # Sort results by probability
     sorted_results = sorted(map_counts.items(), key=lambda x: x[1], reverse=True)

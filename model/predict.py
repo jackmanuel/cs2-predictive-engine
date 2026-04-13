@@ -15,6 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROCESSED_DIR, DATA_DIR, CHECKPOINT_DIR, ROLLING_WINDOW_DAYS, DEFAULT_TEAM_RANK
 from model.net import MatchPredictor
 from processing.features import MODEL_FEATURES
+import model.veto_sim as veto_sim
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -211,60 +212,46 @@ def combine_probs(probs: List[float], bo: int) -> float:
     # Series win probability is the sum of winning 'wins_needed' or more maps
     return sum(dp[wins_needed:])
 
-def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_override: str = "neutral"):
-    mappings = load_mappings()
-    t_a_id = normalize_name(team_raw_a, mappings)
-    t_b_id = normalize_name(team_raw_b, mappings)
-    
-    gen_histories, map_histories, latest_ranks, h2h_stats, latest_streaks, team_fpicks, team_tseries = load_latest_state()
-    
-    # Load model and scaler
-    scaler_path = CHECKPOINT_DIR / "scaler.pkl"
-    model_path = CHECKPOINT_DIR / "best_mvp_model.pt"
-    if not scaler_path.exists() or not model_path.exists():
-        logger.error("Model or Scaler not found. Ensure training has completed.")
-        return
+class PredictorContext:
+    """
+    Holds the loaded state, model, and scaler to allow for efficient batch 
+    predictions without reloading data from disk repeatedly.
+    """
+    def __init__(self):
+        self.mappings = load_mappings()
+        self.gen_histories, self.map_histories, self.latest_ranks, self.h2h_stats, \
+        self.latest_streaks, self.team_fpicks, self.team_tseries = load_latest_state()
         
-    scaler = joblib.load(scaler_path)
-    model = MatchPredictor(scaler.n_features_in_)
-    model.load_state_dict(torch.load(model_path, weights_only=True, map_location=torch.device('cpu')))
-    model.eval()
+        scaler_path = CHECKPOINT_DIR / "scaler.pkl"
+        model_path = CHECKPOINT_DIR / "best_mvp_model.pt"
+        if not scaler_path.exists() or not model_path.exists():
+            raise FileNotFoundError("Model or Scaler not found. Ensure training has completed.")
+            
+        self.scaler = joblib.load(scaler_path)
+        self.model = MatchPredictor(self.scaler.n_features_in_)
+        self.model.load_state_dict(torch.load(model_path, weights_only=True, map_location=torch.device('cpu')))
+        self.model.eval()
 
+def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps: List[str], picker_override: str = "neutral") -> List[float]:
+    """
+    Calculates map-level win probabilities for a given matchup and map set.
+    """
     now = pd.to_datetime(datetime.now(timezone.utc))
-    
-    # ANSI escape codes for coloring
-    RED = "\033[91m"
-    RESET = "\033[0m"
-
-    print("\n" + "="*60)
-    print(f" PREDICTION: {t_a_id} vs {t_b_id}")
-    print("="*60)
-
-    # Global team sample size info
-    g_a_30d = get_recent_stats(gen_histories.get(t_a_id, []), now, 30)
-    g_b_30d = get_recent_stats(gen_histories.get(t_b_id, []), now, 30)
-    
-    for tid, stats in [(t_a_id, g_a_30d), (t_b_id, g_b_30d)]:
-        count = stats["matches"]
-        msg = f"{tid}: {count} maps in 30d window"
-        if count < 10:
-            print(f"{RED}{msg} (LOW SAMPLE SIZE){RESET}")
-        else:
-            print(msg)
-    print("-" * 60)
-
     map_probs = []
     
+    # Pre-calculate global 30d stats for both teams (used multiple times)
+    g_a_30d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, 30)
+    g_b_30d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, 30)
+
     for i, m_name in enumerate(maps):
-        # Calculate features (MATCHES features.py compute_features)
-        g_a_7d = get_recent_stats(gen_histories.get(t_a_id, []), now, 7)
-        g_b_7d = get_recent_stats(gen_histories.get(t_b_id, []), now, 7)
+        g_a_7d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, 7)
+        g_b_7d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, 7)
         
-        s_a = latest_streaks.get(t_a_id, 0)
-        s_b = latest_streaks.get(t_b_id, 0)
+        s_a = ctx.latest_streaks.get(t_a_id, 0)
+        s_b = ctx.latest_streaks.get(t_b_id, 0)
         
-        rank_a = latest_ranks.get(t_a_id, {"world": DEFAULT_TEAM_RANK})["world"]
-        rank_b = latest_ranks.get(t_b_id, {"world": DEFAULT_TEAM_RANK})["world"]
+        rank_a = ctx.latest_ranks.get(t_a_id, {"world": DEFAULT_TEAM_RANK})["world"]
+        rank_b = ctx.latest_ranks.get(t_b_id, {"world": DEFAULT_TEAM_RANK})["world"]
         log_a = np.log(max(rank_a, 1))
         log_b = np.log(max(rank_b, 1))
         
@@ -275,8 +262,8 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
         wr_7d_diff = g_a_7d["win_rate"] - g_b_7d["win_rate"]
         
         h2h_key = tuple(sorted([str(t_a_id), str(t_b_id)]))
-        h2h_a = h2h_stats.get(h2h_key, {}).get(t_a_id, 0)
-        h2h_b = h2h_stats.get(h2h_key, {}).get(t_b_id, 0)
+        h2h_a = ctx.h2h_stats.get(h2h_key, {}).get(t_a_id, 0)
+        h2h_b = ctx.h2h_stats.get(h2h_key, {}).get(t_b_id, 0)
         
         is_a_picker = 0
         is_b_picker = 0
@@ -294,31 +281,27 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             is_a_picker = 1 if i == 0 else 0
             is_b_picker = 1 if i == 1 else 0
 
-        # Map-Specific Win Rate (90d for features, 30d for warning)
-        m_a_90d = get_recent_stats(map_histories.get(t_a_id, {}).get(m_name, []), now, 90)
-        m_b_90d = get_recent_stats(map_histories.get(t_b_id, {}).get(m_name, []), now, 90)
-        m_a_30d_matches = get_recent_stats(map_histories.get(t_a_id, {}).get(m_name, []), now, 30)["matches"]
-        m_b_30d_matches = get_recent_stats(map_histories.get(t_b_id, {}).get(m_name, []), now, 30)["matches"]
-        
+        # Map-Specific Win Rate (90d)
+        m_a_90d = get_recent_stats(ctx.map_histories.get(t_a_id, {}).get(m_name, []), now, 90)
+        m_b_90d = get_recent_stats(ctx.map_histories.get(t_b_id, {}).get(m_name, []), now, 90)
         map_wr_diff = m_a_90d["win_rate"] - m_b_90d["win_rate"]
         
         # Map Comfort (30d)
         def get_comfort(tid, m_n):
             cutoff = now - pd.Timedelta(days=30)
-            picks = len([d for d in team_fpicks.get(tid, {}).get(m_n, []) if d >= cutoff])
-            total = len([d for d in team_tseries.get(tid, []) if d >= cutoff])
+            picks = len([d for d in ctx.team_fpicks.get(tid, {}).get(m_n, []) if d >= cutoff])
+            total = len([d for d in ctx.team_tseries.get(tid, []) if d >= cutoff])
             return picks / total if total > 0 else 0.0
             
         map_comfort_diff = get_comfort(t_a_id, m_name) - get_comfort(t_b_id, m_name)
         
         # Dominance & Resilience (30-day window)
-        dom_a = get_dominance_metrics(gen_histories.get(t_a_id, []), now, 30)
-        dom_b = get_dominance_metrics(gen_histories.get(t_b_id, []), now, 30)
+        dom_a = get_dominance_metrics(ctx.gen_histories.get(t_a_id, []), now, 30)
+        dom_b = get_dominance_metrics(ctx.gen_histories.get(t_b_id, []), now, 30)
         
         dominance_delta = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
         resilience_delta = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
 
-        # Construct feature vector using the architecture-defined order
         feat_vals = {
             "rank_diff": rank_diff,
             "win_rate_30d_diff": wr_30d_diff,
@@ -336,13 +319,111 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
             "avg_log_rank": avg_log_rank
         }
         
-        # Ensure correct order for the scaler/model
         f_vec = np.array([[feat_vals[col] for col in MODEL_FEATURES]], dtype=np.float32)
-        
-        scaled_f = scaler.transform(f_vec)
+        scaled_f = ctx.scaler.transform(f_vec)
         with torch.no_grad():
-            p_a = model(torch.tensor(scaled_f, dtype=torch.float32)).item()
+            p_a = ctx.model(torch.tensor(scaled_f, dtype=torch.float32)).item()
             map_probs.append(p_a)
+            
+    return map_probs
+
+def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", threshold=0.90, iters=10000, starts_veto=None):
+    """
+    Calculates the Expected Series Win Probability by mating the Veto Simulator
+    and the Neural Network Predictor using the Law of Total Probability.
+    """
+    # 1. Initialize Predictor context (expensive state load)
+    ctx = PredictorContext()
+    t_a_id = normalize_name(team_a_raw, ctx.mappings)
+    t_b_id = normalize_name(team_b_raw, ctx.mappings)
+
+    # 2. Run Veto simulation to get path probabilities
+    # We need the stats format expected by veto_sim.run_simulations
+    veto_df = veto_sim.load_data()
+    stats_a = veto_sim.get_team_stats(t_a_id, veto_df)
+    stats_b = veto_sim.get_team_stats(t_b_id, veto_df)
+    
+    sequence_counts, _ = veto_sim.run_simulations(
+        stats_a, stats_b, iters=iters, series_format=series_format, starts_veto=starts_veto
+    )
+    
+    # 3. Sort paths and truncate based on threshold
+    sorted_paths = sorted(sequence_counts.items(), key=lambda x: x[1], reverse=True)
+    selected_paths = []
+    cumulative_count = 0
+    
+    for path_str, count in sorted_paths:
+        selected_paths.append((path_str, count))
+        cumulative_count += count
+        if (cumulative_count / iters) >= threshold:
+            break
+            
+    # 4. Normalize probabilities and calculate expected win prob
+    expected_win_prob = 0.0
+    bo = int(series_format.replace("bo", ""))
+    
+    for path_str, count in selected_paths:
+        path_prob_norm = count / cumulative_count # Normalization: P(Path) / Sum(Selected Path Probs)
+        maps = path_str.split(",")
+        
+        # Fetch map-level win probabilities from NN
+        # For BO3/BO5, map order in path_str determines the picker
+        map_probs = get_win_probabilities(ctx, t_a_id, t_b_id, maps)
+        
+        # Conditional series win probability: P(Win | Path)
+        p_win_given_path = combine_probs(map_probs, bo)
+        
+        # Law of Total Probability contribution
+        expected_win_prob += p_win_given_path * path_prob_norm
+        
+    return {
+        "expected_win_prob": expected_win_prob,
+        "sequence_counts": sequence_counts,
+        "team_a_id": t_a_id,
+        "team_b_id": t_b_id,
+        "predictor_ctx": ctx
+    }
+
+def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_override: str = "neutral"):
+    try:
+        ctx = PredictorContext()
+    except Exception as e:
+        logger.error(f"Error initializing predictor: {e}")
+        return
+
+    t_a_id = normalize_name(team_raw_a, ctx.mappings)
+    t_b_id = normalize_name(team_raw_b, ctx.mappings)
+    
+    now = pd.to_datetime(datetime.now(timezone.utc))
+    
+    # ANSI escape codes for coloring
+    RED = "\033[91m"
+    RESET = "\033[0m"
+
+    print("\n" + "="*60)
+    print(f" PREDICTION: {t_a_id} vs {t_b_id}")
+    print("="*60)
+
+    # Global team sample size info
+    g_a_30d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, 30)
+    g_b_30d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, 30)
+    
+    for tid, stats in [(t_a_id, g_a_30d), (t_b_id, g_b_30d)]:
+        count = stats["matches"]
+        msg = f"{tid}: {count} maps in 30d window"
+        if count < 10:
+            print(f"{RED}{msg} (LOW SAMPLE SIZE){RESET}")
+        else:
+            print(msg)
+    print("-" * 60)
+
+    map_probs = get_win_probabilities(ctx, t_a_id, t_b_id, maps, picker_override)
+    
+    for i, m_name in enumerate(maps):
+        p_a = map_probs[i]
+        
+        m_a_30d_matches = get_recent_stats(ctx.map_histories.get(t_a_id, {}).get(m_name, []), now, 30)["matches"]
+        m_b_30d_matches = get_recent_stats(ctx.map_histories.get(t_b_id, {}).get(m_name, []), now, 30)["matches"]
         
         cnt_a_txt = f"({m_a_30d_matches} maps)"
         if m_a_30d_matches < 3: cnt_a_txt = f"{RED}{cnt_a_txt}{RESET}"
@@ -353,7 +434,9 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
         print(f"[{m_name:10}] {t_a_id}: {p_a*100:5.1f}% {cnt_a_txt} | {t_b_id}: {(1-p_a)*100:5.1f}% {cnt_b_txt}")
 
     if len(maps) > 1:
-        series_prob_a = combine_probs(map_probs, len(maps))
+        bo = len(maps)
+        # Handle cases where maps input might not perfectly match bo3/bo5 but we use map count as bo
+        series_prob_a = combine_probs(map_probs, bo)
         print("-" * 60)
         print(f"SERIES WIN PROBABILITY: {t_a_id} {series_prob_a*100:.1f}%")
     
