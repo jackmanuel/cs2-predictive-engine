@@ -146,8 +146,11 @@ def main():
         
         # Filter Predetermined matches
         t1_low, t2_low = team_a.lower(), team_b.lower()
-        if any(x in t1_low or x in t2_low for x in ["unknown", "tbd"]):
-            logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Undetermined participants)")
+        is_undetermined = any(x in t1_low or x in t2_low for x in ["unknown", "tbd"])
+        is_placeholder = any(re.search(r'.+/.+ (winner|loser)', t) for t in [t1_low, t2_low])
+
+        if is_undetermined or is_placeholder:
+            logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Undetermined/Placeholder participants)")
             continue
 
         fmt = match['format']
