@@ -10,14 +10,14 @@
             <div class="logo-box">
                 <img src="{t1_logo}" alt="{team1}" onerror="this.src='https://www.hltv.org/img/static/team/placeholder.svg'">
             </div>
-            <span class="team-name">{team1}</span>
+            <span class="team-name">{team1}{value_badge1}</span>
         </div>
         <div class="vs">VS</div>
         <div class="team">
             <div class="logo-box">
                 <img src="{t2_logo}" alt="{team2}" onerror="this.src='https://www.hltv.org/img/static/team/placeholder.svg'">
             </div>
-            <span class="team-name">{team2}</span>
+            <span class="team-name">{team2}{value_badge2}</span>
         </div>
     </div>
     
@@ -25,10 +25,12 @@
         <div class="bar-labels">
             <div>
                 <span>{prob1_str}</span>
+                <div class="edge-label {edge1_class}">{edge1_str} Edge</div>
                 <div class="bar-label-sub">{team1_short}</div>
             </div>
             <div style="text-align: right">
                 <span>{prob2_str}</span>
+                <div class="edge-label {edge2_class}">{edge2_str} Edge</div>
                 <div class="bar-label-sub">{team2_short}</div>
             </div>
         </div>

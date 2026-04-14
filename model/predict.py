@@ -326,13 +326,15 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             
     return map_probs
 
-def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", threshold=0.90, iters=10000, starts_veto=None):
+def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", threshold=0.90, iters=10000, starts_veto=None, ctx=None):
     """
     Calculates the Expected Series Win Probability by mating the Veto Simulator
     and the Neural Network Predictor using the Law of Total Probability.
     """
     # 1. Initialize Predictor context (expensive state load)
-    ctx = PredictorContext()
+    if ctx is None:
+        ctx = PredictorContext()
+        
     t_a_id = normalize_name(team_a_raw, ctx.mappings)
     t_b_id = normalize_name(team_b_raw, ctx.mappings)
 

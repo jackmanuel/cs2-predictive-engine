@@ -397,10 +397,22 @@ class HLTVClient:
         """
         soup = BeautifulSoup(html, 'html.parser')
         matches = []
+        seen_ids = set()
         
         # Each match is in a match-wrapper
         match_wrappers = soup.find_all('div', class_='match-wrapper')
         for wrapper in match_wrappers:
+            match_id = wrapper.get('data-match-id')
+            if not match_id:
+                # Some placeholders or live matches might lack IDs; 
+                # use URL as fallback if possible or skip
+                anchor = wrapper.find('a', href=True)
+                match_id = anchor['href'] if anchor else None
+            
+            if match_id in seen_ids:
+                continue
+            seen_ids.add(match_id)
+
             match_data = {}
             
             # Match URL and IDs

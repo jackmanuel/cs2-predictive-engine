@@ -131,7 +131,14 @@ def main():
 
     logger.info(f"Found {len(matches)} matches. Starting predictions...")
 
-    cards_html_list = []
+    from model.predict import PredictorContext
+    try:
+        shared_ctx = PredictorContext()
+    except Exception as e:
+        logger.error(f"Failed to initialize predictor context: {e}")
+        sys.exit(1)
+
+    match_results = []
 
     for i, match in enumerate(matches):
         team_a = match['team1']
@@ -158,77 +165,141 @@ def main():
                 team_b, 
                 series_format=fmt, 
                 threshold=args.threshold, 
-                iters=args.iters
+                iters=args.iters,
+                ctx=shared_ctx
             )
             
-            prob = results["expected_win_prob"]
+            prob1 = results["expected_win_prob"]
+            prob2 = 1.0 - prob1
             t_a_id = results["team_a_id"]
             t_b_id = results["team_b_id"]
-            ctx = results["predictor_ctx"]
             seq_counts = results["sequence_counts"]
             
             # Odds Calculation
             o1 = match.get('odds1')
             o2 = match.get('odds2')
-            implied_p1, implied_p2 = convert_odds_to_prob(o1, o2)
             
-            odds_section = ""
-            if implied_p1 and implied_p2:
-                odds_section = simple_format(ODDS_SECTION_TEMPLATE,
-                    imp1_str=f"{implied_p1:.1f}%", 
-                    imp2_str=f"{implied_p2:.1f}%", 
-                    o1_str=f"{o1:.2f}", 
-                    o2_str=f"{o2:.2f}"
-                )
-            else:
-                odds_section = NO_ODDS_SECTION_TEMPLATE
+            # Normalised (Implied)
+            imp1, imp2 = convert_odds_to_prob(o1, o2)
+            
+            # Unnormalised (Raw)
+            unnorm1, unnorm2 = None, None
+            if o1 and o2:
+                unnorm1 = (1.0 / o1) * 100
+                unnorm2 = (1.0 / o2) * 100
 
-            # Top Vetoes
-            veto_items = ""
-            sorted_seqs = sorted(seq_counts.items(), key=lambda x: x[1], reverse=True)[:3]
-            for seq, count in sorted_seqs:
-                s_prob = (count / args.iters) * 100
-                
-                # Create map thumbnails and formatted name string
-                map_names = [m.strip() for m in seq.split(",")]
-                formatted_names = " → ".join(map_names)
-                
-                map_thumbs = ""
-                for mname in map_names:
-                    m_key = mname.lower().replace(" ", "")
-                    fname = MAP_FILENAME_MAP.get(m_key, "placeholder.png")
-                    path = f"static/maps/{fname}"
-                    map_thumbs += f'<img src="{path}" class="map-thumb" alt="{mname}" title="{mname}">'
-                
-                veto_items += simple_format(VETO_ITEM_TEMPLATE,
-                    s_prob_str=f"{s_prob:5.1f}%",
-                    formatted_names=formatted_names,
-                    map_thumbs=map_thumbs
-                )
-
-            # Build Match Entry
-            card = simple_format(MATCH_CARD_TEMPLATE,
-                url=match_url,
-                event=match.get('id', 'Match'), # Could use actual event name if we scrape it
-                format=fmt.upper(),
-                team1=team_a,
-                team2=team_b,
-                t1_logo=match.get('team1_logo', ''),
-                t2_logo=match.get('team2_logo', ''),
-                prob1_str=f"{prob*100:.1f}%",
-                prob2_str=f"{(1-prob)*100:.1f}%",
-                prob1_style=f'style="width: {prob*100:.1f}%"',
-                team1_short=t_a_id[:12],
-                team2_short=t_b_id[:12],
-                odds_section=odds_section,
-                veto_items=veto_items,
-                t1_maps=len(ctx.gen_histories.get(t_a_id, [])),
-                t2_maps=len(ctx.gen_histories.get(t_b_id, []))
-            )
-            cards_html_list.append(card)
+            # Calculate Edge (Model Prob - Unnormalised Prob)
+            edge1 = (prob1 * 100) - unnorm1 if unnorm1 is not None else -100
+            edge2 = (prob2 * 100) - unnorm2 if unnorm2 is not None else -100
+            
+            max_edge = max(edge1, edge2)
+            is_value_t1 = edge1 > 2.0 # 2% threshold for "value"
+            is_value_t2 = edge2 > 2.0
+            
+            match_results.append({
+                "match": match,
+                "team_a": team_a,
+                "team_b": team_b,
+                "t1_logo": match.get('team1_logo', ''),
+                "t2_logo": match.get('team2_logo', ''),
+                "t_a_id": t_a_id,
+                "t_b_id": t_b_id,
+                "fmt": fmt,
+                "prob1": prob1,
+                "prob2": prob2,
+                "o1": o1,
+                "o2": o2,
+                "imp1": imp1,
+                "imp2": imp2,
+                "unnorm1": unnorm1,
+                "unnorm2": unnorm2,
+                "edge1": edge1,
+                "edge2": edge2,
+                "max_edge": max_edge,
+                "is_value_t1": is_value_t1,
+                "is_value_t2": is_value_t2,
+                "seq_counts": seq_counts
+            })
 
         except Exception as e:
             logger.error(f"Error predicting {team_a} vs {team_b}: {e}")
+
+    # Sort by model predicted edge
+    match_results.sort(key=lambda x: x['max_edge'], reverse=True)
+
+    cards_html_list = []
+    for item in match_results:
+        # Odds Section
+        odds_section = ""
+        if item['imp1'] and item['imp2']:
+            odds_section = simple_format(ODDS_SECTION_TEMPLATE,
+                imp1_str=f"{item['imp1']:.1f}%", 
+                imp2_str=f"{item['imp2']:.1f}%", 
+                unnorm1_str=f"{item['unnorm1']:.1f}%",
+                unnorm2_str=f"{item['unnorm2']:.1f}%",
+                o1_str=f"{item['o1']:.2f}", 
+                o2_str=f"{item['o2']:.2f}"
+            )
+        else:
+            odds_section = NO_ODDS_SECTION_TEMPLATE
+
+        # Top Vetoes
+        veto_items = ""
+        sorted_seqs = sorted(item['seq_counts'].items(), key=lambda x: x[1], reverse=True)[:3]
+        for seq, count in sorted_seqs:
+            s_prob = (count / args.iters) * 100
+            map_names = [m.strip() for m in seq.split(",")]
+            formatted_names = " → ".join(map_names)
+            
+            map_thumbs = ""
+            for mname in map_names:
+                m_key = mname.lower().replace(" ", "")
+                fname = MAP_FILENAME_MAP.get(m_key, "placeholder.png")
+                path = f"static/maps/{fname}"
+                map_thumbs += f'<img src="{path}" class="map-thumb" alt="{mname}" title="{mname}">'
+            
+            veto_items += simple_format(VETO_ITEM_TEMPLATE,
+                s_prob_str=f"{s_prob:5.1f}%",
+                formatted_names=formatted_names,
+                map_thumbs=map_thumbs
+            )
+
+        # Value Badges
+        value_badge1 = '<span class="value-badge">BEST VALUE</span>' if item['is_value_t1'] else ""
+        value_badge2 = '<span class="value-badge">BEST VALUE</span>' if item['is_value_t2'] else ""
+
+        # Edge Labels
+        edge1_class = "edge-pos" if item['edge1'] > 0 else "edge-neg"
+        edge2_class = "edge-pos" if item['edge2'] > 0 else "edge-neg"
+        edge1_str = f"{item['edge1']:+.1f}%" if item['unnorm1'] is not None else "N/A"
+        edge2_str = f"{item['edge2']:+.1f}%" if item['unnorm2'] is not None else "N/A"
+
+        # Build Match Entry
+        card = simple_format(MATCH_CARD_TEMPLATE,
+            url=item['match']['url'],
+            event=item['match'].get('id', 'Match'),
+            format=item['fmt'].upper(),
+            team1=item['team_a'],
+            team2=item['team_b'],
+            t1_logo=item['t1_logo'],
+            t2_logo=item['t2_logo'],
+            prob1_str=f"{item['prob1']*100:.1f}%",
+            prob2_str=f"{item['prob2']*100:.1f}%",
+            edge1_str=edge1_str,
+            edge2_str=edge2_str,
+            edge1_class=edge1_class,
+            edge2_class=edge2_class,
+            prob1_style=f'style="width: {item['prob1']*100:.1f}%"',
+            team1_short=item['t_a_id'][:12],
+            team2_short=item['t_b_id'][:12],
+            odds_section=odds_section,
+            veto_items=veto_items,
+            t1_maps=len(shared_ctx.gen_histories.get(item['t_a_id'], [])),
+            t2_maps=len(shared_ctx.gen_histories.get(item['t_b_id'], [])),
+            value_badge1=value_badge1,
+            value_badge2=value_badge2
+        )
+        cards_html_list.append(card)
 
     # Final HTML assembly
     final_html = simple_format(HTML_TEMPLATE,

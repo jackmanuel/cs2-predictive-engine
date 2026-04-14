@@ -16,6 +16,7 @@
             --success: #22c55e;
             --danger: #ef4444;
             --gold: #fbbf24;
+            --toggle-bg: #334155;
         }
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -27,6 +28,70 @@
             padding: 2rem;
             min-height: 100vh;
         }
+
+        /* Odds Toggle Switch */
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+            justify-content: flex-end;
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 22px;
+        }
+
+        .switch input { opacity: 0; width: 0; height: 0; }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: var(--toggle-bg);
+            transition: .4s;
+            border-radius: 22px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider { background-color: var(--accent-primary); }
+        input:checked + .slider:before { transform: translateX(22px); }
+
+        .value-badge {
+            background: linear-gradient(135deg, var(--gold), #f59e0b);
+            color: #000;
+            font-size: 0.65rem;
+            font-weight: 900;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            display: inline-block;
+        }
+
+        [data-odds-type="unnorm"] { display: none; }
+        .show-unnorm [data-odds-type="unnorm"] { display: block; }
+        .show-unnorm [data-odds-type="norm"] { display: none; }
         
         .container { max-width: 1200px; margin: 0 auto; }
         
@@ -91,6 +156,10 @@
             color: var(--text-main);
             font-weight: 700;
         }
+
+        .edge-label { font-size: 0.9rem; font-weight: 800; display: block; margin-top: 0.2rem; }
+        .edge-pos { color: var(--success); }
+        .edge-neg { color: var(--text-dim); font-weight: 400; opacity: 0.7; }
         
         .teams-area {
             display: flex;
@@ -283,6 +352,14 @@
                 <p style="color: var(--text-dim); font-weight: 500; font-size: 1.1rem;">Intel-Driven Veto & Win Probability Analysis</p>
             </div>
             <div class="meta-info">
+                <div class="toggle-container">
+                    <span>Unnormalised</span>
+                    <label class="switch">
+                        <input type="checkbox" id="odds-toggle" checked>
+                        <span class="slider round"></span>
+                    </label>
+                    <span>Normalised</span>
+                </div>
                 <p>Generated: {gen_time}</p>
                 <p>MC Sim: {iters:,} iters | {threshold_pct:.0f}% Threshold</p>
             </div>
@@ -292,5 +369,18 @@
             {cards_html}
         </div>
     </div>
+
+    <script>
+        const toggle = document.getElementById('odds-toggle');
+        const body = document.body;
+
+        toggle.addEventListener('change', () => {
+            if (toggle.checked) {
+                body.classList.remove('show-unnorm');
+            } else {
+                body.classList.add('show-unnorm');
+            }
+        });
+    </script>
 </body>
 </html>
