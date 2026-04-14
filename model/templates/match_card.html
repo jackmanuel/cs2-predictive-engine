@@ -1,0 +1,61 @@
+<div class="match-card">
+    <a href="{url}" target="_blank" class="match-link"></a>
+    <div class="card-header">
+        <span>{event}</span>
+        <span class="format-badge">{format}</span>
+    </div>
+    
+    <div class="teams-area">
+        <div class="team">
+            <div class="logo-box">
+                <img src="{t1_logo}" alt="{team1}" onerror="this.src='https://www.hltv.org/img/static/team/placeholder.svg'">
+            </div>
+            <span class="team-name">{team1}</span>
+        </div>
+        <div class="vs">VS</div>
+        <div class="team">
+            <div class="logo-box">
+                <img src="{t2_logo}" alt="{team2}" onerror="this.src='https://www.hltv.org/img/static/team/placeholder.svg'">
+            </div>
+            <span class="team-name">{team2}</span>
+        </div>
+    </div>
+    
+    <div class="prob-bar-container">
+        <div class="bar-labels">
+            <div>
+                <span>{prob1_str}</span>
+                <div class="bar-label-sub">{team1_short}</div>
+            </div>
+            <div style="text-align: right">
+                <span>{prob2_str}</span>
+                <div class="bar-label-sub">{team2_short}</div>
+            </div>
+        </div>
+        <div class="progress-track">
+            <div class="progress-fill" {prob1_style}></div>
+        </div>
+    </div>
+    
+    {odds_section}
+    
+    <div class="prediction-details">
+        <div class="detail-box">
+            <div class="detail-title">Top Veto Sequences</div>
+            <ul class="veto-list">
+                {veto_items}
+            </ul>
+        </div>
+        <div class="detail-box">
+            <div class="detail-title">Dataset Stats</div>
+            <div class="stat-row">
+                <span>{team1_short} Maps</span>
+                <span class="stat-val">{t1_maps}</span>
+            </div>
+            <div class="stat-row">
+                <span>{team2_short} Maps</span>
+                <span class="stat-val">{t2_maps}</span>
+            </div>
+        </div>
+    </div>
+</div>

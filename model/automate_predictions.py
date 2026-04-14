@@ -17,352 +17,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- HTML Template ---
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CS2 Series Predictions</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        :root {{
-            --bg-color: #0f172a;
-            --card-bg: #1e293b;
-            --text-main: #f8fafc;
-            --text-dim: #94a3b8;
-            --accent-primary: #38bdf8;
-            --accent-secondary: #818cf8;
-            --success: #22c55e;
-            --danger: #ef4444;
-            --gold: #fbbf24;
-        }}
-        
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ 
-            font-family: 'Inter', sans-serif; 
-            background-color: var(--bg-color); 
-            color: var(--text-main);
-            line-height: 1.6;
-            padding: 2rem;
-        }}
-        
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        
-        header {{
-            margin-bottom: 3rem;
-            border-bottom: 2px solid #334155;
-            padding-bottom: 1.5rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-        }}
-        
-        h1 {{ font-weight: 800; font-size: 2.5rem; background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
-        .meta-info {{ text-align: right; color: var(--text-dim); font-size: 0.9rem; }}
-        
-        .match-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
-            gap: 2rem;
-        }}
-        
-        .match-card {{
-            background: var(--card-bg);
-            border-radius: 1rem;
-            padding: 1.5rem;
-            border: 1px solid #334155;
-            transition: transform 0.2s, border-color 0.2s;
-            position: relative;
-            overflow: hidden;
-        }}
-        
-        .match-card:hover {{
-            transform: translateY(-4px);
-            border-color: var(--accent-primary);
-        }}
-        
-        .card-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.5rem;
-            font-size: 0.85rem;
-            color: var(--text-dim);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-        }}
-        
-        .format-badge {{
-            background: #334155;
-            padding: 0.2rem 0.6rem;
-            border-radius: 0.4rem;
-            color: var(--text-main);
-        }}
-        
-        .teams-area {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 2rem;
-        }}
-        
-        .team {{
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 0.5rem;
-            text-align: center;
-        }}
-        
-        .vs {{
-            font-weight: 800;
-            color: #475569;
-            font-size: 1.2rem;
-            padding: 0 1rem;
-        }}
-        
-        .logo-box {{
-            width: 80px;
-            height: 80px;
-            background: #0f172a;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0.5rem;
-            border: 2px solid #334155;
-        }}
-        
-        .logo-box img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
-        
-        .team-name {{ font-weight: 700; font-size: 1.1rem; }}
-        
-        .prob-bar-container {{
-            margin-bottom: 2rem;
-        }}
-        
-        .bar-labels {{
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 0.5rem;
-            font-weight: 700;
-            font-size: 1.4rem;
-        }}
-        
-        .bar-label-sub {{
-            font-size: 0.8rem;
-            color: var(--text-dim);
-            font-weight: 400;
-            margin-top: -0.2rem;
-        }}
-        
-        .progress-track {{
-            height: 12px;
-            background: rgba(239, 68, 68, 0.2);
-            border-radius: 6px;
-            overflow: hidden;
-            display: flex;
-        }}
-        
-        .progress-fill {{
-            height: 100%;
-            background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
-            border-radius: 6px;
-            transition: width 1s ease-out;
-        }}
-        
-        .odds-comparison {{
-            background: #0f172a;
-            border-radius: 0.8rem;
-            padding: 1rem;
-            margin-bottom: 1.5rem;
-        }}
-        
-        .odds-grid {{
-            display: grid;
-            grid-template-columns: 1fr auto 1fr;
-            gap: 1rem;
-            align-items: center;
-            font-size: 0.9rem;
-        }}
-        
-        .odds-type {{ color: var(--text-dim); text-align: center; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }}
-        
-        .prediction-details {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-        }}
-        
-        .detail-box {{
-            background: rgba(15, 23, 42, 0.5);
-            padding: 0.75rem;
-            border-radius: 0.6rem;
-        }}
-        
-        .detail-title {{
-            font-size: 0.7rem;
-            font-weight: 700;
-            color: var(--text-dim);
-            text-transform: uppercase;
-            margin-bottom: 0.5rem;
-        }}
-        
-        .veto-list {{ list-style: none; font-size: 0.8rem; }}
-        .veto-item {{ 
-            margin-bottom: 0.8rem; 
-            background: #0f172a; 
-            padding: 0.5rem; 
-            border-radius: 0.5rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.4rem;
-        }}
-        .veto-meta {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }}
-        .veto-prob {{ color: var(--accent-primary); font-weight: 700; font-size: 0.9rem; }}
-        .veto-names {{ 
-            font-size: 0.75rem; 
-            color: var(--text-dim); 
-            background: #1e293b; 
-            padding: 0.1rem 0.4rem; 
-            border-radius: 0.3rem;
-            font-family: monospace;
-        }}
-        .map-strip {{ display: flex; gap: 0.5rem; }}
-        .map-thumb {{ 
-            width: 50px; 
-            height: 50px; 
-            border-radius: 8px; 
-            object-fit: contain;
-            background: #0f172a;
-            border: 1px solid #334155;
-            transition: transform 0.2s;
-        }}
-        .map-thumb:hover {{
-            transform: scale(1.1);
-            z-index: 5;
-            border-color: var(--accent-primary);
-        }}
-        
-        .stat-row {{ display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.2rem; }}
-        .stat-val {{ font-weight: 600; }}
-        
-        .match-link {{
-            position: absolute;
-            top: 0; left: 0; right: 0; bottom: 0;
-            z-index: 1;
-        }}
-        
-        @media (max-width: 600px) {{
-            .match-grid {{ grid-template-columns: 1fr; }}
-            .teams-area {{ gap: 0.5rem; }}
-            .logo-box {{ width: 60px; height: 60px; }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <div>
-                <h1>CS2 Predictor Pro</h1>
-                <p style="color: var(--text-dim)">Advanced Veto & Win Probability Analysis</p>
-            </div>
-            <div class="meta-info">
-                <p>Generated: {gen_time}</p>
-                <p>MC Sim: {iters:,} iters | {threshold_pct:.0f}% Threshold</p>
-            </div>
-        </header>
-        
-        <div class="match-grid">
-            {cards_html}
-        </div>
-    </div>
-</body>
-</html>
-"""
+# --- Template Loading ---
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
-MATCH_CARD_TEMPLATE = """
-            <div class="match-card">
-                <a href="{url}" target="_blank" class="match-link"></a>
-                <div class="card-header">
-                    <span>{event}</span>
-                    <span class="format-badge">{format}</span>
-                </div>
-                
-                <div class="teams-area">
-                    <div class="team">
-                        <div class="logo-box">
-                            <img src="{t1_logo}" alt="{team1}" onerror="this.src='https://www.hltv.org/img/static/team/placeholder.svg'">
-                        </div>
-                        <span class="team-name">{team1}</span>
-                    </div>
-                    <div class="vs">VS</div>
-                    <div class="team">
-                        <div class="logo-box">
-                            <img src="{t2_logo}" alt="{team2}" onerror="this.src='https://www.hltv.org/img/static/team/placeholder.svg'">
-                        </div>
-                        <span class="team-name">{team2}</span>
-                    </div>
-                </div>
-                
-                <div class="prob-bar-container">
-                    <div class="bar-labels">
-                        <div>
-                            <span>{prob1:.1f}%</span>
-                            <div class="bar-label-sub">{team1_short}</div>
-                        </div>
-                        <div style="text-align: right">
-                            <span>{prob2:.1f}%</span>
-                            <div class="bar-label-sub">{team2_short}</div>
-                        </div>
-                    </div>
-                    <div class="progress-track">
-                        <div class="progress-fill" style="width: {prob1:.1f}%"></div>
-                    </div>
-                </div>
-                
-                {odds_section}
-                
-                <div class="prediction-details">
-                    <div class="detail-box">
-                        <div class="detail-title">Top Veto Sequences</div>
-                        <ul class="veto-list">
-                            {veto_items}
-                        </ul>
-                    </div>
-                    <div class="detail-box">
-                        <div class="detail-title">Dataset Stats</div>
-                        <div class="stat-row">
-                            <span>{team1_short} Maps</span>
-                            <span class="stat-val">{t1_maps}</span>
-                        </div>
-                        <div class="stat-row">
-                            <span>{team2_short} Maps</span>
-                            <span class="stat-val">{t2_maps}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-"""
+def load_template(name):
+    path = os.path.join(TEMPLATE_DIR, f"{name}.html")
+    with open(path, 'r', encoding='utf-8') as f:
+        return f.read()
 
-ODDS_SECTION_TEMPLATE = """
-                <div class="odds-comparison">
-                    <div class="odds-type">Market Implied Probabilities</div>
-                    <div class="odds-grid">
-                        <div style="font-weight: 700">{imp1:.1f}%</div>
-                        <div style="color: #475569">← Odds →</div>
-                        <div style="font-weight: 700; text-align: right">{imp2:.1f}%</div>
-                    </div>
-                    <div class="odds-grid" style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.2rem;">
-                         <div>{o1:.2f}</div>
-                         <div></div>
-                         <div style="text-align: right">{o2:.2f}</div>
-                    </div>
-                </div>
-"""
+def simple_format(template, **kwargs):
+    """Replaces {key} with value without clashing with CSS/JS braces."""
+    res = template
+    for k, v in kwargs.items():
+        res = res.replace("{" + k + "}", str(v))
+    return res
+
+# Load templates at startup
+try:
+    HTML_TEMPLATE = load_template("report_layout")
+    MATCH_CARD_TEMPLATE = load_template("match_card")
+    ODDS_SECTION_TEMPLATE = load_template("odds_section")
+    NO_ODDS_SECTION_TEMPLATE = load_template("no_odds_section")
+    VETO_ITEM_TEMPLATE = load_template("veto_item")
+except FileNotFoundError as e:
+    logger.error(f"Failed to load templates: {e}")
+    sys.exit(1)
 
 MAP_FILENAME_MAP = {
     "ancient": "de_ancient.png",
@@ -467,9 +146,14 @@ def main():
             
             odds_section = ""
             if implied_p1 and implied_p2:
-                odds_section = ODDS_SECTION_TEMPLATE.format(
-                    imp1=implied_p1, imp2=implied_p2, o1=o1, o2=o2
+                odds_section = simple_format(ODDS_SECTION_TEMPLATE,
+                    imp1_str=f"{implied_p1:.1f}%", 
+                    imp2_str=f"{implied_p2:.1f}%", 
+                    o1_str=f"{o1:.2f}", 
+                    o2_str=f"{o2:.2f}"
                 )
+            else:
+                odds_section = NO_ODDS_SECTION_TEMPLATE
 
             # Top Vetoes
             veto_items = ""
@@ -488,19 +172,14 @@ def main():
                     path = f"static/maps/{fname}"
                     map_thumbs += f'<img src="{path}" class="map-thumb" alt="{mname}" title="{mname}">'
                 
-                veto_items += f"""
-                    <li class="veto-item">
-                        <div class="veto-meta">
-                            <span class="veto-prob">{s_prob:5.1f}%</span>
-                            <span class="veto-names">{formatted_names}</span>
-                        </div>
-                        <div class="map-strip">
-                            {map_thumbs}
-                        </div>
-                    </li>"""
+                veto_items += simple_format(VETO_ITEM_TEMPLATE,
+                    s_prob_str=f"{s_prob:5.1f}%",
+                    formatted_names=formatted_names,
+                    map_thumbs=map_thumbs
+                )
 
             # Build Match Entry
-            card = MATCH_CARD_TEMPLATE.format(
+            card = simple_format(MATCH_CARD_TEMPLATE,
                 url=match_url,
                 event=match.get('id', 'Match'), # Could use actual event name if we scrape it
                 format=fmt.upper(),
@@ -508,8 +187,9 @@ def main():
                 team2=team_b,
                 t1_logo=match.get('team1_logo', ''),
                 t2_logo=match.get('team2_logo', ''),
-                prob1=prob*100,
-                prob2=(1-prob)*100,
+                prob1_str=f"{prob*100:.1f}%",
+                prob2_str=f"{(1-prob)*100:.1f}%",
+                prob1_style=f'style="width: {prob*100:.1f}%"',
                 team1_short=t_a_id[:12],
                 team2_short=t_b_id[:12],
                 odds_section=odds_section,
@@ -523,7 +203,7 @@ def main():
             logger.error(f"Error predicting {team_a} vs {team_b}: {e}")
 
     # Final HTML assembly
-    final_html = HTML_TEMPLATE.format(
+    final_html = simple_format(HTML_TEMPLATE,
         gen_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         iters=args.iters,
         threshold_pct=args.threshold * 100,
@@ -534,7 +214,7 @@ def main():
     with open(args.output, 'w', encoding='utf-8') as f:
         f.write(final_html)
     
-    logger.info(f"Automation complete. Nice HTML report saved to {args.output}")
+    logger.info(f"Automation complete. HTML report saved to {args.output}")
 
 if __name__ == "__main__":
     main()
