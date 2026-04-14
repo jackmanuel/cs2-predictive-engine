@@ -12,9 +12,6 @@ from config import PROCESSED_DIR, DATA_DIR, MIN_MATCHES_THRESHOLD, ROLLING_WINDO
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# --- ARCHITECTURE: Feature Definitions ---
-# These are the actual inputs to the neural network.
-# Order here determines the order in the feature vector.
 MODEL_FEATURES = [
     "rank_diff",
     "win_rate_30d_diff",
@@ -28,7 +25,8 @@ MODEL_FEATURES = [
     "map_comfort_diff",
     "dominance_diff",
     "resilience_diff",
-    "avg_log_rank"
+    "avg_log_rank",
+    "sos_diff"
 ]
 
 TARGET_COL = "label"
@@ -87,6 +85,19 @@ METADATA_COLS = [
     "match_has_forfeit"
 ]
 
+def get_sos(history, current_date, days):
+    """Calculates average log-rank of opponents over a rolling window."""
+    if not history:
+        return np.log(100) # Default: average opponent was rank 100
+        
+    cutoff = current_date - pd.Timedelta(days=days)
+    recent_ranks = [r for d, r in history if d >= cutoff]
+    
+    if not recent_ranks:
+        return np.log(100)
+        
+    return sum(recent_ranks) / len(recent_ranks)
+
 def get_recent_stats(history, current_date, days):
     """Helper to calculate win rate and match count over a rolling window."""
     if not history:
@@ -98,7 +109,9 @@ def get_recent_stats(history, current_date, days):
         if item[0] < cutoff:
             continue
         # Support both (date, win_bool) and (date, score_self, score_opp)
-        if len(item) == 3:
+        if len(item) == 4: # Added rank support
+            outcomes.append(1 if item[1] > item[2] else 0)
+        elif len(item) == 3:
             outcomes.append(1 if item[1] > item[2] else 0)
         else:
             outcomes.append(item[1])
@@ -113,8 +126,8 @@ def get_dominance_metrics(history, current_date, days):
         return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
         
     cutoff = current_date - pd.Timedelta(days=days)
-    # history stores (date, score_self, score_opp)
-    recent = [(s_self, s_opp) for d, s_self, s_opp in history if d >= cutoff]
+    # history stores (date, score_self, score_opp, optional_rank)
+    recent = [(item[1], item[2]) for item in history if item[0] >= cutoff]
     
     if not recent:
         return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
@@ -180,6 +193,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     team_total_series = {}    # team_id -> [datetime]
     match_picked_seen = {}    # match_id -> set(team_id)
     h2h_stats = {}            # (team_x, team_y) (sorted) -> wins_x, wins_y
+    team_sos_history = {}     # team_id -> [(datetime, log_rank_opp)]
     
     def init_team(tid):
         if tid not in team_general_history:
@@ -190,6 +204,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             team_first_picks[tid] = {}
         if tid not in team_total_series:
             team_total_series[tid] = []
+        if tid not in team_sos_history:
+            team_sos_history[tid] = []
 
     logger.info("Computing reduced map-level features temporally...")
     
@@ -256,6 +272,11 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         dominance_diff = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
         resilience_diff = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
         
+        # 4. Strength of Schedule (30-day window)
+        sos_a = get_sos(team_sos_history[t_a], date, 30)
+        sos_b = get_sos(team_sos_history[t_b], date, 30)
+        sos_diff = sos_a - sos_b
+        
         # 1. Model Features (Actual network inputs)
         # ----------------------------------------
         feat_dict = {
@@ -271,7 +292,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "map_comfort_diff": map_comfort_diff,
             "dominance_diff": dominance_diff,
             "resilience_diff": resilience_diff,
-            "avg_log_rank": avg_log_rank
+            "avg_log_rank": avg_log_rank,
+            "sos_diff": sos_diff
         }
         
         # 2. Metadata & tracking (Not features, but needed for stats/filters)
@@ -302,8 +324,11 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         win_a = 1 if row["winner_id"] == t_a else 0
         win_b = 1 if row["winner_id"] == t_b else 0
         
-        team_general_history[t_a].append((date, score_a, score_b))
-        team_general_history[t_b].append((date, score_b, score_a))
+        team_general_history[t_a].append((date, score_a, score_b, r_b))
+        team_general_history[t_b].append((date, score_b, score_a, r_a))
+        
+        team_sos_history[t_a].append((date, np.log(r_b)))
+        team_sos_history[t_b].append((date, np.log(r_a)))
         
         if map_name not in team_map_history[t_a]: team_map_history[t_a][map_name] = []
         if map_name not in team_map_history[t_b]: team_map_history[t_b][map_name] = []

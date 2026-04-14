@@ -35,6 +35,19 @@ def normalize_name(name: str, mappings: dict) -> str:
         return mappings[name_strip].upper().strip()
     return name_strip.upper()
 
+def get_sos(history, current_date, days):
+    """Calculates average log-rank of opponents over a rolling window."""
+    if not history:
+        return np.log(100) # Default: average opponent was rank 100
+        
+    cutoff = current_date - pd.Timedelta(days=days)
+    recent_ranks = [r for d, r in history if d >= cutoff]
+    
+    if not recent_ranks:
+        return np.log(100)
+        
+    return sum(recent_ranks) / len(recent_ranks)
+
 def get_recent_stats(history, current_date, days):
     """Helper to calculate rolling stats from a history list."""
     if not history:
@@ -46,7 +59,9 @@ def get_recent_stats(history, current_date, days):
         if item[0] < cutoff:
             continue
         # Support both (date, win_bool) and (date, score_self, score_opp)
-        if len(item) == 3:
+        if len(item) == 4: # Added rank support
+            outcomes.append(1 if item[1] > item[2] else 0)
+        elif len(item) == 3:
             outcomes.append(1 if item[1] > item[2] else 0)
         else:
             outcomes.append(item[1])
@@ -61,8 +76,8 @@ def get_dominance_metrics(history, current_date, days):
         return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
         
     cutoff = current_date - pd.Timedelta(days=days)
-    # history stores (date, score_self, score_opp)
-    recent = [(s_self, s_opp) for d, s_self, s_opp in history if d >= cutoff]
+    # history stores (date, score_self, score_opp, optional_rank)
+    recent = [(item[1], item[2]) for item in history if item[0] >= cutoff]
     
     if not recent:
         return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
@@ -92,6 +107,7 @@ def load_latest_state():
     team_total_series = {}
     team_latest_ranks = {} # team_id -> {"world": int}
     h2h_stats = {}
+    team_sos_history = {}  # team_id -> [(datetime, log_rank_opp)]
     current_streaks = {}   # team_id -> int
     match_picked_seen = {} # match_id -> set
     
@@ -137,11 +153,19 @@ def load_latest_state():
         if h2h_key not in h2h_stats:
             h2h_stats[h2h_key] = {h2h_key[0]: 0, h2h_key[1]: 0}
             
+        if t_a not in team_sos_history: team_sos_history[t_a] = []
+        if t_b not in team_sos_history: team_sos_history[t_b] = []
+            
+        r_a = row["team_a_world_rank"]
+        r_b = row["team_b_world_rank"]
+
         score_a = row.get("score_a", 0)
         score_b = row.get("score_b", 0)
-            
-        team_general_histories[t_a].append((date, score_a, score_b))
-        team_general_histories[t_b].append((date, score_b, score_a))
+
+        team_general_histories[t_a].append((date, score_a, score_b, r_b))
+        team_general_histories[t_b].append((date, score_b, score_a, r_a))
+        team_sos_history[t_a].append((date, np.log(max(r_b, 1))))
+        team_sos_history[t_b].append((date, np.log(max(r_a, 1))))
         team_map_histories[t_a][map_name].append((date, 1 if label == 1 else 0))
         team_map_histories[t_b][map_name].append((date, 1 if label == 0 else 0))
         
@@ -174,7 +198,7 @@ def load_latest_state():
         else:
             h2h_stats[h2h_key][t_b] += 1
             
-    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks, team_first_picks, team_total_series
+    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks, team_first_picks, team_total_series, team_sos_history
 
 def combine_probs(probs: List[float], bo: int) -> float:
     """
@@ -220,7 +244,7 @@ class PredictorContext:
     def __init__(self):
         self.mappings = load_mappings()
         self.gen_histories, self.map_histories, self.latest_ranks, self.h2h_stats, \
-        self.latest_streaks, self.team_fpicks, self.team_tseries = load_latest_state()
+        self.latest_streaks, self.team_fpicks, self.team_tseries, self.sos_histories = load_latest_state()
         
         scaler_path = CHECKPOINT_DIR / "scaler.pkl"
         model_path = CHECKPOINT_DIR / "best_mvp_model.pt"
@@ -301,6 +325,10 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
         
         dominance_diff = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
         resilience_diff = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
+        
+        sos_a = get_sos(ctx.sos_histories.get(t_a_id, []), now, 30)
+        sos_b = get_sos(ctx.sos_histories.get(t_b_id, []), now, 30)
+        sos_diff = sos_a - sos_b
 
         feat_vals = {
             "rank_diff": rank_diff,
@@ -315,7 +343,8 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             "map_comfort_diff": map_comfort_diff,
             "dominance_diff": dominance_diff,
             "resilience_diff": resilience_diff,
-            "avg_log_rank": avg_log_rank
+            "avg_log_rank": avg_log_rank,
+            "sos_diff": sos_diff
         }
         
         f_vec = np.array([[feat_vals[col] for col in MODEL_FEATURES]], dtype=np.float32)
