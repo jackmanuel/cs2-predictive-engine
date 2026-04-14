@@ -94,9 +94,12 @@ def archive_hltv_html(html):
     logger.info(f"Archived raw HLTV matches HTML to {filepath}")
 
 def main():
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    default_report_name = f"predictions_report_{timestamp}.html"
+    
     parser = argparse.ArgumentParser(description="Automated HLTV Match Prediction Pipeline")
     parser.add_argument("--event-id", type=int, help="HLTV Event ID to scrape matches from")
-    parser.add_argument("--output", default="predictions_report.html", help="Output file path (default: predictions_report.html)")
+    parser.add_argument("--output", default=os.path.join("reports", default_report_name), help=f"Output file path (default: reports/{default_report_name})")
     parser.add_argument("--html-file", help="Path to a local HTML file to parse (skips scraping)")
     parser.add_argument("--iters", type=int, default=10000, help="MC iterations for veto simulation")
     parser.add_argument("--threshold", type=float, default=0.90, help="Probability truncation threshold")
@@ -258,7 +261,7 @@ def main():
             for mname in map_names:
                 m_key = mname.lower().replace(" ", "")
                 fname = MAP_FILENAME_MAP.get(m_key, "placeholder.png")
-                path = f"static/maps/{fname}"
+                path = f"../static/maps/{fname}"
                 map_thumbs += f'<img src="{path}" class="map-thumb" alt="{mname}" title="{mname}">'
             
             veto_items += simple_format(VETO_ITEM_TEMPLATE,
@@ -313,6 +316,10 @@ def main():
     )
 
     # Save to file
+    output_dir = os.path.dirname(args.output)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        
     with open(args.output, 'w', encoding='utf-8') as f:
         f.write(final_html)
     
