@@ -26,8 +26,8 @@ MODEL_FEATURES = [
     "h2h_b_wins",
     "map_win_rate_diff",
     "map_comfort_diff",
-    "dominance_delta",
-    "resilience_delta",
+    "dominance_diff",
+    "resilience_diff",
     "avg_log_rank"
 ]
 
@@ -41,8 +41,8 @@ def mirror_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     mirrored_df = df.copy()
     
-    # 1. Flip Differentials (columns ending in _diff or _delta)
-    diff_cols = [c for c in df.columns if c.endswith("_diff") or c.endswith("_delta")]
+    # 1. Flip Differentials (columns ending in _diff)
+    diff_cols = [c for c in df.columns if c.endswith("_diff")]
     for col in diff_cols:
         mirrored_df[col] = -df[col]
         
@@ -253,8 +253,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         dom_a = get_dominance_metrics(team_general_history[t_a], date, 30)
         dom_b = get_dominance_metrics(team_general_history[t_b], date, 30)
         
-        dominance_delta = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
-        resilience_delta = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
+        dominance_diff = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
+        resilience_diff = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
         
         # 1. Model Features (Actual network inputs)
         # ----------------------------------------
@@ -269,8 +269,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "h2h_b_wins": h2h_b_wins,
             "map_win_rate_diff": map_wr_diff,
             "map_comfort_diff": map_comfort_diff,
-            "dominance_delta": dominance_delta,
-            "resilience_delta": resilience_delta,
+            "dominance_diff": dominance_diff,
+            "resilience_diff": resilience_diff,
             "avg_log_rank": avg_log_rank
         }
         

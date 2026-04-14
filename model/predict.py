@@ -299,8 +299,8 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
         dom_a = get_dominance_metrics(ctx.gen_histories.get(t_a_id, []), now, 30)
         dom_b = get_dominance_metrics(ctx.gen_histories.get(t_b_id, []), now, 30)
         
-        dominance_delta = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
-        resilience_delta = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
+        dominance_diff = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
+        resilience_diff = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
 
         feat_vals = {
             "rank_diff": rank_diff,
@@ -313,8 +313,8 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             "h2h_b_wins": h2h_b,
             "map_win_rate_diff": map_wr_diff,
             "map_comfort_diff": map_comfort_diff,
-            "dominance_delta": dominance_delta,
-            "resilience_delta": resilience_delta,
+            "dominance_diff": dominance_diff,
+            "resilience_diff": resilience_diff,
             "avg_log_rank": avg_log_rank
         }
         
