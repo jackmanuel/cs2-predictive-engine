@@ -1,70 +1,78 @@
 # CS2 Predictive Engine
 
-A modular Python framework for ingesting Counter-Strike 2 match data, engineering temporal features, and training a predictive model for match outcomes to find Expected Value (EV) opportunities. 
+A high-performance Python framework for Counter-Strike 2 match prediction. This engine combines **Monte Carlo Veto Simulations** with a **PyTorch Neural Network** to calculate precise series win probabilities.
 
-Currently implemented as a Minimum Viable Product (MVP) using a PyTorch binary classifier on tabular features.
+---
+
+## Key Features
+
+- **Native HLTV Ingestion:** High-fidelity scraping of round histories, player metrics, and map vetoes using Selenium.
+- **Monte Carlo Veto Simulator:** Simulates thousands of veto paths to model map pool variance and "permaban" bluffing.
+- **Neural Map Predictor:** A PyTorch-based binary classifier trained on temporal features (rolling win rates, streaks, H2H).
+- **Automated Match Dashboard:** Scrapes upcoming HLTV matches and generates premium HTML reports with integrated betting odds and map visuals.
+- **Zero Future Leakage:** Temporal feature engineering ensures models are only trained on data available *at the time of the match*.
+
+---
 
 ## Architecture
 
-1. **Ingestion Layer:** Scraping HLTV natively to serve as the highly-detailed "Canonical Match Database" (with round histories, player metrics, map vetoes, and match summaries).
-2. **Processing Layer:** Cleaners and Transformers operate on the HLTV dataset. Engineers temporal features (rolling win rates, current streaks, Head-to-Head records). Operates chronologically to absolutely guarantee no future data leakage.
-3. **Model Layer:** A PyTorch neural network `MatchPredictor` with a custom `Dataset`. Designed to be easily swappable with more complex architectures (like PyTorch entity embeddings) in future scope.
-4. **Evaluation Layer:** Walk-forward backtesting system evaluating the model's accuracy, log-loss, and Brier score (crucial for probability calibration).
+1.  **Ingestion Layer:** `hltv_client.py` handles complex interactions with HLTV, bypassing protections to build a canonical match database.
+2.  **Simulation Layer:** `veto_sim.py` models team banning/picking behavior using historical bias and Laplace smoothing.
+3.  **Model Layer:** `net.py` (Architecture) + `predict.py` (Inference logic) use mirrored data samples to eliminate positional bias.
+4.  **Reporting Layer:** `automate_predictions.py` orchestrates the end-to-end flow from live scraping to HTML dashboard generation.
+
+---
 
 ## Setup & Installation
 
-1. Create a virtual environment and install dependencies:
+1. **Environment Setup:**
    ```bash
-   # Linux/macOS
-   python3 -m venv venv
-   source venv/bin/activate
-
-   # Windows
+   # Create and activate venv
    python -m venv venv
-   .\venv\Scripts\activate
+   .\venv\Scripts\activate  # Windows
+   source venv/bin/activate # Linux/macOS
 
+   # Install dependencies
    pip install -r requirements.txt
    ```
 
-2. Copy `.env.example` to `.env`.
-   ```bash
-   cp .env.example .env
-   ```
+2. **Asset Setup:**
+   To enable map visuals in reports, place map PNGs in `static/maps/` (e.g., `de_dust2.png`). These are ignored by git for copyright safety.
+
+---
 
 ## Usage
 
-Run the modules sequentially:
+### 1. Unified Pipeline (Training)
+Run the full pipeline to ingest, clean, engineer features, and train the model:
+```bash
+python pipeline.py
+```
 
-1. **Scrape Canonical Match Data (HLTV):**
-   *(Scrapes detailed round, player, ranking, and map info natively. Use `--matches` and `--pages` to batch safely.)*
-   ```bash
-   python -m ingestion.fetch_hltv_matches --pages 5 --matches 50
-   ```
+### 2. Live Match Automation (The Dashboard)
+Scrape upcoming matches and generate a premium HTML dashboard with model vs. market probability comparisons:
+```bash
+# Predict matches for a specific HLTV Event
+python model/automate_predictions.py --event-id 8242 --output rio_results.html
 
-2. **[DEPRECATED] Fetch Contextual Match Data (PandaScore):**
-   *PandaScore integration is deprecated and no longer used in the main pipeline.*
+# Predict all upcoming matches
+python model/automate_predictions.py
+```
 
-3. **Run Unified Pipeline (Clean, Feature, Train):**
-   Instead of running steps manually, you can run the whole pipeline after you've ingested new data:
-   ```bash
-   python pipeline.py
-   ```
+### 3. Manual Series Prediction
+Predict a specific hypothetical or scheduled matchup:
+```bash
+python model/predict_series.py "Vitality" "G2" --format bo3
+```
 
-   This sequentially runs the cleaning, feature engineering, and model training modules.
+---
 
-4. **Individual Steps (Optional):**
-   If you need to run specific parts of the pipeline:
-   - **Clean & Parse Data:** `python -m processing.clean`
-   - **Engineer Temporal Features:** `python -m processing.features`
-   - **Train the MVP Model:** `python -m model.train`
+## Technical Components
 
-6. **Evaluate (Backtest) on Held-Out Data:**
-   ```bash
-   python -m evaluation.backtest
-   ```
-
-## Future Scope
-- Sequential map veto probability trees.
-- LLM agent swarm for NLP sentiment analysis (parsing Reddit/Twitter for roster rumours).
-- Advanced PyTorch entity embeddings for individual players.
-- Integration with external odds APIs (e.g., The Odds API) for real EV calculation.
+| Component | Description |
+| :--- | :--- |
+| **Ingestion** | Selenium + BeautifulSoup4 |
+| **Model** | PyTorch Neural Network (Binary Classifier) |
+| **Veto** | Monte Carlo Simulation (10,000+ iterations) |
+| **Features** | Temporal rolling windows, Mirroring, Rank Differentials |
+| **Backend** | Parquet data storage for high-speed I/O |

@@ -36,3 +36,8 @@ hltv_match_example.json
 scratch/
 data/training_state.json
 *.txt
+*.md
+*.html
+
+# Game Assets
+static/maps/

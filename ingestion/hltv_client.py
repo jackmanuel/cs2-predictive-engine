@@ -370,6 +370,99 @@ class HLTVClient:
             "maps": maps_data
         }
 
+    def fetch_upcoming_matches(self, event_id: Optional[int] = None) -> List[Dict]:
+        """
+        Fetches the upcoming matches from HLTV's /matches page or a specific event matches page.
+        Returns a list of match dictionaries containing URL, teams, format, and betting odds if available.
+        """
+        if not self.driver:
+            self.start()
+            
+        if event_id:
+            url = f"https://www.hltv.org/events/{event_id}/matches"
+        else:
+            url = "https://www.hltv.org/matches"
+            
+        logger.info(f"Navigating to {url}")
+        self.driver.get(url)
+        self._wait_for_cloudflare()
+        
+        return self.parse_upcoming_matches(self.driver.page_source)
+
+    def parse_upcoming_matches(self, html: str) -> List[Dict]:
+        """
+        Parses the upcoming matches from an HLTV matches page HTML.
+        Specifically looks for the match-wrapper entries and extracts team names and odds.
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+        matches = []
+        
+        # Each match is in a match-wrapper
+        match_wrappers = soup.find_all('div', class_='match-wrapper')
+        for wrapper in match_wrappers:
+            match_data = {}
+            
+            # Match URL and IDs
+            match_el = wrapper.find('div', class_='match')
+            if not match_el:
+                continue
+            
+            anchor = match_el.find('a', class_='match-top', href=True) or match_el.find('a', href=True)
+            if not anchor:
+                continue
+            
+            href = anchor['href']
+            match_data['url'] = "https://www.hltv.org" + href
+            match_data['id'] = wrapper.get('data-match-id')
+            
+            # Team Names and Logos
+            t1_div = wrapper.find('div', class_='team1')
+            t2_div = wrapper.find('div', class_='team2')
+            
+            if t1_div:
+                t1_name_el = t1_div.find('div', class_='match-teamname')
+                match_data['team1'] = t1_name_el.text.strip() if t1_name_el else t1_div.text.strip()
+                t1_img = t1_div.find('img', class_='match-team-logo')
+                match_data['team1_logo'] = t1_img.get('src') if t1_img else None
+            else:
+                match_data['team1'] = "Unknown"
+                match_data['team1_logo'] = None
+                
+            if t2_div:
+                t2_name_el = t2_div.find('div', class_='match-teamname')
+                match_data['team2'] = t2_name_el.text.strip() if t2_name_el else t2_div.text.strip()
+                t2_img = t2_div.find('img', class_='match-team-logo')
+                match_data['team2_logo'] = t2_img.get('src') if t2_img else None
+            else:
+                match_data['team2'] = "Unknown"
+                match_data['team2_logo'] = None
+            
+            # Format (bo1, bo3, bo5)
+            meta_el = wrapper.find('div', class_='match-meta')
+            match_data['format'] = meta_el.text.strip().lower() if meta_el else "bo3"
+            
+            # Odds - Found in match-fixtures
+            odds_wrapper = wrapper.find('div', class_='odds-wrapper')
+            if odds_wrapper:
+                odds_els = odds_wrapper.find_all('div', class_='match-fixture-number')
+                if len(odds_els) >= 2:
+                    try:
+                        match_data['odds1'] = float(odds_els[0].text.strip())
+                        match_data['odds2'] = float(odds_els[1].text.strip())
+                    except ValueError:
+                        pass
+            
+            # Skip matches with "TBD" or "Unknown" teams as they cannot be predicted
+            t1_low = match_data['team1'].lower()
+            t2_low = match_data['team2'].lower()
+            if "tbd" in t1_low or "tbd" in t2_low or "unknown" in t1_low or "unknown" in t2_low:
+                continue
+                
+            matches.append(match_data)
+            
+        logger.info(f"Parsed {len(matches)} upcoming matches from HTML.")
+        return matches
+
     def fetch_map_stats(self, stats_url: str) -> Dict:
         """
         Navigates to a map stats page and extracts the round-by-round history

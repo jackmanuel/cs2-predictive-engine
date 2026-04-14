@@ -63,7 +63,6 @@ def normalize_format(fmt: str) -> str:
 
 def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, mappings, ranks=None, match_format="unknown"):
     """Common logic to extract a map row from HLTV map object."""
-    # ... (no changes here, just showing context)
     map_name = m_data.get("map_name")
     if not map_name or map_name.lower() == "tbd":
         return None
