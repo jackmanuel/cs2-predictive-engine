@@ -387,7 +387,8 @@ class HLTVClient:
         self.driver.get(url)
         self._wait_for_cloudflare()
         
-        return self.parse_upcoming_matches(self.driver.page_source)
+        self.last_html = self.driver.page_source
+        return self.parse_upcoming_matches(self.last_html)
 
     def parse_upcoming_matches(self, html: str) -> List[Dict]:
         """

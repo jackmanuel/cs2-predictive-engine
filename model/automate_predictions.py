@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import logging
+import re
 from datetime import datetime
 
 # Ensure project root is in path
@@ -26,11 +27,18 @@ def load_template(name):
         return f.read()
 
 def simple_format(template, **kwargs):
-    """Replaces {key} with value without clashing with CSS/JS braces."""
-    res = template
-    for k, v in kwargs.items():
-        res = res.replace("{" + k + "}", str(v))
-    return res
+    """Replaces {key} or {key:spec} with value without clashing with CSS/JS braces."""
+    def replacer(match):
+        key = match.group(1)
+        spec = match.group(2) or ""
+        if key in kwargs:
+            try:
+                return ("{0" + spec + "}").format(kwargs[key])
+            except (ValueError, TypeError):
+                return match.group(0)
+        return match.group(0)
+    
+    return re.sub(r'\{(\w+)(:[^}]*)?\}', replacer, template)
 
 # Load templates at startup
 try:
@@ -68,6 +76,23 @@ def convert_odds_to_prob(o1, o2):
     p2 = (p2_raw / total) * 100
     return p1, p2
 
+def archive_hltv_html(html):
+    """Saves the raw HLTV matches HTML to data/raw/hltv_archive/ with a timestamp."""
+    if not html:
+        return
+    
+    # Path relative to project root (system.path already includes it)
+    archive_dir = os.path.join("data", "raw", "hltv_archive")
+    os.makedirs(archive_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"hltv_matches_{timestamp}.html"
+    filepath = os.path.join(archive_dir, filename)
+    
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(html)
+    logger.info(f"Archived raw HLTV matches HTML to {filepath}")
+
 def main():
     parser = argparse.ArgumentParser(description="Automated HLTV Match Prediction Pipeline")
     parser.add_argument("--event-id", type=int, help="HLTV Event ID to scrape matches from")
@@ -90,6 +115,9 @@ def main():
         else:
             logger.info("Fetching upcoming matches from HLTV...")
             matches = client.fetch_upcoming_matches(event_id=args.event_id)
+            # Capture the raw HTML retrieved by the client
+            if hasattr(client, 'last_html'):
+                 archive_hltv_html(client.last_html)
     except Exception as e:
         logger.error(f"Failed to fetch/parse matches: {e}")
         sys.exit(1)
