@@ -2,6 +2,7 @@ import time
 import random
 import re
 import logging
+from datetime import datetime
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
@@ -122,24 +123,81 @@ class HLTVClient:
         
         soup = BeautifulSoup(self.driver.page_source, 'html.parser')
         
-        # 1. Extract Match Blurbs / Info
-        match_info = []
+        # 1. Extract Match Metadata (Teams, Date, Event, Result)
+        match_metadata = {
+            "team1": "Unknown",
+            "team2": "Unknown",
+            "date": None,
+            "time": None,
+            "event": "Unknown",
+            "format": "Unknown",
+            "is_finished": False,
+            "winner": None,
+            "score": None
+        }
         try:
-            # Often found in preformatted-text like "Best of 3 (LAN)\nSemi-final"
-            blurbs = soup.find_all('div', class_='preformatted-text')
-            for b in blurbs:
-                text = b.text.strip()
-                if text and text not in match_info:
-                    # split by newlines if it has multiple lines
-                    for line in text.split('\n'):
-                        if line.strip() and line.strip() not in match_info:
-                            match_info.append(line.strip())
+            # Date/Time
+            time_el = soup.find('div', class_='date')
+            if time_el and time_el.get('data-unix'):
+                unix_ms = int(time_el['data-unix'])
+                dt = datetime.fromtimestamp(unix_ms / 1000.0)
+                match_metadata['date'] = dt.strftime('%Y-%m-%d')
+                match_metadata['time'] = dt.strftime('%H:%M')
+            
+            # Teams and Event
+            # Using the standard HLTV classes for match headers
+            t1_name_el = soup.find('div', class_='team1-gradient').find('div', class_='teamName') if soup.find('div', class_='team1-gradient') else None
+            t2_name_el = soup.find('div', class_='team2-gradient').find('div', class_='teamName') if soup.find('div', class_='team2-gradient') else None
+            
+            if t1_name_el: match_metadata['team1'] = t1_name_el.text.strip()
+            if t2_name_el: match_metadata['team2'] = t2_name_el.text.strip()
             
             event_el = soup.find('div', class_='event text-ellipsis')
-            if event_el and event_el.text.strip() not in match_info:
-                match_info.append("Event: " + event_el.text.strip())
+            if event_el: match_metadata['event'] = event_el.text.strip()
+
+            # Format (Best of X)
+            format_el = soup.find('div', class_='preformatted-text')
+            if format_el:
+                f_text = format_el.text.strip()
+                if "Best of" in f_text:
+                    match_metadata['format'] = f_text
+
+            # Result (if finished)
+            t1_score_el = soup.find('div', class_='team1-gradient').find('div', class_='won') or soup.find('div', class_='team1-gradient').find('div', class_='lost') or soup.find('div', class_='team1-gradient').find('div', class_='tie')
+            t2_score_el = soup.find('div', class_='team2-gradient').find('div', class_='won') or soup.find('div', class_='team2-gradient').find('div', class_='lost') or soup.find('div', class_='team2-gradient').find('div', class_='tie')
+            
+            if t1_score_el and t2_score_el:
+                s1 = t1_score_el.text.strip()
+                s2 = t2_score_el.text.strip()
+                if s1.isdigit() and s2.isdigit():
+                    s1_int, s2_int = int(s1), int(s2)
+                    match_metadata['score'] = f"{s1_int}-{s2_int}"
+                    
+                    # Determine winning threshold
+                    winning_threshold = 2 # Default for BO3
+                    if "Best of 1" in match_metadata['format']:
+                        winning_threshold = 1
+                    elif "Best of 5" in match_metadata['format']:
+                        winning_threshold = 3
+                    
+                    if s1_int >= winning_threshold or s2_int >= winning_threshold:
+                        match_metadata['is_finished'] = True
+                        if s1_int > s2_int:
+                            match_metadata['winner'] = match_metadata['team1']
+                        elif s2_int > s1_int:
+                            match_metadata['winner'] = match_metadata['team2']
+            
+            # Fallback for blurbs
+            blurbs = soup.find_all('div', class_='preformatted-text')
+            match_info = []
+            for b in blurbs:
+                text = b.text.strip()
+                if text:
+                    for line in text.split('\n'):
+                        if line.strip(): match_info.append(line.strip())
         except Exception as e:
-            logger.warning(f"Error scraping match blurbs: {e}")
+            logger.warning(f"Error scraping match metadata: {e}")
+            match_info = []
 
         # 2. Extract Player Stats (Rating, KDA)
         player_stats = []
@@ -363,6 +421,7 @@ class HLTVClient:
 
         time.sleep(random.uniform(2.0, 4.0))
         return {
+            "metadata": match_metadata,
             "match_info": match_info,
             "player_stats": player_stats,
             "team_ranks": team_ranks,

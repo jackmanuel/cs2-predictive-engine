@@ -38,6 +38,7 @@ data/training_state.json
 *.txt
 *.md
 *.html
+*.csv
 
 # Game Assets
 static/maps/
