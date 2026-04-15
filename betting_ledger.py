@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 LEDGER_FILE = r"data\betting_ledger.csv"
-COLUMNS = ["date", "time", "game", "link", "bookmaker", "odds", "amount", "bet", "result", "payout"]
+COLUMNS = ["date", "time", "game", "link", "bookmaker", "odds", "amount", "bet", "result", "payout", "model_prob", "edge"]
 
 def load_ledger():
     if os.path.exists(LEDGER_FILE):
@@ -49,6 +49,10 @@ def add_bet(args):
                 payout = 0.0
             logger.info(f"Match is already finished. Result: {result}")
 
+        # Calculate edge: model_prob - implied_prob
+        implied_prob = (1.0 / args.odds) if args.odds > 0 else 0
+        edge = (args.model_prob - implied_prob) * 100 if args.model_prob else None
+        
         new_row = {
             "date": date_text,
             "time": time_text,
@@ -59,13 +63,17 @@ def add_bet(args):
             "amount": args.amount,
             "bet": args.bet,
             "result": result,
-            "payout": payout
+            "payout": payout,
+            "model_prob": args.model_prob,
+            "edge": round(edge, 2) if edge is not None else None
         }
         
         df = load_ledger()
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         save_ledger(df)
         logger.info(f"Added bet: {game_text} on {args.bet} @ {args.odds} ({args.bookmaker})")
+        if edge is not None:
+            logger.info(f"  Model: {args.model_prob*100:.1f}% | Edge: {edge:+.1f}%")
         
     finally:
         client.stop()
@@ -125,11 +133,13 @@ def list_ledger():
         return
     
     # Simple formatted print
+    display_cols = ["date", "game", "bet", "odds", "model_prob", "edge", "result", "amount", "payout"]
+    display_cols = [c for c in display_cols if c in df.columns]
     print("\n--- Betting Ledger ---")
-    print(df.to_string(index=False))
+    print(df[display_cols].to_string(index=False))
     
-    total_payout = df['payout'].sum()
     total_spent = df['amount'].sum()
+    total_payout = df['payout'].sum()
     profit = total_payout - total_spent
     print(f"\nSummary: Spent: {total_spent:.2f} | Payout: {total_payout:.2f} | Profit: {profit:+.2f}")
 
@@ -144,6 +154,7 @@ def main():
     add_parser.add_argument("--odds", type=float, required=True, help="Decimal odds")
     add_parser.add_argument("--bet", required=True, help="Team name or outcome you bet on")
     add_parser.add_argument("--amount", type=float, default=1.0, help="Stake amount (default: 1.0)")
+    add_parser.add_argument("--model-prob", type=float, help="Model's predicted win probability for your bet (0.0-1.0)")
 
     # Refresh command
     subparsers.add_parser("refresh", help="Update pending match results")

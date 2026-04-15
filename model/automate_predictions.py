@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.predict import calculate_expected_series_win
 from ingestion.hltv_client import HLTVClient
+from evaluation.shadow_ledger import record_predictions as record_shadow_bets
 from config import MC_ITERATIONS, MC_THRESHOLD
 
 logging.basicConfig(
@@ -325,6 +326,9 @@ def main():
         f.write(final_html)
     
     logger.info(f"Automation complete. HTML report saved to {args.output}")
+
+    # Automatically record shadow bets for calibration
+    record_shadow_bets(match_results)
 
 if __name__ == "__main__":
     main()

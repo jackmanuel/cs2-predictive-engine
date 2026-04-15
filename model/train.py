@@ -13,10 +13,13 @@ from sklearn.preprocessing import StandardScaler
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DATA_DIR, PROCESSED_DIR, CHECKPOINT_DIR, BATCH_SIZE, EPOCHS, LEARNING_RATE, EARLY_STOPPING_PATIENCE, TRAIN_RATIO, VAL_RATIO
-from processing.features import mirror_data
+from config import (DATA_DIR, PROCESSED_DIR, CHECKPOINT_DIR, BATCH_SIZE, EPOCHS,
+                    LEARNING_RATE, EARLY_STOPPING_PATIENCE, TRAIN_RATIO, VAL_RATIO,
+                    DROPOUT_RATE)
+from processing.features import mirror_data, MODEL_FEATURES
 from model.dataset import MatchDataset
 from model.net import MatchPredictor
+from evaluation.shadow_ledger import register_model_version
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -153,6 +156,43 @@ def train_model():
                 break
                 
     logger.info(f"Training complete. Best validation loss: {best_val_loss:.4f}. Model saved to {best_model_path}")
+
+    # Register this training run in the model version registry
+    training_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Count epochs actually run (may be less than EPOCHS due to early stopping)
+    epochs_run = epoch + 1 if 'epoch' in dir() else 0
+    
+    hyperparams = {
+        "learning_rate": LEARNING_RATE,
+        "batch_size": BATCH_SIZE,
+        "max_epochs": EPOCHS,
+        "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+        "dropout_rate": DROPOUT_RATE,
+        "weight_decay": 1e-4,
+        "lr_scheduler": "ReduceLROnPlateau(factor=0.5, patience=5)",
+        "train_ratio": TRAIN_RATIO,
+        "val_ratio": VAL_RATIO,
+    }
+    
+    # Reuse the training state data we already computed
+    state_path = DATA_DIR / "training_state.json"
+    try:
+        with open(state_path, "r") as f:
+            data_stats = json.load(f)
+    except Exception:
+        data_stats = {}
+    
+    register_model_version(
+        trained_at=training_timestamp,
+        best_val_loss=best_val_loss,
+        epochs_run=epochs_run,
+        features=MODEL_FEATURES,
+        hyperparams=hyperparams,
+        data_stats=data_stats,
+        weights_src=str(best_model_path),
+        scaler_src=str(scaler_path),
+    )
 
 if __name__ == "__main__":
     train_model()

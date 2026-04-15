@@ -487,6 +487,21 @@ class HLTVClient:
             match_data['url'] = "https://www.hltv.org" + href
             match_data['id'] = wrapper.get('data-match-id')
             
+            # Match start date/time (from unix timestamp)
+            time_el = match_el.find('div', class_='match-time') or match_el.find('div', {'data-unix': True})
+            if time_el and time_el.get('data-unix'):
+                try:
+                    unix_ms = int(time_el['data-unix'])
+                    dt = datetime.fromtimestamp(unix_ms / 1000.0)
+                    match_data['date'] = dt.strftime('%Y-%m-%d')
+                    match_data['time'] = dt.strftime('%H:%M')
+                except (ValueError, OSError):
+                    match_data['date'] = None
+                    match_data['time'] = None
+            else:
+                match_data['date'] = None
+                match_data['time'] = None
+            
             # Team Names and Logos
             t1_div = wrapper.find('div', class_='team1')
             t2_div = wrapper.find('div', class_='team2')

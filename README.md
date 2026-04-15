@@ -10,6 +10,8 @@ A high-performance Python framework for Counter-Strike 2 match prediction. This 
 - **Monte Carlo Veto Simulator:** Simulates thousands of veto paths to model map pool variance and "permaban" bluffing.
 - **Neural Map Predictor:** A PyTorch-based binary classifier trained on temporal features (rolling win rates, streaks, H2H).
 - **Automated Match Dashboard:** Scrapes upcoming HLTV matches and generates premium HTML reports with integrated betting odds and map visuals.
+- **Shadow Ledger:** SQLite-backed paper-trading system that tracks odds movement, model predictions, and calibration across model versions.
+- **Model Version Registry:** Every training run is archived with its weights, features, hyperparameters, and architecture hash for full reproducibility.
 - **Zero Future Leakage:** Temporal feature engineering ensures models are only trained on data available *at the time of the match*.
 
 ---
@@ -17,9 +19,11 @@ A high-performance Python framework for Counter-Strike 2 match prediction. This 
 ## Architecture
 
 1.  **Ingestion Layer:** `hltv_client.py` handles complex interactions with HLTV, bypassing protections to build a canonical match database.
-2.  **Simulation Layer:** `veto_sim.py` models team banning/picking behavior using historical bias and Laplace smoothing.
-3.  **Model Layer:** `net.py` (Architecture) + `predict.py` (Inference logic) use mirrored data samples to eliminate positional bias.
-4.  **Reporting Layer:** `automate_predictions.py` orchestrates the end-to-end flow from live scraping to HTML dashboard generation.
+2.  **Processing Layer:** `clean.py` normalises raw data; `features.py` computes temporal differentials with configurable rolling windows.
+3.  **Simulation Layer:** `veto_sim.py` models team banning/picking behaviour using historical bias and Laplace smoothing.
+4.  **Model Layer:** `net.py` (Architecture) + `predict.py` (Inference) use mirrored data samples to eliminate positional bias.
+5.  **Reporting Layer:** `automate_predictions.py` orchestrates end-to-end flow from live scraping to HTML dashboard generation.
+6.  **Evaluation Layer:** `shadow_ledger.py` (SQLite calibration tracker) + `backtest.py` (held-out test evaluation).
 
 ---
 
@@ -44,16 +48,16 @@ A high-performance Python framework for Counter-Strike 2 match prediction. This 
 ## Usage
 
 ### 1. Unified Pipeline (Training)
-Run the full pipeline to ingest, clean, engineer features, and train the model:
+Run the full pipeline to ingest, clean, engineer features, and train the model. Each run registers a new model version and archives the weights:
 ```bash
 python pipeline.py
 ```
 
 ### 2. Live Match Automation (The Dashboard)
-Scrape upcoming matches and generate a premium HTML dashboard with model vs. market probability comparisons:
+Scrape upcoming matches and generate a premium HTML dashboard. This also automatically records shadow bets for model calibration:
 ```bash
 # Predict matches for a specific HLTV Event
-python model/automate_predictions.py --event-id 8242 --output rio_results.html
+python model/automate_predictions.py --event-id 8242
 
 # Predict all upcoming matches
 python model/automate_predictions.py
@@ -62,8 +66,56 @@ python model/automate_predictions.py
 ### 3. Manual Series Prediction
 Predict a specific hypothetical or scheduled matchup:
 ```bash
-python model/predict_series.py "Vitality" "G2" --format bo3
+python -m model.predict_series "Vitality" "G2" --format bo3
 ```
+
+### 4. Shadow Ledger (Model Calibration)
+The shadow ledger automatically records every prediction from the dashboard. Use these commands to track model performance:
+```bash
+# Resolve pending match results via HLTV
+python -m evaluation.shadow_ledger refresh
+
+# Show calibration report (edge buckets, favourite/underdog splits)
+python -m evaluation.shadow_ledger report
+
+# Show all tracked matches with latest predictions
+python -m evaluation.shadow_ledger list
+
+# Show model version history
+python -m evaluation.shadow_ledger versions
+
+# Show full odds history for a specific match
+python -m evaluation.shadow_ledger odds <hltv_match_url>
+```
+
+### 5. Betting Ledger (Real Bets)
+Track real bets with model probability and edge:
+```bash
+# Record a bet
+python betting_ledger.py add --url <hltv_url> --bookmaker "Bet365" --odds 2.10 --bet "G2" --amount 10 --model-prob 0.62
+
+# Resolve pending results
+python betting_ledger.py refresh
+
+# View ledger
+python betting_ledger.py list
+```
+
+---
+
+## Configuration
+
+All tuning parameters are centralised in `config.py`:
+
+| Constant | Default | Purpose |
+| :--- | :--- | :--- |
+| `FORM_WINDOW_DAYS` | 30 | Rolling window for win rate, dominance, resilience, SoS |
+| `FORM_WINDOW_DAYS_SHORT` | 7 | Short-term momentum window |
+| `MAP_WINDOW_DAYS` | 90 | Map-specific win rate window (wider for sample size) |
+| `VETO_WINDOW_DAYS` | 90 | Veto simulation historical stats window |
+| `MC_ITERATIONS` | 10,000 | Monte Carlo veto simulation iterations |
+| `MC_THRESHOLD` | 0.90 | Cumulative probability cutoff for veto path selection |
+| `WIN_STREAK_CAP` | 5 | Maximum win streak value |
 
 ---
 
@@ -71,8 +123,10 @@ python model/predict_series.py "Vitality" "G2" --format bo3
 
 | Component | Description |
 | :--- | :--- |
-| **Ingestion** | Selenium + BeautifulSoup4 |
-| **Model** | PyTorch Neural Network (Binary Classifier) |
-| **Veto** | Monte Carlo Simulation (10,000+ iterations) |
-| **Features** | Temporal rolling windows, Mirroring, Rank Differentials |
-| **Backend** | Parquet data storage for high-speed I/O |
+| **Ingestion** | Selenium + BeautifulSoup4 (undetected-chromedriver) |
+| **Model** | PyTorch Neural Network (Binary Classifier, 64→32→1) |
+| **Veto** | Monte Carlo Simulation (configurable iterations) |
+| **Features** | Temporal rolling windows, mirroring, rank differentials, SoS |
+| **Data Storage** | Parquet (training data), SQLite (shadow ledger + model registry) |
+| **Versioning** | Automatic weight archival with architecture hash tracking |
+
