@@ -8,28 +8,16 @@ import pandas as pd
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import RAW_DIR, PROCESSED_DIR, DATA_DIR, DEFAULT_TEAM_RANK, HLTV_MATCHES_FILE, TEAM_MAPPINGS_FILE
+from config import RAW_DIR, PROCESSED_DIR, DATA_DIR, DEFAULT_TEAM_RANK, HLTV_MATCHES_FILE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-MAPPING_FILE = TEAM_MAPPINGS_FILE
 
-def load_mappings() -> dict:
-    if MAPPING_FILE.exists():
-        try:
-            with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading mappings: {e}")
-    return {}
-
-def normalize_name(name: str, mappings: dict) -> str:
+def normalize_name(name: str) -> str:
+    """Normalises a team name to a consistent uppercase format for matching."""
     if not name: return ""
-    name_strip = name.strip()
-    if name_strip in mappings:
-        return mappings[name_strip].upper().strip()
-    return name_strip.upper()
+    return name.strip().upper()
 
 def parse_rank(rank_str: str) -> int:
     """Parses HLTV rank string like '#42' or 'Unranked' to integer."""
@@ -61,7 +49,7 @@ def normalize_format(fmt: str) -> str:
         
     return "unknown"
 
-def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, mappings, ranks=None, match_format="unknown"):
+def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, ranks=None, match_format="unknown"):
     """Common logic to extract a map row from HLTV map object."""
     map_name = m_data.get("map_name")
     if not map_name or map_name.lower() == "tbd":
@@ -81,8 +69,8 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
         return None
 
     # Normalise names for comparison
-    h_t1 = normalize_name(m_data.get("team1", ""), mappings)
-    h_t2 = normalize_name(m_data.get("team2", ""), mappings)
+    h_t1 = normalize_name(m_data.get("team1", ""))
+    h_t2 = normalize_name(m_data.get("team2", ""))
     
     p_t1 = team_a_id 
     p_t2 = team_b_id
@@ -116,7 +104,7 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
 
     if ranks:
         for name, r_data in ranks.items():
-            n = normalize_name(name, mappings)
+            n = normalize_name(name)
             if n == team_a_id:
                 r_a_world = parse_rank(r_data.get("world_rank"))
                 r_a_vrs = parse_rank(r_data.get("vrs_before_rank"))
@@ -128,7 +116,7 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
     is_team_a_picker = False
     is_team_b_picker = False
     if picker_name:
-        n_picker = normalize_name(picker_name, mappings)
+        n_picker = normalize_name(picker_name)
         if n_picker == team_a_id:
             is_team_a_picker = True
         elif n_picker == team_b_id:
@@ -158,7 +146,6 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
 def load_raw_maps() -> pd.DataFrame:
     """Loads raw HLTV match JSON and explodes them into map rows."""
     all_maps = []
-    mappings = load_mappings()
     
     # Pure HLTV files (Canonical Source)
     hltv_pure_path = HLTV_MATCHES_FILE
@@ -171,15 +158,15 @@ def load_raw_maps() -> pd.DataFrame:
             t2 = match.get("team2")
             m_date = pd.to_datetime(match.get("date"), utc=True)
             m_id = match.get("url", "hltv_" + str(hash(t1 + t2 + str(m_date))))
-            t1_id = normalize_name(t1, mappings)
-            t2_id = normalize_name(t2, mappings)
+            t1_id = normalize_name(t1)
+            t2_id = normalize_name(t2)
             ranks = match.get("team_ranks")
 
             # HLTV format is already in the match object
             m_format = normalize_format(match.get("format", "unknown"))
 
             for m_data in match.get("hltv_maps", []):
-                row = process_hltv_map_data(m_data, t1, t2, t1_id, t2_id, m_id, m_date, mappings, ranks, match_format=m_format)
+                row = process_hltv_map_data(m_data, t1, t2, t1_id, t2_id, m_id, m_date, ranks, match_format=m_format)
                 if row: all_maps.append(row)
                 
     df = pd.DataFrame(all_maps)

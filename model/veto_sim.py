@@ -13,20 +13,20 @@ from typing import List, Dict
 # Ensure project root is in path for config and historical data access
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from config import PROCESSED_DIR, DATA_DIR
+    from config import PROCESSED_DIR, DATA_DIR, VETO_WINDOW_DAYS, MC_ITERATIONS
 except ImportError:
-    # Fallback if not running from project structure
     PROCESSED_DIR = Path("data/processed")
     DATA_DIR = Path("data")
+    VETO_WINDOW_DAYS = 90
+    MC_ITERATIONS = 10000
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-# Standard Active Duty Pool for CS2 (April 2024 onwards)
-# Note: Vertigo may be missing from some historical datasets but is part of the active pool.
+# Standard Active Duty Pool for CS2 (January 2024 onwards)
 MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass"]
 
-SIMULATIONS = 10000
+SIMULATIONS = MC_ITERATIONS
 TOP_SEQUENCES_DISPLAY = 5
 PERMABAN_THRESHOLD = 0.05
 
@@ -37,19 +37,22 @@ def load_data():
         raise FileNotFoundError(f"Clean maps not found at {clean_path}. Please run the data ingestion pipeline first.")
     return pd.read_parquet(clean_path)
 
-def normalize_name(name: str, mappings: dict) -> str:
-    """Normalizes team names using the standard project mapping."""
+def normalize_name(name: str) -> str:
+    """Normalises a team name to a consistent uppercase format for matching."""
     if not name: return ""
-    name_strip = name.strip()
-    if name_strip in mappings:
-        return mappings[name_strip].upper().strip()
-    return name_strip.upper()
+    return name.strip().upper()
 
-def get_team_stats(team_id: str, df: pd.DataFrame) -> Dict[str, Dict]:
+def get_team_stats(team_id: str, df: pd.DataFrame, days: int = VETO_WINDOW_DAYS) -> Dict[str, Dict]:
     """
     Calculates the necessary heuristics for a team on each map.
     Returns win_rate, pick_rate, play_rate, and loss_rate.
+    Uses a rolling window (default 90 days) for more representative statistics.
     """
+    # Filter to recent data for more representative statistics
+    if days:
+        cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(days=days)
+        df = df[df['date'] >= cutoff]
+    
     # Filter for all maps involving this team
     team_df = df[(df['team_a_id'] == team_id) | (df['team_b_id'] == team_id)]
     
@@ -217,7 +220,7 @@ def simulate_veto(stats_a: dict, stats_b: dict, series_format: str = "bo3") -> L
     played_maps.append(pool[0])
     return played_maps
 
-def run_simulations(stats_a: dict, stats_b: dict, iters: int = 10000, series_format: str = "bo3", starts_veto: str = None):
+def run_simulations(stats_a: dict, stats_b: dict, iters: int = MC_ITERATIONS, series_format: str = "bo3", starts_veto: str = None):
     """
     Runs multiple Monte Carlo simulations of the map veto process.
     Returns sequence_counts (dict) and map_counts (dict).
@@ -267,19 +270,13 @@ def main():
     args = parser.parse_args()
     
     # Load team mappings for name normalization
-    mapping_file = DATA_DIR / "team_mappings.json"
-    mappings = {}
-    if mapping_file.exists():
-        with open(mapping_file, 'r', encoding='utf-8') as f:
-            mappings = json.load(f)
-            
-    t_a_id = normalize_name(args.team_a, mappings)
-    t_b_id = normalize_name(args.team_b, mappings)
+    t_a_id = normalize_name(args.team_a)
+    t_b_id = normalize_name(args.team_b)
     
     # Handle Starts Veto Logic
     start_override = None
     if args.starts_veto:
-        start_id = normalize_name(args.starts_veto, mappings)
+        start_id = normalize_name(args.starts_veto)
         if start_id == t_a_id:
             start_override = "a"
         elif start_id == t_b_id:

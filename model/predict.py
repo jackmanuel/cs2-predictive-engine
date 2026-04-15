@@ -4,7 +4,6 @@ import argparse
 import logging
 import torch
 import joblib
-import json
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
@@ -12,7 +11,7 @@ from typing import List, Tuple
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, DATA_DIR, CHECKPOINT_DIR, ROLLING_WINDOW_DAYS, DEFAULT_TEAM_RANK
+from config import PROCESSED_DIR, DATA_DIR, CHECKPOINT_DIR, DEFAULT_TEAM_RANK, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, MAP_WINDOW_DAYS, WIN_STREAK_CAP, DEFAULT_SOS_RANK, MC_ITERATIONS, MC_THRESHOLD
 from model.net import MatchPredictor
 from processing.features import MODEL_FEATURES
 import model.veto_sim as veto_sim
@@ -20,31 +19,22 @@ import model.veto_sim as veto_sim
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-MAPPING_FILE = DATA_DIR / "team_mappings.json"
 
-def load_mappings() -> dict:
-    if MAPPING_FILE.exists():
-        with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-def normalize_name(name: str, mappings: dict) -> str:
+def normalize_name(name: str) -> str:
+    """Normalises a team name to a consistent uppercase format for matching."""
     if not name: return ""
-    name_strip = name.strip()
-    if name_strip in mappings:
-        return mappings[name_strip].upper().strip()
-    return name_strip.upper()
+    return name.strip().upper()
 
 def get_sos(history, current_date, days):
     """Calculates average log-rank of opponents over a rolling window."""
     if not history:
-        return np.log(100) # Default: average opponent was rank 100
+        return np.log(DEFAULT_SOS_RANK)
         
     cutoff = current_date - pd.Timedelta(days=days)
     recent_ranks = [r for d, r in history if d >= cutoff]
     
     if not recent_ranks:
-        return np.log(100)
+        return np.log(DEFAULT_SOS_RANK)
         
     return sum(recent_ranks) / len(recent_ranks)
 
@@ -111,7 +101,6 @@ def load_latest_state():
     current_streaks = {}   # team_id -> int
     match_picked_seen = {} # match_id -> set
     
-    # 1. Pre-calculate streaks by processing matches chronologically
     matches_df = df.groupby("match_id").agg({
         "date": "min",
         "team_a_id": "first",
@@ -125,13 +114,12 @@ def load_latest_state():
         winner = row["winner_id"]
         
         if winner == t_a:
-            current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, 5)
+            current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, WIN_STREAK_CAP)
             current_streaks[t_b] = 0
         else:
-            current_streaks[t_b] = min(current_streaks.get(t_b, 0) + 1, 5)
+            current_streaks[t_b] = min(current_streaks.get(t_b, 0) + 1, WIN_STREAK_CAP)
             current_streaks[t_a] = 0
 
-    # 2. Process maps for history tracking
     for _, row in df.iterrows():
         t_a = row["team_a_id"]
         t_b = row["team_b_id"]
@@ -194,9 +182,9 @@ def load_latest_state():
             match_picked_seen[m_id].add(t_b)
         
         if label == 1:
-            h2h_stats[h2h_key][t_a] += 1
+            h2h_stats[h2h_key][str(t_a)] += 1
         else:
-            h2h_stats[h2h_key][t_b] += 1
+            h2h_stats[h2h_key][str(t_b)] += 1
             
     return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks, team_first_picks, team_total_series, team_sos_history
 
@@ -242,7 +230,6 @@ class PredictorContext:
     predictions without reloading data from disk repeatedly.
     """
     def __init__(self):
-        self.mappings = load_mappings()
         self.gen_histories, self.map_histories, self.latest_ranks, self.h2h_stats, \
         self.latest_streaks, self.team_fpicks, self.team_tseries, self.sos_histories = load_latest_state()
         
@@ -256,20 +243,19 @@ class PredictorContext:
         self.model.load_state_dict(torch.load(model_path, weights_only=True, map_location=torch.device('cpu')))
         self.model.eval()
 
-def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps: List[str], picker_override: str = "neutral") -> List[float]:
+def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps: List[str], picker_override: str = "neutral", veto_starter: str = "a") -> List[float]:
     """
     Calculates map-level win probabilities for a given matchup and map set.
     """
     now = pd.to_datetime(datetime.now(timezone.utc))
     map_probs = []
     
-    # Pre-calculate global 30d stats for both teams (used multiple times)
-    g_a_30d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, 30)
-    g_b_30d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, 30)
+    g_a_30d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS)
+    g_b_30d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS)
 
     for i, m_name in enumerate(maps):
-        g_a_7d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, 7)
-        g_b_7d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, 7)
+        g_a_7d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS_SHORT)
+        g_b_7d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS_SHORT)
         
         s_a = ctx.latest_streaks.get(t_a_id, 0)
         s_b = ctx.latest_streaks.get(t_b_id, 0)
@@ -286,49 +272,59 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
         wr_7d_diff = g_a_7d["win_rate"] - g_b_7d["win_rate"]
         
         h2h_key = tuple(sorted([str(t_a_id), str(t_b_id)]))
-        h2h_a = ctx.h2h_stats.get(h2h_key, {}).get(t_a_id, 0)
-        h2h_b = ctx.h2h_stats.get(h2h_key, {}).get(t_b_id, 0)
+        h2h_a = ctx.h2h_stats.get(h2h_key, {}).get(str(t_a_id), 0)
+        h2h_b = ctx.h2h_stats.get(h2h_key, {}).get(str(t_b_id), 0)
         
         is_a_picker = 0
         is_b_picker = 0
         if picker_override.lower() in ["team_a", "a"]: is_a_picker = 1
         elif picker_override.lower() in ["team_b", "b"]: is_b_picker = 1
-        elif len(maps) == 3: # Bo3: A pick, B pick, Decider
-            is_a_picker = 1 if i == 0 else 0
-            is_b_picker = 1 if i == 1 else 0
-        elif len(maps) == 5: # Bo5: A pick, B pick, A pick, B pick, Decider
-            is_a_picker = 1 if i in [0, 2] else 0
-            is_b_picker = 1 if i in [1, 3] else 0
-        elif len(maps) == 1: # Bo1: Neutral
+        elif len(maps) == 3: # Bo3: Veto starter picks map[0], other picks map[1], Decider
+            if veto_starter == "a":
+                is_a_picker = 1 if i == 0 else 0
+                is_b_picker = 1 if i == 1 else 0
+            else:  # Team B started the veto -> B picks first
+                is_a_picker = 1 if i == 1 else 0
+                is_b_picker = 1 if i == 0 else 0
+        elif len(maps) == 5: # Bo5: Starter picks first pair, other picks second pair
+            if veto_starter == "a":
+                is_a_picker = 1 if i in [0, 2] else 0
+                is_b_picker = 1 if i in [1, 3] else 0
+            else:
+                is_a_picker = 1 if i in [1, 3] else 0
+                is_b_picker = 1 if i in [0, 2] else 0
+        elif len(maps) == 1: # Bo1: Neutral (no picks, only bans)
             pass
         else: # Default fallback
-            is_a_picker = 1 if i == 0 else 0
-            is_b_picker = 1 if i == 1 else 0
+            if veto_starter == "a":
+                is_a_picker = 1 if i == 0 else 0
+                is_b_picker = 1 if i == 1 else 0
+            else:
+                is_a_picker = 1 if i == 1 else 0
+                is_b_picker = 1 if i == 0 else 0
 
-        # Map-Specific Win Rate (90d)
-        m_a_90d = get_recent_stats(ctx.map_histories.get(t_a_id, {}).get(m_name, []), now, 90)
-        m_b_90d = get_recent_stats(ctx.map_histories.get(t_b_id, {}).get(m_name, []), now, 90)
+        m_a_90d = get_recent_stats(ctx.map_histories.get(t_a_id, {}).get(m_name, []), now, MAP_WINDOW_DAYS)
+        m_b_90d = get_recent_stats(ctx.map_histories.get(t_b_id, {}).get(m_name, []), now, MAP_WINDOW_DAYS)
         map_wr_diff = m_a_90d["win_rate"] - m_b_90d["win_rate"]
         
-        # Map Comfort (30d)
         def get_comfort(tid, m_n):
-            cutoff = now - pd.Timedelta(days=30)
+            cutoff = now - pd.Timedelta(days=FORM_WINDOW_DAYS)
             picks = len([d for d in ctx.team_fpicks.get(tid, {}).get(m_n, []) if d >= cutoff])
             total = len([d for d in ctx.team_tseries.get(tid, []) if d >= cutoff])
             return picks / total if total > 0 else 0.0
             
         map_comfort_diff = get_comfort(t_a_id, m_name) - get_comfort(t_b_id, m_name)
         
-        # Dominance & Resilience (30-day window)
-        dom_a = get_dominance_metrics(ctx.gen_histories.get(t_a_id, []), now, 30)
-        dom_b = get_dominance_metrics(ctx.gen_histories.get(t_b_id, []), now, 30)
+        dom_a = get_dominance_metrics(ctx.gen_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS)
+        dom_b = get_dominance_metrics(ctx.gen_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS)
         
         dominance_diff = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
         resilience_diff = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
         
-        sos_a = get_sos(ctx.sos_histories.get(t_a_id, []), now, 30)
-        sos_b = get_sos(ctx.sos_histories.get(t_b_id, []), now, 30)
-        sos_diff = sos_a - sos_b
+        sos_a = get_sos(ctx.sos_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS)
+        sos_b = get_sos(ctx.sos_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS)
+        # Positive = Team A faced harder opponents (more battle-tested)
+        sos_diff = sos_b - sos_a
 
         feat_vals = {
             "rank_diff": rank_diff,
@@ -355,56 +351,98 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             
     return map_probs
 
-def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", threshold=0.90, iters=10000, starts_veto=None, ctx=None):
+def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", threshold=MC_THRESHOLD, iters=MC_ITERATIONS, starts_veto=None, ctx=None):
     """
     Calculates the Expected Series Win Probability by mating the Veto Simulator
     and the Neural Network Predictor using the Law of Total Probability.
+    Correctly tracks which team starts the veto to assign picker roles.
     """
     # 1. Initialize Predictor context (expensive state load)
     if ctx is None:
         ctx = PredictorContext()
         
-    t_a_id = normalize_name(team_a_raw, ctx.mappings)
-    t_b_id = normalize_name(team_b_raw, ctx.mappings)
+    t_a_id = normalize_name(team_a_raw)
+    t_b_id = normalize_name(team_b_raw)
 
-    # 2. Run Veto simulation to get path probabilities
-    # We need the stats format expected by veto_sim.run_simulations
+    # 2. Prepare veto sim stats
     veto_df = veto_sim.load_data()
     stats_a = veto_sim.get_team_stats(t_a_id, veto_df)
     stats_b = veto_sim.get_team_stats(t_b_id, veto_df)
     
-    sequence_counts, _ = veto_sim.run_simulations(
-        stats_a, stats_b, iters=iters, series_format=series_format, starts_veto=starts_veto
-    )
-    
-    # 3. Sort paths and truncate based on threshold
-    sorted_paths = sorted(sequence_counts.items(), key=lambda x: x[1], reverse=True)
-    selected_paths = []
-    cumulative_count = 0
-    
-    for path_str, count in sorted_paths:
-        selected_paths.append((path_str, count))
-        cumulative_count += count
-        if (cumulative_count / iters) >= threshold:
-            break
-            
-    # 4. Normalize probabilities and calculate expected win prob
-    expected_win_prob = 0.0
     bo = int(series_format.replace("bo", ""))
     
-    for path_str, count in selected_paths:
-        path_prob_norm = count / cumulative_count # Normalization: P(Path) / Sum(Selected Path Probs)
-        maps = path_str.split(",")
+    # 3. Determine veto start and run simulations in batches.
+    #    When starts_veto is unspecified (50/50), we split iterations into two
+    #    batches — one where team A starts the veto, one where team B starts.
+    #    This ensures picker_diff is correctly assigned for every veto path.
+    veto_start = None
+    if starts_veto:
+        sv = starts_veto.lower()
+        if sv in ["a", "team_a"]:
+            veto_start = "a"
+        elif sv in ["b", "team_b"]:
+            veto_start = "b"
+        else:
+            # Handle team name input (e.g. --starts-veto "G2")
+            sv_norm = normalize_name(starts_veto)
+            if sv_norm == t_a_id:
+                veto_start = "a"
+            elif sv_norm == t_b_id:
+                veto_start = "b"
+    
+    if veto_start:
+        # Single batch: one team always starts
+        seq, _ = veto_sim.run_simulations(
+            stats_a, stats_b, iters=iters, series_format=series_format, starts_veto=veto_start
+        )
+        batches = [(seq, iters, veto_start)]
+        sequence_counts = seq
+    else:
+        # 50/50 split: run half iterations for each starting team
+        iters_a = iters // 2
+        iters_b = iters - iters_a
+        seq_a, _ = veto_sim.run_simulations(
+            stats_a, stats_b, iters=iters_a, series_format=series_format, starts_veto="a"
+        )
+        seq_b, _ = veto_sim.run_simulations(
+            stats_a, stats_b, iters=iters_b, series_format=series_format, starts_veto="b"
+        )
+        batches = [(seq_a, iters_a, "a"), (seq_b, iters_b, "b")]
+        # Merge sequence counts for display
+        sequence_counts = {}
+        for sd, _, _ in batches:
+            for k, v in sd.items():
+                sequence_counts[k] = sequence_counts.get(k, 0) + v
+    
+    # 4. Calculate expected win probability using Law of Total Probability
+    expected_win_prob = 0.0
+    
+    for seq_dict, batch_iters, starter in batches:
+        batch_weight = batch_iters / iters
         
-        # Fetch map-level win probabilities from NN
-        # For BO3/BO5, map order in path_str determines the picker
-        map_probs = get_win_probabilities(ctx, t_a_id, t_b_id, maps)
+        # Sort paths and truncate based on threshold
+        sorted_paths = sorted(seq_dict.items(), key=lambda x: x[1], reverse=True)
+        selected_paths = []
+        cumulative_count = 0
         
-        # Conditional series win probability: P(Win | Path)
-        p_win_given_path = combine_probs(map_probs, bo)
+        for path_str, count in sorted_paths:
+            selected_paths.append((path_str, count))
+            cumulative_count += count
+            if (cumulative_count / batch_iters) >= threshold:
+                break
         
-        # Law of Total Probability contribution
-        expected_win_prob += p_win_given_path * path_prob_norm
+        for path_str, count in selected_paths:
+            path_prob_norm = count / cumulative_count
+            maps = path_str.split(",")
+            
+            # Fetch map-level win probabilities with picker assignment
+            map_probs = get_win_probabilities(ctx, t_a_id, t_b_id, maps, veto_starter=starter)
+            
+            # Conditional series win probability: P(Win | Path)
+            p_win_given_path = combine_probs(map_probs, bo)
+            
+            # Law of Total Probability contribution, weighted by batch share
+            expected_win_prob += p_win_given_path * path_prob_norm * batch_weight
         
     return {
         "expected_win_prob": expected_win_prob,
@@ -421,8 +459,8 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
         logger.error(f"Error initializing predictor: {e}")
         return
 
-    t_a_id = normalize_name(team_raw_a, ctx.mappings)
-    t_b_id = normalize_name(team_raw_b, ctx.mappings)
+    t_a_id = normalize_name(team_raw_a)
+    t_b_id = normalize_name(team_raw_b)
     
     now = pd.to_datetime(datetime.now(timezone.utc))
     
@@ -435,8 +473,8 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
     print("="*60)
 
     # Global team sample size info
-    g_a_30d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, 30)
-    g_b_30d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, 30)
+    g_a_30d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS)
+    g_b_30d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS)
     
     for tid, stats in [(t_a_id, g_a_30d), (t_b_id, g_b_30d)]:
         count = stats["matches"]
@@ -452,8 +490,8 @@ def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_ov
     for i, m_name in enumerate(maps):
         p_a = map_probs[i]
         
-        m_a_30d_matches = get_recent_stats(ctx.map_histories.get(t_a_id, {}).get(m_name, []), now, 30)["matches"]
-        m_b_30d_matches = get_recent_stats(ctx.map_histories.get(t_b_id, {}).get(m_name, []), now, 30)["matches"]
+        m_a_30d_matches = get_recent_stats(ctx.map_histories.get(t_a_id, {}).get(m_name, []), now, FORM_WINDOW_DAYS)["matches"]
+        m_b_30d_matches = get_recent_stats(ctx.map_histories.get(t_b_id, {}).get(m_name, []), now, FORM_WINDOW_DAYS)["matches"]
         
         cnt_a_txt = f"({m_a_30d_matches} maps)"
         if m_a_30d_matches < 3: cnt_a_txt = f"{RED}{cnt_a_txt}{RESET}"

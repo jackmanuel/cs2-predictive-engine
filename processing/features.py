@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, DATA_DIR, MIN_MATCHES_THRESHOLD, ROLLING_WINDOW_DAYS
+from config import PROCESSED_DIR, DATA_DIR, MIN_MATCHES_THRESHOLD, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, MAP_WINDOW_DAYS, WIN_STREAK_CAP, DEFAULT_SOS_RANK
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -39,12 +39,10 @@ def mirror_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     mirrored_df = df.copy()
     
-    # 1. Flip Differentials (columns ending in _diff)
     diff_cols = [c for c in df.columns if c.endswith("_diff")]
     for col in diff_cols:
         mirrored_df[col] = -df[col]
         
-    # 2. Swap Team-specific features (team_a_* <-> team_b_*)
     a_cols = [c for c in df.columns if c.startswith("team_a_")]
     for a_col in a_cols:
         suffix = a_col[7:] # remove "team_a_"
@@ -53,17 +51,14 @@ def mirror_data(df: pd.DataFrame) -> pd.DataFrame:
             mirrored_df[a_col] = df[b_col]
             mirrored_df[b_col] = df[a_col]
             
-    # 3. Swap H2H specific columns
     if "h2h_a_wins" in df.columns and "h2h_b_wins" in df.columns:
         mirrored_df["h2h_a_wins"] = df["h2h_b_wins"]
         mirrored_df["h2h_b_wins"] = df["h2h_a_wins"]
         
-    # 4. Swap score metadata if present
     if "score_a" in df.columns and "score_b" in df.columns:
         mirrored_df["score_a"] = df["score_b"]
         mirrored_df["score_b"] = df["score_a"]
         
-    # 5. Flip the target label
     if TARGET_COL in df.columns:
         mirrored_df[TARGET_COL] = 1 - df[TARGET_COL]
         
@@ -88,13 +83,13 @@ METADATA_COLS = [
 def get_sos(history, current_date, days):
     """Calculates average log-rank of opponents over a rolling window."""
     if not history:
-        return np.log(100) # Default: average opponent was rank 100
+        return np.log(DEFAULT_SOS_RANK)
         
     cutoff = current_date - pd.Timedelta(days=days)
     recent_ranks = [r for d, r in history if d >= cutoff]
     
     if not recent_ranks:
-        return np.log(100)
+        return np.log(DEFAULT_SOS_RANK)
         
     return sum(recent_ranks) / len(recent_ranks)
 
@@ -108,10 +103,8 @@ def get_recent_stats(history, current_date, days):
     for item in history:
         if item[0] < cutoff:
             continue
-        # Support both (date, win_bool) and (date, score_self, score_opp)
-        if len(item) == 4: # Added rank support
-            outcomes.append(1 if item[1] > item[2] else 0)
-        elif len(item) == 3:
+        # Tuples of len >= 3 contain scores: (date, score_self, score_opp[, rank])
+        if len(item) >= 3:
             outcomes.append(1 if item[1] > item[2] else 0)
         else:
             outcomes.append(item[1])
@@ -172,16 +165,16 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             t_b: current_streaks.get(t_b, 0)
         }
         
-        # Update current streaks (capped at 5)
+        # Update current streaks (capped at WIN_STREAK_CAP)
         # SKIP updating streaks if the match outcome was influenced by a forfeit
         if row.get("match_has_forfeit"):
             continue
 
         if winner == t_a:
-            current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, 5)
+            current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, WIN_STREAK_CAP)
             current_streaks[t_b] = 0
         else:
-            current_streaks[t_b] = min(current_streaks.get(t_b, 0) + 1, 5)
+            current_streaks[t_b] = min(current_streaks.get(t_b, 0) + 1, WIN_STREAK_CAP)
             current_streaks[t_a] = 0
             
     features_list = []
@@ -223,22 +216,18 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         if h2h_key not in h2h_stats:
             h2h_stats[h2h_key] = {h2h_key[0]: 0, h2h_key[1]: 0}
             
-        h2h_a_wins = h2h_stats[h2h_key].get(t_a, 0)
-        h2h_b_wins = h2h_stats[h2h_key].get(t_b, 0)
+        h2h_a_wins = h2h_stats[h2h_key].get(str(t_a), 0)
+        h2h_b_wins = h2h_stats[h2h_key].get(str(t_b), 0)
         
-        # HLTV Recent Form (BEFORE the map start)
-        gen_a_30d = get_recent_stats(team_general_history[t_a], date, 30)
-        gen_b_30d = get_recent_stats(team_general_history[t_b], date, 30)
-        gen_a_7d = get_recent_stats(team_general_history[t_a], date, 7)
-        gen_b_7d = get_recent_stats(team_general_history[t_b], date, 7)
+        gen_a_30d = get_recent_stats(team_general_history[t_a], date, FORM_WINDOW_DAYS)
+        gen_b_30d = get_recent_stats(team_general_history[t_b], date, FORM_WINDOW_DAYS)
+        gen_a_7d = get_recent_stats(team_general_history[t_a], date, FORM_WINDOW_DAYS_SHORT)
+        gen_b_7d = get_recent_stats(team_general_history[t_b], date, FORM_WINDOW_DAYS_SHORT)
         
-        # Streaks (from pre-calc)
         s_a = streaks_before_match[m_id].get(t_a, 0)
         s_b = streaks_before_match[m_id].get(t_b, 0)
         
-        # Differentials
-        # Rank Diff: log(rank_b) - log(rank_a)
-        # Positive value means Team A is favoured (higher-ranked/lower rank number)
+        # Positive rank_diff = Team A is higher-ranked (favoured)
         r_a = max(row["team_a_world_rank"], 1)
         r_b = max(row["team_b_world_rank"], 1)
         rank_diff = np.log(r_b) - np.log(r_a)
@@ -247,16 +236,15 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         wr_30d_diff = gen_a_30d["win_rate"] - gen_b_30d["win_rate"]
         wr_7d_diff = gen_a_7d["win_rate"] - gen_b_7d["win_rate"]
         
-        # HLTV Map-Specific Stats
+        # Map-Specific Stats
         # 1. Map Win Rate (90-day window for enough data)
         map_name = row["map_name"]
-        map_a_90d = get_recent_stats(team_map_history[t_a].get(map_name, []), date, 90)
-        map_b_90d = get_recent_stats(team_map_history[t_b].get(map_name, []), date, 90)
+        map_a_90d = get_recent_stats(team_map_history[t_a].get(map_name, []), date, MAP_WINDOW_DAYS)
+        map_b_90d = get_recent_stats(team_map_history[t_b].get(map_name, []), date, MAP_WINDOW_DAYS)
         map_wr_diff = map_a_90d["win_rate"] - map_b_90d["win_rate"]
         
-        # 2. Map Comfort (30-day first pick rate)
         def get_comfort(tid, m_name):
-            cutoff = date - pd.Timedelta(days=30)
+            cutoff = date - pd.Timedelta(days=FORM_WINDOW_DAYS)
             picks = len([d for d in team_first_picks[tid].get(m_name, []) if d >= cutoff])
             total = len([d for d in team_total_series[tid] if d >= cutoff])
             return picks / total if total > 0 else 0.0
@@ -265,20 +253,17 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         comfort_b = get_comfort(t_b, map_name)
         map_comfort_diff = comfort_a - comfort_b
         
-        # 3. Dominance & Resilience (30-day window)
-        dom_a = get_dominance_metrics(team_general_history[t_a], date, 30)
-        dom_b = get_dominance_metrics(team_general_history[t_b], date, 30)
+        dom_a = get_dominance_metrics(team_general_history[t_a], date, FORM_WINDOW_DAYS)
+        dom_b = get_dominance_metrics(team_general_history[t_b], date, FORM_WINDOW_DAYS)
         
         dominance_diff = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
         resilience_diff = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
         
-        # 4. Strength of Schedule (30-day window)
-        sos_a = get_sos(team_sos_history[t_a], date, 30)
-        sos_b = get_sos(team_sos_history[t_b], date, 30)
-        sos_diff = sos_a - sos_b
+        sos_a = get_sos(team_sos_history[t_a], date, FORM_WINDOW_DAYS)
+        sos_b = get_sos(team_sos_history[t_b], date, FORM_WINDOW_DAYS)
+        # Positive = Team A faced harder opponents (more battle-tested)
+        sos_diff = sos_b - sos_a
         
-        # 1. Model Features (Actual network inputs)
-        # ----------------------------------------
         feat_dict = {
             "rank_diff": rank_diff,
             "win_rate_30d_diff": wr_30d_diff,
@@ -296,8 +281,6 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "sos_diff": sos_diff
         }
         
-        # 2. Metadata & tracking (Not features, but needed for stats/filters)
-        # ----------------------------------------
         meta_dict = {
             "match_id": m_id,
             "map_name": row["map_name"],
@@ -352,9 +335,9 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             match_picked_seen[m_id].add(t_b)
         
         if win_a:
-            h2h_stats[h2h_key][t_a] += 1
+            h2h_stats[h2h_key][str(t_a)] += 1
         else:
-            h2h_stats[h2h_key][t_b] += 1
+            h2h_stats[h2h_key][str(t_b)] += 1
             
     return pd.DataFrame(features_list)
 

@@ -84,9 +84,8 @@ def train_model():
     test_df = df.iloc[val_idx:]
     
     # Apply data mirroring (augmentation) to make model order-robust
-    logger.info("Applying data mirroring to training and validation sets...")
+    logger.info("Applying data mirroring to training set...")
     train_df = mirror_data(train_df)
-    val_df = mirror_data(val_df)
     
     logger.info(f"Split sizes (after mirroring) -> Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
@@ -108,7 +107,8 @@ def train_model():
     model = MatchPredictor(input_dim)
     
     criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
     best_val_loss = float("inf")
     patience_counter = 0
@@ -137,8 +137,10 @@ def train_model():
                 loss = criterion(preds, y_batch)
                 val_loss += loss.item() * len(X_batch)
         val_loss /= len(val_dataset)
+        scheduler.step(val_loss)
         
-        logger.info(f"Epoch {epoch+1:03d}/{EPOCHS} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}")
+        current_lr = optimizer.param_groups[0]['lr']
+        logger.info(f"Epoch {epoch+1:03d}/{EPOCHS} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} - LR: {current_lr:.1e}")
         
         if val_loss < best_val_loss:
             best_val_loss = val_loss

@@ -6,6 +6,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.predict import calculate_expected_series_win
+from config import MC_ITERATIONS, MC_THRESHOLD
 
 def main():
     parser = argparse.ArgumentParser(description="Full CS2 Series Win Predictor (Veto Sim + Neural Network)")
@@ -13,8 +14,8 @@ def main():
     parser.add_argument("team_b", help="Name of Team B")
     parser.add_argument("--format", choices=["bo1", "bo3", "bo5"], default="bo3", help="Series format (default: bo3)")
     parser.add_argument("--starts-veto", help="Which team starts the veto (team_a/a or team_b/b). Defaults to random.")
-    parser.add_argument("--iters", type=int, default=10000, help="Monte Carlo iterations for veto simulation (default: 10000)")
-    parser.add_argument("--threshold", type=float, default=0.90, help="Probability truncation threshold (default: 0.90)")
+    parser.add_argument("--iters", type=int, default=MC_ITERATIONS, help=f"Monte Carlo iterations for veto simulation (default: {MC_ITERATIONS})")
+    parser.add_argument("--threshold", type=float, default=MC_THRESHOLD, help=f"Probability truncation threshold (default: {MC_THRESHOLD})")
     
     args = parser.parse_args()
 

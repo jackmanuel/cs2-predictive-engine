@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.predict import calculate_expected_series_win
 from ingestion.hltv_client import HLTVClient
+from config import MC_ITERATIONS, MC_THRESHOLD
 
 logging.basicConfig(
     level=logging.INFO,
@@ -101,8 +102,8 @@ def main():
     parser.add_argument("--event-id", type=int, help="HLTV Event ID to scrape matches from")
     parser.add_argument("--output", default=os.path.join("reports", default_report_name), help=f"Output file path (default: reports/{default_report_name})")
     parser.add_argument("--html-file", help="Path to a local HTML file to parse (skips scraping)")
-    parser.add_argument("--iters", type=int, default=10000, help="MC iterations for veto simulation")
-    parser.add_argument("--threshold", type=float, default=0.90, help="Probability truncation threshold")
+    parser.add_argument("--iters", type=int, default=MC_ITERATIONS, help="MC iterations for veto simulation")
+    parser.add_argument("--threshold", type=float, default=MC_THRESHOLD, help="Probability truncation threshold")
     
     args = parser.parse_args()
 
