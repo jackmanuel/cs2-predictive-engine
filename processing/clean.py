@@ -4,6 +4,7 @@ import logging
 import re
 import json
 from pathlib import Path
+from typing import List
 import pandas as pd
 
 # Ensure project root is in path for config import
@@ -49,7 +50,22 @@ def normalize_format(fmt: str) -> str:
         
     return "unknown"
 
-def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, ranks=None, match_format="unknown"):
+def detect_is_lan(match_info: List[str]) -> bool:
+    """Detects whether a match was played on LAN from the match_info blurbs.
+    
+    HLTV formats this as 'Best of N (LAN)' or 'Best of N (Online)' in the
+    first element of the match_info list.
+    """
+    if not match_info:
+        return False
+    for line in match_info:
+        if re.search(r'\(lan\)', line, re.IGNORECASE):
+            return True
+        if re.search(r'\(online\)', line, re.IGNORECASE):
+            return False
+    return False
+
+def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, ranks=None, match_format="unknown", is_lan=False):
     """Common logic to extract a map row from HLTV map object."""
     map_name = m_data.get("map_name")
     if not map_name or map_name.lower() == "tbd":
@@ -140,7 +156,8 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
         "team_b_world_rank": r_b_world,
         "team_b_vrs_rank": r_b_vrs,
         "match_format": match_format,
-        "is_forfeit": map_name.lower() in ["default", "forfeit"]
+        "is_forfeit": map_name.lower() in ["default", "forfeit"],
+        "is_lan": is_lan
     }
 
 def load_raw_maps() -> pd.DataFrame:
@@ -165,8 +182,11 @@ def load_raw_maps() -> pd.DataFrame:
             # HLTV format is already in the match object
             m_format = normalize_format(match.get("format", "unknown"))
 
+            # Detect LAN vs Online from match_info blurbs
+            is_lan = detect_is_lan(match.get("match_info", []))
+
             for m_data in match.get("hltv_maps", []):
-                row = process_hltv_map_data(m_data, t1, t2, t1_id, t2_id, m_id, m_date, ranks, match_format=m_format)
+                row = process_hltv_map_data(m_data, t1, t2, t1_id, t2_id, m_id, m_date, ranks, match_format=m_format, is_lan=is_lan)
                 if row: all_maps.append(row)
                 
     df = pd.DataFrame(all_maps)

@@ -26,7 +26,8 @@ MODEL_FEATURES = [
     "dominance_diff",
     "resilience_diff",
     "avg_log_rank",
-    "sos_diff"
+    "sos_diff",
+    "lan_rate_diff"
 ]
 
 TARGET_COL = "label"
@@ -77,7 +78,8 @@ METADATA_COLS = [
     "score_b",
     "team_a_gen_matches_30d",
     "team_b_gen_matches_30d",
-    "match_has_forfeit"
+    "match_has_forfeit",
+    "is_lan"
 ]
 
 def get_sos(history, current_date, days):
@@ -187,6 +189,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     match_picked_seen = {}    # match_id -> set(team_id)
     h2h_stats = {}            # (team_x, team_y) (sorted) -> wins_x, wins_y
     team_sos_history = {}     # team_id -> [(datetime, log_rank_opp)]
+    team_lan_history = {}     # team_id -> [(datetime, is_lan_bool)]
     
     def init_team(tid):
         if tid not in team_general_history:
@@ -199,6 +202,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             team_total_series[tid] = []
         if tid not in team_sos_history:
             team_sos_history[tid] = []
+        if tid not in team_lan_history:
+            team_lan_history[tid] = []
 
     logger.info("Computing reduced map-level features temporally...")
     
@@ -264,6 +269,20 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         # Positive = Team A faced harder opponents (more battle-tested)
         sos_diff = sos_b - sos_a
         
+        # LAN Rate: percentage of recent matches played on LAN
+        def get_lan_rate(history, current_date, days):
+            if not history:
+                return 0.0
+            cutoff = current_date - pd.Timedelta(days=days)
+            recent = [is_l for d, is_l in history if d >= cutoff]
+            if not recent:
+                return 0.0
+            return sum(recent) / len(recent)
+        
+        lan_rate_a = get_lan_rate(team_lan_history[t_a], date, FORM_WINDOW_DAYS)
+        lan_rate_b = get_lan_rate(team_lan_history[t_b], date, FORM_WINDOW_DAYS)
+        lan_rate_diff = lan_rate_a - lan_rate_b
+        
         feat_dict = {
             "rank_diff": rank_diff,
             "win_rate_30d_diff": wr_30d_diff,
@@ -278,7 +297,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "dominance_diff": dominance_diff,
             "resilience_diff": resilience_diff,
             "avg_log_rank": avg_log_rank,
-            "sos_diff": sos_diff
+            "sos_diff": sos_diff,
+            "lan_rate_diff": lan_rate_diff
         }
         
         meta_dict = {
@@ -292,7 +312,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "score_b": row.get("score_b", 0),
             "team_a_gen_matches_30d": gen_a_30d["matches"],
             "team_b_gen_matches_30d": gen_b_30d["matches"],
-            "match_has_forfeit": row.get("match_has_forfeit", False)
+            "match_has_forfeit": row.get("match_has_forfeit", False),
+            "is_lan": row.get("is_lan", False)
         }
         
         # 3. Label (What we are predicting)
@@ -312,6 +333,11 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         
         team_sos_history[t_a].append((date, np.log(r_b)))
         team_sos_history[t_b].append((date, np.log(r_a)))
+        
+        # Track LAN history
+        is_lan = 1 if row.get("is_lan", False) else 0
+        team_lan_history[t_a].append((date, is_lan))
+        team_lan_history[t_b].append((date, is_lan))
         
         if map_name not in team_map_history[t_a]: team_map_history[t_a][map_name] = []
         if map_name not in team_map_history[t_b]: team_map_history[t_b][map_name] = []

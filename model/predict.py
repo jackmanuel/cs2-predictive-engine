@@ -98,6 +98,7 @@ def load_latest_state():
     team_latest_ranks = {} # team_id -> {"world": int}
     h2h_stats = {}
     team_sos_history = {}  # team_id -> [(datetime, log_rank_opp)]
+    team_lan_history = {}  # team_id -> [(datetime, is_lan_int)]
     current_streaks = {}   # team_id -> int
     match_picked_seen = {} # match_id -> set
     
@@ -143,6 +144,8 @@ def load_latest_state():
             
         if t_a not in team_sos_history: team_sos_history[t_a] = []
         if t_b not in team_sos_history: team_sos_history[t_b] = []
+        if t_a not in team_lan_history: team_lan_history[t_a] = []
+        if t_b not in team_lan_history: team_lan_history[t_b] = []
             
         r_a = row["team_a_world_rank"]
         r_b = row["team_b_world_rank"]
@@ -154,6 +157,10 @@ def load_latest_state():
         team_general_histories[t_b].append((date, score_b, score_a, r_a))
         team_sos_history[t_a].append((date, np.log(max(r_b, 1))))
         team_sos_history[t_b].append((date, np.log(max(r_a, 1))))
+        
+        is_lan = 1 if row.get("is_lan", False) else 0
+        team_lan_history[t_a].append((date, is_lan))
+        team_lan_history[t_b].append((date, is_lan))
         team_map_histories[t_a][map_name].append((date, 1 if label == 1 else 0))
         team_map_histories[t_b][map_name].append((date, 1 if label == 0 else 0))
         
@@ -186,7 +193,7 @@ def load_latest_state():
         else:
             h2h_stats[h2h_key][str(t_b)] += 1
             
-    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks, team_first_picks, team_total_series, team_sos_history
+    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks, team_first_picks, team_total_series, team_sos_history, team_lan_history
 
 def combine_probs(probs: List[float], bo: int) -> float:
     """
@@ -231,7 +238,8 @@ class PredictorContext:
     """
     def __init__(self):
         self.gen_histories, self.map_histories, self.latest_ranks, self.h2h_stats, \
-        self.latest_streaks, self.team_fpicks, self.team_tseries, self.sos_histories = load_latest_state()
+        self.latest_streaks, self.team_fpicks, self.team_tseries, self.sos_histories, \
+        self.lan_histories = load_latest_state()
         
         scaler_path = CHECKPOINT_DIR / "scaler.pkl"
         model_path = CHECKPOINT_DIR / "best_mvp_model.pt"
@@ -243,7 +251,7 @@ class PredictorContext:
         self.model.load_state_dict(torch.load(model_path, weights_only=True, map_location=torch.device('cpu')))
         self.model.eval()
 
-def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps: List[str], picker_override: str = "neutral", veto_starter: str = "a") -> List[float]:
+def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps: List[str], picker_override: str = "neutral", veto_starter: str = "a", is_lan: bool = False) -> List[float]:
     """
     Calculates map-level win probabilities for a given matchup and map set.
     """
@@ -325,6 +333,20 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
         sos_b = get_sos(ctx.sos_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS)
         # Positive = Team A faced harder opponents (more battle-tested)
         sos_diff = sos_b - sos_a
+        
+        # LAN Rate: percentage of recent matches played on LAN
+        def get_lan_rate(history, current_date, days):
+            if not history:
+                return 0.0
+            cutoff = current_date - pd.Timedelta(days=days)
+            recent = [is_l for d, is_l in history if d >= cutoff]
+            if not recent:
+                return 0.0
+            return sum(recent) / len(recent)
+        
+        lan_rate_a = get_lan_rate(ctx.lan_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS)
+        lan_rate_b = get_lan_rate(ctx.lan_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS)
+        lan_rate_diff = lan_rate_a - lan_rate_b
 
         feat_vals = {
             "rank_diff": rank_diff,
@@ -340,7 +362,8 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             "dominance_diff": dominance_diff,
             "resilience_diff": resilience_diff,
             "avg_log_rank": avg_log_rank,
-            "sos_diff": sos_diff
+            "sos_diff": sos_diff,
+            "lan_rate_diff": lan_rate_diff
         }
         
         f_vec = np.array([[feat_vals[col] for col in MODEL_FEATURES]], dtype=np.float32)
