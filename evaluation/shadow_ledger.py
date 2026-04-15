@@ -265,18 +265,37 @@ def record_predictions(match_results: list, version_id: str = None):
 # ---------------------------------------------------------------------------
 
 def refresh_shadow():
-    """Resolves pending shadow bets by checking HLTV match results."""
+    """Resolves pending shadow bets by checking HLTV match results.
+    Only checks matches whose scheduled start time has already passed."""
     conn = get_db()
     try:
+        now = datetime.now()
+        now_str = now.strftime("%Y-%m-%d %H:%M")
+
+        # Only check matches that should have started by now.
+        # Matches without a date are always checked (no data to filter on).
         pending = conn.execute(
-            "SELECT match_url, team_a, team_b FROM matches WHERE result = 'Pending'"
+            """SELECT match_url, team_a, team_b, match_date, match_time
+               FROM matches
+               WHERE result = 'Pending'
+                 AND (match_date IS NULL
+                      OR match_date || ' ' || COALESCE(match_time, '00:00') <= ?)""",
+            (now_str,),
         ).fetchall()
 
+        all_pending = conn.execute(
+            "SELECT COUNT(*) FROM matches WHERE result = 'Pending'"
+        ).fetchone()[0]
+        skipped = all_pending - len(pending)
+
         if not pending:
-            logger.info("No pending shadow bets to resolve.")
+            if skipped > 0:
+                logger.info(f"No matches ready to resolve ({skipped} still upcoming).")
+            else:
+                logger.info("No pending shadow bets to resolve.")
             return
 
-        logger.info(f"Resolving {len(pending)} pending shadow bets...")
+        logger.info(f"Resolving {len(pending)} past matches ({skipped} upcoming, skipped)...")
         client = HLTVClient()
         updated = 0
 
@@ -309,7 +328,7 @@ def refresh_shadow():
 
             if updated > 0:
                 conn.commit()
-            logger.info(f"Resolved {updated}/{len(pending)} pending bets.")
+            logger.info(f"Resolved {updated}/{len(pending)} past matches.")
         finally:
             client.stop()
     finally:
