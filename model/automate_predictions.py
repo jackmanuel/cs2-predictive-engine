@@ -158,6 +158,25 @@ def main():
             logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Undetermined/Placeholder participants)")
             continue
 
+        # Skip matches that have already started (mid-game odds are meaningless for pre-match model)
+        m_date = match.get('date')
+        m_time = match.get('time')
+        if m_date and m_time:
+            try:
+                m_dt = datetime.strptime(f"{m_date} {m_time}", "%Y-%m-%d %H:%M")
+                if datetime.now() > m_dt:
+                    logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Match already started at {m_date} {m_time})")
+                    continue
+                
+                # Check if match is more than 3 days away
+                is_later = (m_dt - datetime.now()).total_seconds() > (3 * 24 * 3600)
+            except ValueError:
+                is_later = False
+        else:
+            # If there's no date/time, HLTV has likely replaced the timestamp with a "LIVE" badge
+            logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Match is LIVE or lacks start time)")
+            continue
+
         fmt = match['format']
         match_url = match['url']
         
@@ -226,7 +245,8 @@ def main():
                 "max_edge": max_edge,
                 "is_value_t1": is_value_t1,
                 "is_value_t2": is_value_t2,
-                "seq_counts": seq_counts
+                "seq_counts": seq_counts,
+                "is_later": is_later
             })
 
         except Exception as e:
@@ -283,9 +303,11 @@ def main():
         edge2_str = f"{item['edge2']:+.1f}%" if item['unnorm2'] is not None else "N/A"
 
         # Build Match Entry
+        start_time_str = f"{item['match']['date']} {item['match']['time']}"
         card = simple_format(MATCH_CARD_TEMPLATE,
             url=item['match']['url'],
-            event=item['match'].get('id', 'Match'),
+            event=item['match'].get('event', 'Match'),
+            start_time=start_time_str,
             format=item['fmt'].upper(),
             team1=item['team_a'],
             team2=item['team_b'],
@@ -307,6 +329,11 @@ def main():
             value_badge1=value_badge1,
             value_badge2=value_badge2
         )
+        
+        # Wrap in a div if it's a later match
+        if item['is_later']:
+            card = f'<div class="later-match">{card}</div>'
+        
         cards_html_list.append(card)
 
     # Final HTML assembly

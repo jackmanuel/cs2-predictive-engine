@@ -157,6 +157,60 @@
             font-weight: 700;
         }
 
+        .event-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            flex: 1;
+            min-width: 0; /* Important for ellipsis in flexbox */
+            margin-right: 1rem;
+        }
+
+        .event-name {
+            font-weight: 700;
+            color: var(--text-main);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .match-time-stamp {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            font-weight: 500;
+        }
+
+        .later-matches-toggle-container {
+            display: flex;
+            justify-content: center;
+            margin-top: 3rem;
+            margin-bottom: 5rem;
+        }
+
+        #show-later-btn {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: #000;
+            border: none;
+            padding: 1rem 2.5rem;
+            border-radius: 3rem;
+            font-weight: 800;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            box-shadow: 0 4px 15px rgba(56, 189, 248, 0.4);
+        }
+
+        #show-later-btn:hover {
+            transform: translateY(-3px) scale(1.02);
+            box-shadow: 0 8px 25px rgba(56, 189, 248, 0.6);
+        }
+
+        #show-later-btn.hidden { display: none; }
+        
+        /* Hide later matches by default via class on body */
+        body.hide-later .later-match { display: none !important; }
+
         .edge-label { font-size: 0.9rem; font-weight: 800; display: block; margin-top: 0.2rem; }
         .edge-pos { color: var(--success); }
         .edge-neg { color: var(--text-dim); font-weight: 400; opacity: 0.7; }
@@ -344,7 +398,7 @@
         }
     </style>
 </head>
-<body>
+<body class="hide-later">
     <div class="container">
         <header>
             <div>
@@ -359,6 +413,13 @@
                         <span class="slider round"></span>
                     </label>
                     <span>Normalised</span>
+                </div>
+                <div class="toggle-container">
+                    <span>Later Matches</span>
+                    <label class="switch">
+                        <input type="checkbox" id="later-toggle">
+                        <span class="slider round"></span>
+                    </label>
                 </div>
                 <p>Generated: {gen_time}</p>
                 <p>MC Sim: {iters:,} iters | {threshold_pct:.0f}% Threshold</p>
@@ -379,6 +440,15 @@
                 body.classList.remove('show-unnorm');
             } else {
                 body.classList.add('show-unnorm');
+            }
+        });
+
+        const laterToggle = document.getElementById('later-toggle');
+        laterToggle.addEventListener('change', () => {
+            if (laterToggle.checked) {
+                body.classList.remove('hide-later');
+            } else {
+                body.classList.add('hide-later');
             }
         });
     </script>

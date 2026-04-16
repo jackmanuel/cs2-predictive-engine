@@ -528,6 +528,10 @@ class HLTVClient:
             meta_el = wrapper.find('div', class_='match-meta')
             match_data['format'] = meta_el.text.strip().lower() if meta_el else "bo3"
             
+            # Event Name
+            event_el = wrapper.find('div', class_='match-event-name') or wrapper.find('div', class_='match-event')
+            match_data['event'] = event_el.text.strip() if event_el else "Unknown Event"
+
             # Odds - Found in match-fixtures
             odds_wrapper = wrapper.find('div', class_='odds-wrapper')
             if odds_wrapper:
