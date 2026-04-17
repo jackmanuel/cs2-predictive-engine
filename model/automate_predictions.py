@@ -216,12 +216,12 @@ def main():
                 unnorm2 = (1.0 / o2) * 100
 
             # Calculate Edge (Model Prob - Unnormalised Prob)
-            edge1 = (prob1 * 100) - unnorm1 if unnorm1 is not None else -100
-            edge2 = (prob2 * 100) - unnorm2 if unnorm2 is not None else -100
+            edge1 = (prob1 * 100) - unnorm1 if unnorm1 is not None else None
+            edge2 = (prob2 * 100) - unnorm2 if unnorm2 is not None else None
             
-            max_edge = max(edge1, edge2)
-            is_value_t1 = edge1 > 2.0 # 2% threshold for "value"
-            is_value_t2 = edge2 > 2.0
+            max_edge = max(edge1, edge2) if edge1 is not None and edge2 is not None else None
+            is_value_t1 = (edge1 > 2.0) if edge1 is not None else False
+            is_value_t2 = (edge2 > 2.0) if edge2 is not None else False
             
             t1_maps = len(shared_ctx.gen_histories.get(t_a_id, []))
             t2_maps = len(shared_ctx.gen_histories.get(t_b_id, []))
@@ -260,7 +260,7 @@ def main():
             logger.error(f"Error predicting {team_a} vs {team_b}: {e}")
 
     # Sort by model predicted edge
-    match_results.sort(key=lambda x: x['max_edge'], reverse=True)
+    match_results.sort(key=lambda x: x['max_edge'] if x['max_edge'] is not None else -9999, reverse=True)
 
     cards_html_list = []
     for item in match_results:
@@ -304,8 +304,8 @@ def main():
         value_badge2 = '<span class="value-badge">BEST VALUE</span>' if item['is_value_t2'] else ""
 
         # Edge Labels
-        edge1_class = "edge-pos" if item['edge1'] > 0 else "edge-neg"
-        edge2_class = "edge-pos" if item['edge2'] > 0 else "edge-neg"
+        edge1_class = "edge-pos" if (item['edge1'] is not None and item['edge1'] > 0) else "edge-neg"
+        edge2_class = "edge-pos" if (item['edge2'] is not None and item['edge2'] > 0) else "edge-neg"
         edge1_str = f"{item['edge1']:+.1f}%" if item['unnorm1'] is not None else "N/A"
         edge2_str = f"{item['edge2']:+.1f}%" if item['unnorm2'] is not None else "N/A"
 

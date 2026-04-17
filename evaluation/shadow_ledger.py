@@ -369,20 +369,20 @@ def show_report():
         print("Shadow ledger is empty.")
         return
 
-    df_valid = df[df["valid_for_eval"] == 1]
-    invalid_count = len(df) - len(df_valid)
-    df = df_valid
-
+    df_all = df.copy()
+    df = df[df["valid_for_eval"] == 1].copy()
+    invalid_count = len(df_all) - len(df)
+    
     settled = df[df["result"].isin(["team_a", "team_b"])].copy()
-    pending = df[df["result"] == "Pending"]
+    pending = df[df["result"] == "Pending"].copy()
 
     print(f"\n{'='*60}")
     print(f" SHADOW LEDGER CALIBRATION REPORT")
     print(f"{'='*60}")
+    print(f" Total matches:    {len(df_all)}")
+    print(f" Valid matches:    {len(df)} (Settled: {len(settled)}, Pending: {len(pending)})")
     if invalid_count > 0:
-        print(f" Total: {len(df) + invalid_count} | Settled: {len(settled)} | Pending: {len(pending)} | Excluded (<10 maps): {invalid_count}")
-    else:
-        print(f" Total: {len(df)} | Settled: {len(settled)} | Pending: {len(pending)}")
+        print(f" Excluded matches: {invalid_count} (<10 maps of historical data)")
     print(f"{'='*60}")
 
     if settled.empty:
@@ -399,8 +399,10 @@ def show_report():
         f"\n Model Favourite Accuracy: {settled['fav_correct'].sum()}/{len(settled)} ({overall_acc:.1f}%)"
     )
 
-    # Edge-bucket analysis
-    has_edge = settled[settled["best_edge"].notna()].copy()
+    # Edge-bucket analysis (Only count matches where we have a positive edge/actionable bet)
+    has_edge = settled[(settled["best_edge"].notna()) & (settled["best_edge"] >= 0)].copy()
+    no_edge_count = len(settled) - len(has_edge)
+
     if not has_edge.empty:
         has_edge["edge_bet_won"] = has_edge["best_bet"] == has_edge["result"]
 
@@ -420,7 +422,9 @@ def show_report():
         tot_conf_roi = (has_edge["conf_profit"].sum() / tot_conf_inv * 100) if tot_conf_inv > 0 else 0.0
 
         print(f"\n{'-'*60}")
-        print(f" Edge Betting Strategy Returns")
+        print(f" Edge Betting Strategy Returns ({len(has_edge)} actionable bets)")
+        if no_edge_count > 0:
+            print(f" (Skipped {no_edge_count} matches with missing odds or negative edge)")
         print(f" Flat Betting Strategy ROI:       {tot_flat_roi:>+6.1f}% (1 unit per bet)")
         print(f" Confidence Betting Strategy ROI: {tot_conf_roi:>+6.1f}% (Units = edge %)")
 
