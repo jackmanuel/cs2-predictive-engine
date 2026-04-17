@@ -43,7 +43,7 @@ class HLTVClient:
         logger.debug(f"Waiting {sleep_time:.1f}s for page load/Cloudflare...")
         time.sleep(sleep_time)
 
-    def fetch_recent_results(self, pages: int = 1) -> List[Dict]:
+    def fetch_recent_results(self, pages: int = 1, start_page: int = 0) -> List[Dict]:
         """
         Fetches the recent match results from HLTV's /results page.
         Returns a list of match dictionaries containing URL, team names, format, event and date.
@@ -54,7 +54,7 @@ class HLTVClient:
         results = []
         base_url = "https://www.hltv.org/results"
         
-        for p in range(pages):
+        for p in range(start_page, start_page + pages):
             offset = p * 100
             url = f"{base_url}?offset={offset}" if offset > 0 else base_url
             
