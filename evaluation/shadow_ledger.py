@@ -71,9 +71,9 @@ CREATE TABLE IF NOT EXISTS snapshots (
     implied_prob_a  REAL,
     implied_prob_b  REAL,
     edge_a          REAL,
-    edge_b          REAL,
     best_bet        TEXT,
-    best_edge       REAL
+    best_edge       REAL,
+    valid_for_eval  INTEGER DEFAULT 1
 );
 """
 
@@ -226,12 +226,14 @@ def record_predictions(match_results: list, version_id: str = None):
                 best_bet = "team_a" if prob_a >= 0.5 else "team_b"
                 best_edge = None
 
+            valid_val = item.get("valid_for_eval", 1)
+
             conn.execute(
                 """INSERT INTO snapshots
                    (match_url, version_id, timestamp, model_prob_a,
                     odds_a, odds_b, implied_prob_a, implied_prob_b,
-                    edge_a, edge_b, best_bet, best_edge)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    edge_a, edge_b, best_bet, best_edge, valid_for_eval)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     url,
                     version_id,
@@ -245,6 +247,7 @@ def record_predictions(match_results: list, version_id: str = None):
                     round(edge_b, 2) if edge_b is not None else None,
                     best_bet,
                     round(best_edge, 2) if best_edge is not None else None,
+                    valid_val
                 ),
             )
             added += 1
@@ -347,7 +350,7 @@ def show_report():
         df = pd.read_sql_query(
             """
             SELECT m.match_url, m.team_a, m.team_b, m.result,
-                   s.model_prob_a, s.best_bet, s.best_edge, s.version_id
+                   s.model_prob_a, s.best_bet, s.best_edge, s.version_id, s.valid_for_eval
             FROM matches m
             JOIN (
                 SELECT match_url, MAX(id) as max_id
@@ -365,13 +368,20 @@ def show_report():
         print("Shadow ledger is empty.")
         return
 
+    df_valid = df[df["valid_for_eval"] == 1]
+    invalid_count = len(df) - len(df_valid)
+    df = df_valid
+
     settled = df[df["result"].isin(["team_a", "team_b"])].copy()
     pending = df[df["result"] == "Pending"]
 
     print(f"\n{'='*60}")
     print(f" SHADOW LEDGER CALIBRATION REPORT")
     print(f"{'='*60}")
-    print(f" Total: {len(df)} | Settled: {len(settled)} | Pending: {len(pending)}")
+    if invalid_count > 0:
+        print(f" Total: {len(df) + invalid_count} | Settled: {len(settled)} | Pending: {len(pending)} | Excluded (<10 maps): {invalid_count}")
+    else:
+        print(f" Total: {len(df)} | Settled: {len(settled)} | Pending: {len(pending)}")
     print(f"{'='*60}")
 
     if settled.empty:
@@ -393,7 +403,7 @@ def show_report():
     if not has_edge.empty:
         has_edge["edge_bet_won"] = has_edge["best_bet"] == has_edge["result"]
 
-        print(f"\n{'─'*60}")
+        print(f"\n{'-'*60}")
         print(f" Edge Bucket Analysis (best edge side)")
         print(f" {'Bucket':>10} | {'W':>4} | {'L':>4} | {'Win%':>6} | {'Avg Edge':>9}")
         print(f" {'-'*10}-+-{'-'*4}-+-{'-'*4}-+-{'-'*6}-+-{'-'*9}")
@@ -421,7 +431,7 @@ def show_report():
         fav_bets = has_edge[has_edge["bet_is_fav"]]
         dog_bets = has_edge[~has_edge["bet_is_fav"]]
 
-        print(f"\n{'─'*60}")
+        print(f"\n{'-'*60}")
         print(f" Favourite vs Underdog (edge-side bets only)")
 
         if not fav_bets.empty:
@@ -434,7 +444,7 @@ def show_report():
     # Version breakdown
     versions = settled["version_id"].value_counts()
     if len(versions) > 1:
-        print(f"\n{'─'*60}")
+        print(f"\n{'-'*60}")
         print(f" Performance by Model Version")
         for vid, count in versions.items():
             v_df = settled[settled["version_id"] == vid]
@@ -452,7 +462,7 @@ def show_list():
             """
             SELECT m.match_date, m.team_a, m.team_b, m.format,
                    s.model_prob_a, s.best_bet, s.best_edge, s.odds_a, s.odds_b,
-                   m.result, s.version_id,
+                   m.result, s.version_id, s.valid_for_eval,
                    (SELECT COUNT(*) FROM snapshots WHERE match_url = m.match_url) as num_snapshots
             FROM matches m
             JOIN (

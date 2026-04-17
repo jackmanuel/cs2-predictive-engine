@@ -223,6 +223,10 @@ def main():
             is_value_t1 = edge1 > 2.0 # 2% threshold for "value"
             is_value_t2 = edge2 > 2.0
             
+            t1_maps = len(shared_ctx.gen_histories.get(t_a_id, []))
+            t2_maps = len(shared_ctx.gen_histories.get(t_b_id, []))
+            valid_for_eval = 1 if (t1_maps >= 10 and t2_maps >= 10) else 0
+
             match_results.append({
                 "match": match,
                 "team_a": team_a,
@@ -246,7 +250,10 @@ def main():
                 "is_value_t1": is_value_t1,
                 "is_value_t2": is_value_t2,
                 "seq_counts": seq_counts,
-                "is_later": is_later
+                "is_later": is_later,
+                "t1_maps": t1_maps,
+                "t2_maps": t2_maps,
+                "valid_for_eval": valid_for_eval
             })
 
         except Exception as e:
@@ -324,8 +331,8 @@ def main():
             team2_short=item['t_b_id'][:12],
             odds_section=odds_section,
             veto_items=veto_items,
-            t1_maps=len(shared_ctx.gen_histories.get(item['t_a_id'], [])),
-            t2_maps=len(shared_ctx.gen_histories.get(item['t_b_id'], [])),
+            t1_maps=item['t1_maps'],
+            t2_maps=item['t2_maps'],
             value_badge1=value_badge1,
             value_badge2=value_badge2
         )
