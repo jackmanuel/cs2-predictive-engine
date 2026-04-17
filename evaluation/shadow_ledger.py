@@ -350,7 +350,8 @@ def show_report():
         df = pd.read_sql_query(
             """
             SELECT m.match_url, m.team_a, m.team_b, m.result,
-                   s.model_prob_a, s.best_bet, s.best_edge, s.version_id, s.valid_for_eval
+                   s.model_prob_a, s.best_bet, s.best_edge, s.version_id, s.valid_for_eval,
+                   s.odds_a, s.odds_b
             FROM matches m
             JOIN (
                 SELECT match_url, MAX(id) as max_id
@@ -403,10 +404,30 @@ def show_report():
     if not has_edge.empty:
         has_edge["edge_bet_won"] = has_edge["best_bet"] == has_edge["result"]
 
+        has_edge["bet_odds"] = has_edge.apply(
+            lambda r: r["odds_a"] if r["best_bet"] == "team_a" else r["odds_b"], axis=1
+        )
+        has_edge["flat_profit"] = has_edge.apply(
+            lambda r: (r["bet_odds"] - 1) if r["edge_bet_won"] else -1, axis=1
+        )
+        has_edge["conf_bet"] = has_edge["best_edge"].apply(lambda e: max(0, e))
+        has_edge["conf_profit"] = has_edge.apply(
+            lambda r: r["conf_bet"] * (r["bet_odds"] - 1) if r["edge_bet_won"] else -r["conf_bet"], axis=1
+        )
+
+        tot_flat_roi = (has_edge["flat_profit"].sum() / len(has_edge)) * 100
+        tot_conf_inv = has_edge["conf_bet"].sum()
+        tot_conf_roi = (has_edge["conf_profit"].sum() / tot_conf_inv * 100) if tot_conf_inv > 0 else 0.0
+
+        print(f"\n{'-'*60}")
+        print(f" Edge Betting Strategy Returns")
+        print(f" Flat Betting Strategy ROI:       {tot_flat_roi:>+6.1f}% (1 unit per bet)")
+        print(f" Confidence Betting Strategy ROI: {tot_conf_roi:>+6.1f}% (Units = edge %)")
+
         print(f"\n{'-'*60}")
         print(f" Edge Bucket Analysis (best edge side)")
-        print(f" {'Bucket':>10} | {'W':>4} | {'L':>4} | {'Win%':>6} | {'Avg Edge':>9}")
-        print(f" {'-'*10}-+-{'-'*4}-+-{'-'*4}-+-{'-'*6}-+-{'-'*9}")
+        print(f" {'Bucket':>10} | {'W':>4} | {'L':>4} | {'Win%':>6} | {'Avg Edge':>9} | {'Flat ROI':>9} | {'Conf ROI':>9}")
+        print(f" {'-'*10}-+-{'-'*4}-+-{'-'*4}-+-{'-'*6}-+-{'-'*9}-+-{'-'*9}-+-{'-'*9}")
 
         buckets = [(0, 2, "  <2%"), (2, 5, " 2-5%"), (5, 10, "5-10%"), (10, 999, " 10%+")]
         for lo, hi, label in buckets:
@@ -418,7 +439,12 @@ def show_report():
                 l = len(bucket) - w
                 wr = w / len(bucket) * 100
                 avg_e = bucket["best_edge"].mean()
-                print(f" {label:>10} | {w:>4} | {l:>4} | {wr:>5.1f}% | {avg_e:>+8.1f}%")
+                flat_p = bucket["flat_profit"].sum()
+                flat_roi = (flat_p / len(bucket)) * 100
+                conf_p = bucket["conf_profit"].sum()
+                conf_invested = bucket["conf_bet"].sum()
+                conf_roi = (conf_p / conf_invested * 100) if conf_invested > 0 else 0.0
+                print(f" {label:>10} | {w:>4} | {l:>4} | {wr:>5.1f}% | {avg_e:>+8.1f}% | {flat_roi:>+8.1f}% | {conf_roi:>+8.1f}%")
 
     # Favourite vs underdog
     if has_edge is not None and not has_edge.empty:
@@ -436,10 +462,16 @@ def show_report():
 
         if not fav_bets.empty:
             fw = fav_bets["edge_bet_won"].sum()
-            print(f" Backing favourites:  {fw}/{len(fav_bets)} ({fw/len(fav_bets)*100:.1f}%)")
+            flat_roi = (fav_bets["flat_profit"].sum() / len(fav_bets)) * 100
+            conf_inv = fav_bets["conf_bet"].sum()
+            conf_roi = (fav_bets["conf_profit"].sum() / conf_inv * 100) if conf_inv > 0 else 0.0
+            print(f" Backing favourites:  {fw:>2}/{len(fav_bets):<2} ({fw/len(fav_bets)*100:>4.1f}%) | Flat ROI: {flat_roi:>+6.1f}% | Conf ROI: {conf_roi:>+6.1f}%")
         if not dog_bets.empty:
             dw = dog_bets["edge_bet_won"].sum()
-            print(f" Backing underdogs:   {dw}/{len(dog_bets)} ({dw/len(dog_bets)*100:.1f}%)")
+            flat_roi = (dog_bets["flat_profit"].sum() / len(dog_bets)) * 100
+            conf_inv = dog_bets["conf_bet"].sum()
+            conf_roi = (dog_bets["conf_profit"].sum() / conf_inv * 100) if conf_inv > 0 else 0.0
+            print(f" Backing underdogs:   {dw:>2}/{len(dog_bets):<2} ({dw/len(dog_bets)*100:>4.1f}%) | Flat ROI: {flat_roi:>+6.1f}% | Conf ROI: {conf_roi:>+6.1f}%")
 
     # Version breakdown
     versions = settled["version_id"].value_counts()
