@@ -27,12 +27,12 @@ MIN_MATCHES_THRESHOLD = 1   # Only include teams with at least this many matches
 DEFAULT_TEAM_RANK = 500     # Fallback for unranked or new teams
 
 # Rolling window periods (days) for temporal features
+FORM_WINDOW_DAYS_LONG = 90  # Long-term macro form
 FORM_WINDOW_DAYS = 30       # General win rate, dominance, resilience, SoS, comfort
 FORM_WINDOW_DAYS_SHORT = 7  # Short-term momentum
 MAP_WINDOW_DAYS = 90        # Map-specific win rate (needs wider window for sample size)
 VETO_WINDOW_DAYS = 90       # Veto sim historical stats window
 
-WIN_STREAK_CAP = 5          # Maximum win streak value (prevents outlier streaks)
 DEFAULT_SOS_RANK = 100      # Fallback opponent rank for SoS when no history exists
 
 # --- Monte Carlo Simulation ---

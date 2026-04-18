@@ -11,9 +11,9 @@ from typing import List, Tuple
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, DATA_DIR, CHECKPOINT_DIR, DEFAULT_TEAM_RANK, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, MAP_WINDOW_DAYS, WIN_STREAK_CAP, DEFAULT_SOS_RANK, MC_ITERATIONS, MC_THRESHOLD
+from config import PROCESSED_DIR, DATA_DIR, CHECKPOINT_DIR, DEFAULT_TEAM_RANK, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, DEFAULT_SOS_RANK, MC_ITERATIONS, MC_THRESHOLD
 from model.net import MatchPredictor
-from processing.features import MODEL_FEATURES
+from processing.features import MODEL_FEATURES, get_sos, get_recent_stats, get_dominance_metrics
 import model.veto_sim as veto_sim
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -25,60 +25,7 @@ def normalize_name(name: str) -> str:
     if not name: return ""
     return name.strip().upper()
 
-def get_sos(history, current_date, days):
-    """Calculates average log-rank of opponents over a rolling window."""
-    if not history:
-        return np.log(DEFAULT_SOS_RANK)
-        
-    cutoff = current_date - pd.Timedelta(days=days)
-    recent_ranks = [r for d, r in history if d >= cutoff]
-    
-    if not recent_ranks:
-        return np.log(DEFAULT_SOS_RANK)
-        
-    return sum(recent_ranks) / len(recent_ranks)
 
-def get_recent_stats(history, current_date, days):
-    """Helper to calculate rolling stats from a history list."""
-    if not history:
-        return {"matches": 0, "win_rate": 0.5}
-    cutoff = current_date - pd.Timedelta(days=days)
-    
-    outcomes = []
-    for item in history:
-        if item[0] < cutoff:
-            continue
-        # Support both (date, win_bool) and (date, score_self, score_opp)
-        if len(item) == 4: # Added rank support
-            outcomes.append(1 if item[1] > item[2] else 0)
-        elif len(item) == 3:
-            outcomes.append(1 if item[1] > item[2] else 0)
-        else:
-            outcomes.append(item[1])
-            
-    matches = len(outcomes)
-    win_rate = sum(outcomes) / matches if matches > 0 else 0.5
-    return {"matches": matches, "win_rate": win_rate}
-
-def get_dominance_metrics(history, current_date, days):
-    """Calculates average win/loss margins over a rolling window."""
-    if not history:
-        return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
-        
-    cutoff = current_date - pd.Timedelta(days=days)
-    # history stores (date, score_self, score_opp, optional_rank)
-    recent = [(item[1], item[2]) for item in history if item[0] >= cutoff]
-    
-    if not recent:
-        return {"avg_win_margin": 0.0, "avg_loss_margin": 0.0}
-    
-    wins = [my - opp for my, opp in recent if my > opp]
-    losses = [opp - my for my, opp in recent if opp > my]
-    
-    avg_win = sum(wins) / len(wins) if wins else 0.0
-    avg_loss = sum(losses) / len(losses) if losses else 0.0
-    
-    return {"avg_win_margin": avg_win, "avg_loss_margin": avg_loss}
 
 def load_latest_state():
     """
@@ -115,10 +62,10 @@ def load_latest_state():
         winner = row["winner_id"]
         
         if winner == t_a:
-            current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, WIN_STREAK_CAP)
+            current_streaks[t_a] = current_streaks.get(t_a, 0) + 1
             current_streaks[t_b] = 0
         else:
-            current_streaks[t_b] = min(current_streaks.get(t_b, 0) + 1, WIN_STREAK_CAP)
+            current_streaks[t_b] = current_streaks.get(t_b, 0) + 1
             current_streaks[t_a] = 0
 
     for _, row in df.iterrows():
@@ -258,6 +205,8 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
     now = pd.to_datetime(datetime.now(timezone.utc))
     map_probs = []
     
+    g_a_90d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS_LONG)
+    g_b_90d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS_LONG)
     g_a_30d = get_recent_stats(ctx.gen_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS)
     g_b_30d = get_recent_stats(ctx.gen_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS)
 
@@ -276,6 +225,7 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
         rank_diff = log_b - log_a
         avg_log_rank = (log_a + log_b) / 2
         
+        wr_90d_diff = g_a_90d["win_rate"] - g_b_90d["win_rate"]
         wr_30d_diff = g_a_30d["win_rate"] - g_b_30d["win_rate"]
         wr_7d_diff = g_a_7d["win_rate"] - g_b_7d["win_rate"]
         
@@ -329,6 +279,10 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
         dominance_diff = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
         resilience_diff = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
         
+        sos_a_90d = get_sos(ctx.sos_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS_LONG)
+        sos_b_90d = get_sos(ctx.sos_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS_LONG)
+        sos_90d_diff = sos_b_90d - sos_a_90d
+
         sos_a = get_sos(ctx.sos_histories.get(t_a_id, []), now, FORM_WINDOW_DAYS)
         sos_b = get_sos(ctx.sos_histories.get(t_b_id, []), now, FORM_WINDOW_DAYS)
         # Positive = Team A faced harder opponents (more battle-tested)
@@ -350,10 +304,11 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
 
         feat_vals = {
             "rank_diff": rank_diff,
+            "win_rate_90d_diff": wr_90d_diff,
             "win_rate_30d_diff": wr_30d_diff,
             "win_rate_7d_diff": wr_7d_diff,
-            "team_a_win_streak": s_a,
-            "team_b_win_streak": s_b,
+            "team_a_win_streak": np.log1p(s_a),
+            "team_b_win_streak": np.log1p(s_b),
             "picker_diff": is_a_picker - is_b_picker,
             "h2h_a_wins": h2h_a,
             "h2h_b_wins": h2h_b,
@@ -362,6 +317,7 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             "dominance_diff": dominance_diff,
             "resilience_diff": resilience_diff,
             "avg_log_rank": avg_log_rank,
+            "sos_90d_diff": sos_90d_diff,
             "sos_diff": sos_diff,
             "lan_rate_diff": lan_rate_diff
         }

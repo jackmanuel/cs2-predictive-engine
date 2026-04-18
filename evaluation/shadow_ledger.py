@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS model_versions (
     data_stats_json  TEXT,
     architecture_hash TEXT,
     weights_path     TEXT,
-    scaler_path      TEXT
+    scaler_path      TEXT,
+    test_brier_score REAL,
+    test_log_loss    REAL
 );
 
 CREATE TABLE IF NOT EXISTS matches (
@@ -84,6 +86,17 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    
+    # Simple migration block for existing DBs
+    try:
+        conn.execute("ALTER TABLE model_versions ADD COLUMN test_brier_score REAL;")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE model_versions ADD COLUMN test_log_loss REAL;")
+    except sqlite3.OperationalError:
+        pass
+        
     return conn
 
 
@@ -110,6 +123,8 @@ def register_model_version(
     data_stats: dict,
     weights_src: str,
     scaler_src: str,
+    test_brier_score: float = None,
+    test_log_loss: float = None,
 ):
     """
     Registers a new model version in the database and archives the weights/scaler.
@@ -139,8 +154,9 @@ def register_model_version(
             """INSERT OR REPLACE INTO model_versions
                (version_id, trained_at, best_val_loss, epochs_run,
                 num_features, features_json, hyperparams_json,
-                data_stats_json, architecture_hash, weights_path, scaler_path)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                data_stats_json, architecture_hash, weights_path, scaler_path,
+                test_brier_score, test_log_loss)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 version_id,
                 trained_at,
@@ -153,10 +169,13 @@ def register_model_version(
                 arch_hash,
                 weights_dst,
                 scaler_dst,
+                test_brier_score,
+                test_log_loss,
             ),
         )
         conn.commit()
-        logger.info(f"Registered model version {version_id} (val_loss={best_val_loss:.4f}, arch={arch_hash})")
+        brier_str = f", brier={test_brier_score:.4f}" if test_brier_score else ""
+        logger.info(f"Registered model version {version_id} (val_loss={best_val_loss:.4f}{brier_str}, arch={arch_hash})")
     finally:
         conn.close()
 
@@ -531,8 +550,8 @@ def show_versions():
     try:
         df = pd.read_sql_query(
             """
-            SELECT v.version_id, v.trained_at, v.best_val_loss, v.epochs_run,
-                   v.num_features, v.architecture_hash,
+            SELECT v.version_id, v.trained_at, ROUND(v.test_brier_score, 4) as brier, ROUND(v.test_log_loss, 4) as logloss,
+                   v.best_val_loss, v.epochs_run, v.num_features, v.architecture_hash,
                    (SELECT COUNT(DISTINCT s.match_url) FROM snapshots s WHERE s.version_id = v.version_id) as matches_predicted,
                    json_extract(v.data_stats_json, '$.total_maps') as training_maps
             FROM model_versions v

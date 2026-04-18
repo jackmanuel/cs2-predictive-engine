@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 import pandas as pd
 import joblib
 from sklearn.preprocessing import StandardScaler
+import copy
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,6 +21,7 @@ from processing.features import mirror_data, MODEL_FEATURES
 from model.dataset import MatchDataset
 from model.net import MatchPredictor
 from evaluation.shadow_ledger import register_model_version
+from evaluation.metrics import compute_metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -96,7 +98,7 @@ def train_model():
     scaler = StandardScaler()
     train_dataset = MatchDataset(train_df, scaler=scaler, fit_scaler=True)
     val_dataset = MatchDataset(val_df, scaler=scaler, fit_scaler=False)
-    # Test dataset is held back for evaluation later
+    test_dataset = MatchDataset(test_df, scaler=scaler, fit_scaler=False)
     
     # Save scaler for inference
     scaler_path = CHECKPOINT_DIR / "scaler.pkl"
@@ -105,63 +107,109 @@ def train_model():
     
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     input_dim = train_dataset.X.shape[1]
-    model = MatchPredictor(input_dim)
-    
-    criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
-    
-    best_val_loss = float("inf")
-    patience_counter = 0
     best_model_path = CHECKPOINT_DIR / "best_mvp_model.pt"
 
-    logger.info("Starting training loop...")
-    for epoch in range(EPOCHS):
-        model.train()
-        train_loss = 0.0
-        for X_batch, y_batch in train_loader:
-            optimizer.zero_grad()
-            preds = model(X_batch)
-            loss = criterion(preds, y_batch)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item() * len(X_batch)
-            
-        train_loss /= len(train_dataset)
+    NUM_SEEDS = 5
+    best_overall_val_loss = float("inf")
+    best_overall_state = None
+    epochs_run_overall = 0
+    test_metrics_list = []
+
+    logger.info(f"Starting Ensemble Training over {NUM_SEEDS} random seeds to verify stability...")
+    
+    for i, seed in enumerate(range(1, NUM_SEEDS + 1)):
+        logger.info(f"\n--- Training Seed {seed} ({i+1}/{NUM_SEEDS}) ---")
+        torch.manual_seed(seed)
         
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for X_batch, y_batch in val_loader:
+        model = MatchPredictor(input_dim)
+        criterion = nn.BCELoss()
+        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+        
+        best_val_loss = float("inf")
+        patience_counter = 0
+        best_state_for_seed = None
+        epochs_run = 0
+
+        for epoch in range(EPOCHS):
+            model.train()
+            train_loss = 0.0
+            for X_batch, y_batch in train_loader:
+                optimizer.zero_grad()
                 preds = model(X_batch)
                 loss = criterion(preds, y_batch)
-                val_loss += loss.item() * len(X_batch)
-        val_loss /= len(val_dataset)
-        scheduler.step(val_loss)
-        
-        current_lr = optimizer.param_groups[0]['lr']
-        logger.info(f"Epoch {epoch+1:03d}/{EPOCHS} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} - LR: {current_lr:.1e}")
-        
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            torch.save(model.state_dict(), best_model_path)
-        else:
-            patience_counter += 1
-            if patience_counter >= EARLY_STOPPING_PATIENCE:
-                logger.info(f"Early stopping triggered after {epoch+1} epochs.")
-                break
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item() * len(X_batch)
                 
-    logger.info(f"Training complete. Best validation loss: {best_val_loss:.4f}. Model saved to {best_model_path}")
+            train_loss /= len(train_dataset)
+            
+            # Validation
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for X_batch, y_batch in val_loader:
+                    preds = model(X_batch)
+                    loss = criterion(preds, y_batch)
+                    val_loss += loss.item() * len(X_batch)
+            val_loss /= len(val_dataset)
+            scheduler.step(val_loss)
+            
+            if (epoch + 1) % 10 == 0:
+                current_lr = optimizer.param_groups[0]['lr']
+                logger.info(f"Epoch {epoch+1:03d}/{EPOCHS} - Val Loss: {val_loss:.4f} - LR: {current_lr:.1e}")
+            
+            epochs_run = epoch + 1
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                best_state_for_seed = copy.deepcopy(model.state_dict())
+            else:
+                patience_counter += 1
+                if patience_counter >= EARLY_STOPPING_PATIENCE:
+                    logger.info(f"Early stopping triggered after {epoch+1} epochs.")
+                    break
+        
+        # Evaluate this seed on the completely unseen Test Set
+        model.load_state_dict(best_state_for_seed)
+        model.eval()
+        all_preds = []
+        all_labels = []
+        with torch.no_grad():
+            for X_batch, y_batch in test_loader:
+                all_preds.append(model(X_batch))
+                all_labels.append(y_batch)
+                
+        test_preds = torch.cat(all_preds)
+        test_labels = torch.cat(all_labels)
+        metrics = compute_metrics(test_labels, test_preds)
+        test_metrics_list.append(metrics)
+        
+        logger.info(f"Seed {seed} Test Results -> Brier: {metrics['brier_score']:.4f} | LogLoss: {metrics['log_loss']:.4f}")
+        
+        if best_val_loss < best_overall_val_loss:
+            best_overall_val_loss = best_val_loss
+            best_overall_state = best_state_for_seed
+            epochs_run_overall = epochs_run
+
+    # Ensemble summary
+    avg_brier = sum(m["brier_score"] for m in test_metrics_list) / NUM_SEEDS
+    avg_log_loss = sum(m["log_loss"] for m in test_metrics_list) / NUM_SEEDS
+    logger.info(f"\n======================================")
+    logger.info(f" ENSEMBLE TEST AVERAGES ({NUM_SEEDS} seeds)")
+    logger.info(f" Brier Score: {avg_brier:.4f}")
+    logger.info(f" Log Loss:    {avg_log_loss:.4f}")
+    logger.info(f"======================================\n")
+
+    # Save the absolute best model
+    torch.save(best_overall_state, best_model_path)
+    logger.info(f"Best model globally (val_loss: {best_overall_val_loss:.4f}) saved to {best_model_path}")
 
     # Register this training run in the model version registry
     training_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Count epochs actually run (may be less than EPOCHS due to early stopping)
-    epochs_run = epoch + 1 if 'epoch' in dir() else 0
     
     hyperparams = {
         "learning_rate": LEARNING_RATE,
@@ -185,13 +233,15 @@ def train_model():
     
     register_model_version(
         trained_at=training_timestamp,
-        best_val_loss=best_val_loss,
-        epochs_run=epochs_run,
+        best_val_loss=best_overall_val_loss,
+        epochs_run=epochs_run_overall,
         features=MODEL_FEATURES,
         hyperparams=hyperparams,
         data_stats=data_stats,
         weights_src=str(best_model_path),
         scaler_src=str(scaler_path),
+        test_brier_score=avg_brier,
+        test_log_loss=avg_log_loss,
     )
 
 if __name__ == "__main__":

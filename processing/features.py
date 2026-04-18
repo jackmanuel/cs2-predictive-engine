@@ -7,13 +7,14 @@ from pathlib import Path
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, DATA_DIR, MIN_MATCHES_THRESHOLD, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, MAP_WINDOW_DAYS, WIN_STREAK_CAP, DEFAULT_SOS_RANK
+from config import PROCESSED_DIR, DATA_DIR, MIN_MATCHES_THRESHOLD, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, DEFAULT_SOS_RANK
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 MODEL_FEATURES = [
     "rank_diff",
+    "win_rate_90d_diff",
     "win_rate_30d_diff",
     "win_rate_7d_diff",
     "team_a_win_streak",
@@ -26,6 +27,7 @@ MODEL_FEATURES = [
     "dominance_diff",
     "resilience_diff",
     "avg_log_rank",
+    "sos_90d_diff",
     "sos_diff",
     "lan_rate_diff"
 ]
@@ -95,10 +97,10 @@ def get_sos(history, current_date, days):
         
     return sum(recent_ranks) / len(recent_ranks)
 
-def get_recent_stats(history, current_date, days):
-    """Helper to calculate win rate and match count over a rolling window."""
+def get_recent_stats(history, current_date, days, alpha=2.0, beta=4.0):
+    """Helper to calculate win rate and match count over a rolling window with Bayesian smoothing."""
     if not history:
-        return {"matches": 0, "win_rate": 0.5}
+        return {"matches": 0, "win_rate": alpha / beta}
     cutoff = current_date - pd.Timedelta(days=days)
     
     outcomes = []
@@ -112,8 +114,8 @@ def get_recent_stats(history, current_date, days):
             outcomes.append(item[1])
             
     matches = len(outcomes)
-    win_rate = sum(outcomes) / matches if matches > 0 else 0.5
-    return {"matches": matches, "win_rate": win_rate}
+    smoothed_win_rate = (sum(outcomes) + alpha) / (matches + beta)
+    return {"matches": matches, "win_rate": smoothed_win_rate}
 
 def get_dominance_metrics(history, current_date, days):
     """Calculates average win/loss margins over a rolling window."""
@@ -167,16 +169,15 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             t_b: current_streaks.get(t_b, 0)
         }
         
-        # Update current streaks (capped at WIN_STREAK_CAP)
-        # SKIP updating streaks if the match outcome was influenced by a forfeit
+        # Update current streaks (uncapped, we log-scale them later)
         if row.get("match_has_forfeit"):
             continue
 
         if winner == t_a:
-            current_streaks[t_a] = min(current_streaks.get(t_a, 0) + 1, WIN_STREAK_CAP)
+            current_streaks[t_a] = current_streaks.get(t_a, 0) + 1
             current_streaks[t_b] = 0
         else:
-            current_streaks[t_b] = min(current_streaks.get(t_b, 0) + 1, WIN_STREAK_CAP)
+            current_streaks[t_b] = current_streaks.get(t_b, 0) + 1
             current_streaks[t_a] = 0
             
     features_list = []
@@ -224,6 +225,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         h2h_a_wins = h2h_stats[h2h_key].get(str(t_a), 0)
         h2h_b_wins = h2h_stats[h2h_key].get(str(t_b), 0)
         
+        gen_a_90d = get_recent_stats(team_general_history[t_a], date, FORM_WINDOW_DAYS_LONG)
+        gen_b_90d = get_recent_stats(team_general_history[t_b], date, FORM_WINDOW_DAYS_LONG)
         gen_a_30d = get_recent_stats(team_general_history[t_a], date, FORM_WINDOW_DAYS)
         gen_b_30d = get_recent_stats(team_general_history[t_b], date, FORM_WINDOW_DAYS)
         gen_a_7d = get_recent_stats(team_general_history[t_a], date, FORM_WINDOW_DAYS_SHORT)
@@ -238,6 +241,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         rank_diff = np.log(r_b) - np.log(r_a)
         avg_log_rank = (np.log(r_b) + np.log(r_a)) / 2
         
+        wr_90d_diff = gen_a_90d["win_rate"] - gen_b_90d["win_rate"]
         wr_30d_diff = gen_a_30d["win_rate"] - gen_b_30d["win_rate"]
         wr_7d_diff = gen_a_7d["win_rate"] - gen_b_7d["win_rate"]
         
@@ -264,6 +268,10 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         dominance_diff = dom_a["avg_win_margin"] - dom_b["avg_win_margin"]
         resilience_diff = dom_b["avg_loss_margin"] - dom_a["avg_loss_margin"]
         
+        sos_a_90d = get_sos(team_sos_history[t_a], date, FORM_WINDOW_DAYS_LONG)
+        sos_b_90d = get_sos(team_sos_history[t_b], date, FORM_WINDOW_DAYS_LONG)
+        sos_90d_diff = sos_b_90d - sos_a_90d
+        
         sos_a = get_sos(team_sos_history[t_a], date, FORM_WINDOW_DAYS)
         sos_b = get_sos(team_sos_history[t_b], date, FORM_WINDOW_DAYS)
         # Positive = Team A faced harder opponents (more battle-tested)
@@ -285,10 +293,11 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         
         feat_dict = {
             "rank_diff": rank_diff,
+            "win_rate_90d_diff": wr_90d_diff,
             "win_rate_30d_diff": wr_30d_diff,
             "win_rate_7d_diff": wr_7d_diff,
-            "team_a_win_streak": s_a,
-            "team_b_win_streak": s_b,
+            "team_a_win_streak": np.log1p(s_a),
+            "team_b_win_streak": np.log1p(s_b),
             "picker_diff": (1 if row["team_a_picked"] else 0) - (1 if row["team_b_picked"] else 0),
             "h2h_a_wins": h2h_a_wins,
             "h2h_b_wins": h2h_b_wins,
@@ -297,6 +306,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "dominance_diff": dominance_diff,
             "resilience_diff": resilience_diff,
             "avg_log_rank": avg_log_rank,
+            "sos_90d_diff": sos_90d_diff,
             "sos_diff": sos_diff,
             "lan_rate_diff": lan_rate_diff
         }
