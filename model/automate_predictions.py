@@ -303,11 +303,24 @@ def main():
         value_badge1 = '<span class="value-badge">BEST VALUE</span>' if item['is_value_t1'] else ""
         value_badge2 = '<span class="value-badge">BEST VALUE</span>' if item['is_value_t2'] else ""
 
+        # Match Classes
+        low_sample_class = "low-sample-match" if item['valid_for_eval'] == 0 else ""
+        no_odds_class = "no-odds-match" if item['o1'] is None or item['o2'] is None else ""
+        match_classes = f"{low_sample_class} {no_odds_class}".strip()
+
         # Edge Labels
         edge1_class = "edge-pos" if (item['edge1'] is not None and item['edge1'] > 0) else "edge-neg"
         edge2_class = "edge-pos" if (item['edge2'] is not None and item['edge2'] > 0) else "edge-neg"
         edge1_str = f"{item['edge1']:+.1f}%" if item['unnorm1'] is not None else "N/A"
         edge2_str = f"{item['edge2']:+.1f}%" if item['unnorm2'] is not None else "N/A"
+
+        # Probability Bar Logic
+        if item['prob1'] >= item['prob2']:
+            track_style = 'style="justify-content: flex-start;"'
+            fill_style = f'style="width: {item["prob1"]*100:.1f}%"'
+        else:
+            track_style = 'style="justify-content: flex-end;"'
+            fill_style = f'style="width: {item["prob2"]*100:.1f}%"'
 
         # Build Match Entry
         start_time_str = f"{item['match']['date']} {item['match']['time']}"
@@ -326,7 +339,8 @@ def main():
             edge2_str=edge2_str,
             edge1_class=edge1_class,
             edge2_class=edge2_class,
-            prob1_style=f'style="width: {item['prob1']*100:.1f}%"',
+            track_style=track_style,
+            fill_style=fill_style,
             team1_short=item['t_a_id'][:12],
             team2_short=item['t_b_id'][:12],
             odds_section=odds_section,
@@ -334,7 +348,8 @@ def main():
             t1_maps=item['t1_maps'],
             t2_maps=item['t2_maps'],
             value_badge1=value_badge1,
-            value_badge2=value_badge2
+            value_badge2=value_badge2,
+            match_classes=match_classes
         )
         
         # Wrap in a div if it's a later match

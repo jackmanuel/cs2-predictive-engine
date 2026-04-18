@@ -1,4 +1,4 @@
-<div class="match-card">
+<div class="match-card {match_classes}">
     <a href="{url}" target="_blank" class="match-link"></a>
     <div class="card-header">
         <div class="event-info">
@@ -24,27 +24,31 @@
         </div>
     </div>
     
-    <div class="prob-bar-container">
-        <div class="bar-labels">
-            <div>
-                <span>{prob1_str}</span>
-                <div class="edge-label {edge1_class}">{edge1_str} Edge</div>
-                <div class="bar-label-sub">{team1_short}</div>
+    <div class="condensed-stats">
+        <div class="prob-bar-container">
+            <div class="bar-labels">
+                <div>
+                    <span class="prob-val">{prob1_str}</span>
+                    <div class="edge-label {edge1_class}">{edge1_str} Edge</div>
+                    <div class="bar-label-sub">{team1_short}</div>
+                </div>
+                <div style="text-align: right">
+                    <span class="prob-val">{prob2_str}</span>
+                    <div class="edge-label {edge2_class}">{edge2_str} Edge</div>
+                    <div class="bar-label-sub">{team2_short}</div>
+                </div>
             </div>
-            <div style="text-align: right">
-                <span>{prob2_str}</span>
-                <div class="edge-label {edge2_class}">{edge2_str} Edge</div>
-                <div class="bar-label-sub">{team2_short}</div>
+            <div class="progress-track" {track_style}>
+                <div class="progress-fill" {fill_style}></div>
             </div>
         </div>
-        <div class="progress-track">
-            <div class="progress-fill" {prob1_style}></div>
-        </div>
+        
+        {odds_section}
     </div>
     
-    {odds_section}
+    <button class="details-btn" onclick="toggleDetails(event, this)">More Details</button>
     
-    <div class="prediction-details">
+    <div class="prediction-details" style="display: none;">
         <div class="detail-box">
             <div class="detail-title">Top Veto Sequences</div>
             <ul class="veto-list">
