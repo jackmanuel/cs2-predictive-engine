@@ -4,6 +4,7 @@ import os
 import json
 import logging
 import re
+import webbrowser
 from datetime import datetime
 
 # Ensure project root is in path
@@ -105,6 +106,8 @@ def main():
     parser.add_argument("--html-file", help="Path to a local HTML file to parse (skips scraping)")
     parser.add_argument("--iters", type=int, default=MC_ITERATIONS, help="MC iterations for veto simulation")
     parser.add_argument("--threshold", type=float, default=MC_THRESHOLD, help="Probability truncation threshold")
+    parser.add_argument("--no-report", action="store_true", help="Do not generate the HTML report")
+    parser.add_argument("--no-open", action="store_true", help="Do not open the report in the browser automatically")
     
     args = parser.parse_args()
 
@@ -367,14 +370,25 @@ def main():
     )
 
     # Save to file
-    output_dir = os.path.dirname(args.output)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    if not args.no_report:
+        output_dir = os.path.dirname(args.output)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            
+        with open(args.output, 'w', encoding='utf-8') as f:
+            f.write(final_html)
         
-    with open(args.output, 'w', encoding='utf-8') as f:
-        f.write(final_html)
-    
-    logger.info(f"Automation complete. HTML report saved to {args.output}")
+        logger.info(f"Automation complete. HTML report saved to {args.output}")
+
+        if not args.no_open:
+            try:
+                # Convert path to absolute to ensure browser handles it correctly
+                abs_path = os.path.abspath(args.output)
+                webbrowser.open(f"file://{abs_path}")
+            except Exception as e:
+                logger.warning(f"Failed to open report in browser: {e}")
+    else:
+        logger.info("Automation complete. HTML report generation skipped due to --no-report.")
 
     # Automatically record shadow bets for calibration
     record_shadow_bets(match_results)
