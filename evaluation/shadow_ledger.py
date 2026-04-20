@@ -508,16 +508,6 @@ def show_report():
             conf_roi = (dog_bets["conf_profit"].sum() / conf_inv * 100) if conf_inv > 0 else 0.0
             print(f" Backing underdogs:   {dw:>2}/{len(dog_bets):<2} ({dw/len(dog_bets)*100:>4.1f}%) | Flat ROI: {flat_roi:>+6.1f}% | Conf ROI: {conf_roi:>+6.1f}%")
 
-    # Version breakdown
-    versions = settled["version_id"].value_counts()
-    if len(versions) > 1:
-        print(f"\n{'-'*60}")
-        print(f" Performance by Model Version")
-        for vid, count in versions.items():
-            v_df = settled[settled["version_id"] == vid]
-            v_acc = v_df["fav_correct"].mean() * 100
-            print(f" {vid}: {v_df['fav_correct'].sum()}/{count} ({v_acc:.1f}%)")
-
     print(f"\n{'='*60}\n")
 
 
