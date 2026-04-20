@@ -414,9 +414,21 @@ def show_report():
     )
     settled["fav_correct"] = settled["model_fav"] == settled["result"]
     overall_acc = settled["fav_correct"].mean() * 100
-    print(
-        f"\n Model Favourite Accuracy: {settled['fav_correct'].sum()}/{len(settled)} ({overall_acc:.1f}%)"
+
+    # Bookmaker favourite accuracy (how often the bookmaker gave favourite odds to the eventual winner)
+    settled["bookmaker_fav"] = settled.apply(
+        lambda r: "team_a" if r["odds_a"] < r["odds_b"] else "team_b", axis=1
     )
+    settled["bookie_fav_correct"] = settled["bookmaker_fav"] == settled["result"]
+    bookie_acc = settled["bookie_fav_correct"].mean() * 100
+
+    # Print results with aligned columns
+    n_total = len(settled)
+    n_model = settled["fav_correct"].sum()
+    n_bookie = settled["bookie_fav_correct"].sum()
+
+    print(f"\n {'Model Favourite Accuracy:':<32} {n_model:>3}/{n_total} ({overall_acc:>5.1f}%)")
+    print(f" {'Bookmaker Favourite Accuracy:':<32} {n_bookie:>3}/{n_total} ({bookie_acc:>5.1f}%)")
 
     # Edge-bucket analysis (Only count matches where we have a positive edge/actionable bet)
     has_edge = settled[(settled["best_edge"].notna()) & (settled["best_edge"] >= 0)].copy()
@@ -444,7 +456,7 @@ def show_report():
         print(f" Edge Betting Strategy Returns ({len(has_edge)} actionable bets)")
         if no_edge_count > 0:
             print(f" (Skipped {no_edge_count} matches with missing odds or negative edge)")
-        print(f" Flat Betting Strategy ROI:       {tot_flat_roi:>+6.1f}% (1 unit per bet)")
+        print(f"\n Flat Betting Strategy ROI:       {tot_flat_roi:>+6.1f}% (1 unit per bet)")
         print(f" Confidence Betting Strategy ROI: {tot_conf_roi:>+6.1f}% (Units = edge %)")
 
         print(f"\n{'-'*60}")
