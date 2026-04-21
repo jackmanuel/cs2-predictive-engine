@@ -22,6 +22,7 @@ import json
 import argparse
 import logging
 import pandas as pd
+from scipy.stats import ttest_1samp
 from datetime import datetime
 from pathlib import Path
 
@@ -452,17 +453,25 @@ def show_report():
         tot_conf_inv = has_edge["conf_bet"].sum()
         tot_conf_roi = (has_edge["conf_profit"].sum() / tot_conf_inv * 100) if tot_conf_inv > 0 else 0.0
 
+        p_str = " (1 unit per bet)"
+        flat_profit_array = has_edge["flat_profit"].values
+        if len(flat_profit_array) > 1:
+            # We calculate p-value for the flat betting strategy return against a mean of 0
+            _, p_val = ttest_1samp(flat_profit_array, 0, alternative='greater')
+            if pd.notna(p_val):
+                p_str = f" (p-val: {p_val:.3f}{'*' if p_val < 0.05 else ''})"
+
         print(f"\n{'-'*60}")
         print(f" Edge Betting Strategy Returns ({len(has_edge)} actionable bets)")
         if no_edge_count > 0:
             print(f" (Skipped {no_edge_count} matches with missing odds or negative edge)")
-        print(f"\n Flat Betting Strategy ROI:       {tot_flat_roi:>+6.1f}% (1 unit per bet)")
+        print(f"\n Flat Betting Strategy ROI:       {tot_flat_roi:>+6.1f}%{p_str}")
         print(f" Confidence Betting Strategy ROI: {tot_conf_roi:>+6.1f}% (Units = edge %)")
 
         print(f"\n{'-'*60}")
         print(f" Edge Bucket Analysis (best edge side)")
-        print(f" {'Bucket':>10} | {'W':>4} | {'L':>4} | {'Win%':>6} | {'Avg Edge':>9} | {'Flat ROI':>9} | {'Conf ROI':>9}")
-        print(f" {'-'*10}-+-{'-'*4}-+-{'-'*4}-+-{'-'*6}-+-{'-'*9}-+-{'-'*9}-+-{'-'*9}")
+        print(f" {'Bucket':>10} | {'W':>4} | {'L':>4} | {'Win%':>6} | {'Avg Edge':>9} | {'Flat ROI':>9} | {'Conf ROI':>9} | {'p-value':>7}")
+        print(f" {'-'*10}-+-{'-'*4}-+-{'-'*4}-+-{'-'*6}-+-{'-'*9}-+-{'-'*9}-+-{'-'*9}-+-{'-'*7}")
 
         buckets = [(0, 2, "  <2%"), (2, 5, " 2-5%"), (5, 10, "5-10%"), (10, 999, " 10%+")]
         for lo, hi, label in buckets:
@@ -479,7 +488,16 @@ def show_report():
                 conf_p = bucket["conf_profit"].sum()
                 conf_invested = bucket["conf_bet"].sum()
                 conf_roi = (conf_p / conf_invested * 100) if conf_invested > 0 else 0.0
-                print(f" {label:>10} | {w:>4} | {l:>4} | {wr:>5.1f}% | {avg_e:>+8.1f}% | {flat_roi:>+8.1f}% | {conf_roi:>+8.1f}%")
+                
+                p_val_str = "    -"
+                flat_profit_array = bucket["flat_profit"].values
+                if len(flat_profit_array) > 1:
+                    _, p_val = ttest_1samp(flat_profit_array, 0, alternative='greater')
+                    if pd.notna(p_val):
+                        # Use an asterisk if statistically significant
+                        p_val_str = f"{p_val:.3f}{'*' if p_val < 0.05 else ''}"
+
+                print(f" {label:>10} | {w:>4} | {l:>4} | {wr:>5.1f}% | {avg_e:>+8.1f}% | {flat_roi:>+8.1f}% | {conf_roi:>+8.1f}% | {p_val_str:>7}")
 
     # Favourite vs underdog
     if has_edge is not None and not has_edge.empty:
