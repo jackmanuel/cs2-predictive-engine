@@ -327,12 +327,31 @@ def refresh_shadow():
                 try:
                     details = client.fetch_match_details(row["match_url"])
                     meta = details["metadata"]
+                    
+                    t_a = str(row["team_a"]).strip()
+                    t_b = str(row["team_b"]).strip()
+                    
+                    info_text = " ".join(details.get("match_info", [])).lower()
+                    fmt_text = meta.get("format", "").lower()
+                    has_default_map = any(m.get("map_name", "").lower() in ["default", "forfeit"] for m in details.get("maps", []))
+                    
+                    result = None
 
-                    if meta["is_finished"]:
+                    is_forfeit = (
+                         "forfeit" in info_text or 
+                         "walkover" in info_text or 
+                         "withdraw" in info_text or 
+                         "def" in fmt_text or 
+                         "default" in fmt_text or 
+                         has_default_map
+                    )
+
+                    if is_forfeit:
+                        result = "forfeit"
+                    elif "cancel" in info_text:
+                        result = "cancelled"
+                    elif meta["is_finished"]:
                         winner = meta.get("winner", "")
-                        t_a = str(row["team_a"]).strip()
-                        t_b = str(row["team_b"]).strip()
-
                         if winner and t_a.lower() in winner.lower():
                             result = "team_a"
                         elif winner and t_b.lower() in winner.lower():
@@ -340,6 +359,7 @@ def refresh_shadow():
                         else:
                             result = f"unknown:{winner}"
 
+                    if result is not None:
                         conn.execute(
                             "UPDATE matches SET result = ? WHERE match_url = ?",
                             (result, row["match_url"]),
@@ -395,12 +415,13 @@ def show_report():
     
     settled = df[df["result"].isin(["team_a", "team_b"])].copy()
     pending = df[df["result"] == "Pending"].copy()
+    other_results = df[~df["result"].isin(["team_a", "team_b", "Pending"])].copy()
 
     print(f"\n{'='*60}")
     print(f" SHADOW LEDGER CALIBRATION REPORT")
     print(f"{'='*60}")
     print(f" Total matches:    {len(df_all)}")
-    print(f" Valid matches:    {len(df)} (Settled: {len(settled)}, Pending: {len(pending)})")
+    print(f" Valid matches:    {len(df)} (Settled: {len(settled)}, Pending: {len(pending)}, Other: {len(other_results)})")
     if invalid_count > 0:
         print(f" Excluded matches: {invalid_count} (<10 maps of historical data)")
     print(f"{'='*60}")
