@@ -14,6 +14,29 @@ from config import RAW_DIR, PROCESSED_DIR, DATA_DIR, DEFAULT_TEAM_RANK, HLTV_MAT
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+SHOWMATCH_KEYWORDS = [
+    "showmatch",
+    "show match",
+    "all-star",
+    "all star",
+    "charity match",
+    "streamer",
+    "content creator",
+    "wingman",
+    "bombsite a only",
+    "bombsite b only",
+    "1v1",
+    "2v2",
+    "3v3",
+    "4v4",
+    "1 vs 1",
+    "2 vs 2",
+    "3 vs 3",
+    "4 vs 4"
+]
+
+MAX_STANDARD_PLAYERS = 10
+
 
 def normalize_name(name: str) -> str:
     """Normalises a team name to a consistent uppercase format for matching."""
@@ -64,6 +87,59 @@ def detect_is_lan(match_info: List[str]) -> bool:
         if re.search(r'\(online\)', line, re.IGNORECASE):
             return False
     return False
+
+def get_showmatch_exclusion_reason(match: dict) -> str | None:
+    """Returns the keyword that marks a match as non-standard/showmatch data."""
+    text_parts = [
+        match.get("event", ""),
+        match.get("format", ""),
+        " ".join(str(line) for line in match.get("match_info", [])),
+        " ".join(str(line) for line in match.get("hltv_vetoes", [])),
+    ]
+
+    for map_data in match.get("hltv_maps", []):
+        text_parts.extend([
+            map_data.get("map_name", ""),
+            map_data.get("picker", ""),
+        ])
+
+    haystack = " ".join(part for part in text_parts if part).lower()
+    for keyword in SHOWMATCH_KEYWORDS:
+        if keyword in haystack:
+            return keyword
+
+    return None
+
+def normalise_player_name(player_name: str) -> str:
+    """Normalises a player name for roster-size checks."""
+    return str(player_name or "").strip().lower()
+
+def get_nonstandard_roster_exclusion_reason(match: dict) -> str | None:
+    """Returns a reason when map stats indicate more than five players per team."""
+    series_players = set()
+
+    for map_data in match.get("hltv_maps", []):
+        player_stats = map_data.get("player_stats", [])
+        if not player_stats:
+            continue
+
+        map_players = {
+            normalise_player_name(player.get("player", ""))
+            for player in player_stats
+            if normalise_player_name(player.get("player", ""))
+        }
+
+        player_count = len(map_players) if map_players else len(player_stats)
+        map_name = map_data.get("map_name", "unknown map")
+        if player_count > MAX_STANDARD_PLAYERS:
+            return f"{player_count} players recorded on {map_name}"
+
+        series_players.update(map_players)
+
+    if len(series_players) > MAX_STANDARD_PLAYERS:
+        return f"{len(series_players)} unique players recorded across the series"
+
+    return None
 
 def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, ranks=None, match_format="unknown", is_lan=False):
     """Common logic to extract a map row from HLTV map object."""
@@ -163,6 +239,8 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
 def load_raw_maps() -> pd.DataFrame:
     """Loads raw HLTV match JSON and explodes them into map rows."""
     all_maps = []
+    excluded_showmatches = 0
+    excluded_nonstandard_rosters = 0
     
     # Pure HLTV files (Canonical Source)
     hltv_pure_path = HLTV_MATCHES_FILE
@@ -171,6 +249,28 @@ def load_raw_maps() -> pd.DataFrame:
             hltv_data = json.load(f)
             
         for match in hltv_data:
+            exclusion_reason = get_showmatch_exclusion_reason(match)
+            if exclusion_reason:
+                excluded_showmatches += 1
+                logger.info(
+                    "Excluded non-standard/showmatch match due to keyword '%s': %s (%s)",
+                    exclusion_reason,
+                    match.get("event", "Unknown Event"),
+                    match.get("url", "no url"),
+                )
+                continue
+
+            roster_exclusion_reason = get_nonstandard_roster_exclusion_reason(match)
+            if roster_exclusion_reason:
+                excluded_nonstandard_rosters += 1
+                logger.info(
+                    "Excluded match due to non-standard roster (%s): %s (%s)",
+                    roster_exclusion_reason,
+                    match.get("event", "Unknown Event"),
+                    match.get("url", "no url"),
+                )
+                continue
+
             t1 = match.get("team1")
             t2 = match.get("team2")
             m_date = pd.to_datetime(match.get("date"), utc=True)
@@ -188,6 +288,11 @@ def load_raw_maps() -> pd.DataFrame:
             for m_data in match.get("hltv_maps", []):
                 row = process_hltv_map_data(m_data, t1, t2, t1_id, t2_id, m_id, m_date, ranks, match_format=m_format, is_lan=is_lan)
                 if row: all_maps.append(row)
+
+        if excluded_showmatches > 0:
+            logger.info(f"Excluded {excluded_showmatches} non-standard/showmatch matches before map cleaning.")
+        if excluded_nonstandard_rosters > 0:
+            logger.info(f"Excluded {excluded_nonstandard_rosters} matches with non-standard rosters before map cleaning.")
                 
     df = pd.DataFrame(all_maps)
     if df.empty: return df
