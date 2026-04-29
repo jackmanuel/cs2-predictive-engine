@@ -90,6 +90,15 @@ def detect_is_lan(match_info: List[str]) -> bool:
 
 def get_showmatch_exclusion_reason(match: dict) -> str | None:
     """Returns the keyword that marks a match as non-standard/showmatch data."""
+    haystack = get_match_text_haystack(match)
+    for keyword in SHOWMATCH_KEYWORDS:
+        if keyword in haystack:
+            return keyword
+
+    return None
+
+def get_match_text_haystack(match: dict) -> str:
+    """Builds a lower-case searchable text blob from scraped match metadata."""
     text_parts = [
         match.get("event", ""),
         match.get("format", ""),
@@ -103,10 +112,16 @@ def get_showmatch_exclusion_reason(match: dict) -> str | None:
             map_data.get("picker", ""),
         ])
 
-    haystack = " ".join(part for part in text_parts if part).lower()
-    for keyword in SHOWMATCH_KEYWORDS:
-        if keyword in haystack:
-            return keyword
+    return " ".join(part for part in text_parts if part).lower()
+
+def get_invalid_veto_exclusion_reason(match: dict) -> str | None:
+    """Returns a reason when the match description says veto data is invalid."""
+    haystack = get_match_text_haystack(match)
+    if "randomized" in haystack:
+        return "randomized"
+
+    if "failed to show up" in haystack and "veto process" in haystack:
+        return "failed to show up for the veto process"
 
     return None
 
@@ -240,6 +255,7 @@ def load_raw_maps() -> pd.DataFrame:
     """Loads raw HLTV match JSON and explodes them into map rows."""
     all_maps = []
     excluded_showmatches = 0
+    excluded_invalid_vetoes = 0
     excluded_nonstandard_rosters = 0
     
     # Pure HLTV files (Canonical Source)
@@ -255,6 +271,17 @@ def load_raw_maps() -> pd.DataFrame:
                 logger.info(
                     "Excluded non-standard/showmatch match due to keyword '%s': %s (%s)",
                     exclusion_reason,
+                    match.get("event", "Unknown Event"),
+                    match.get("url", "no url"),
+                )
+                continue
+
+            invalid_veto_reason = get_invalid_veto_exclusion_reason(match)
+            if invalid_veto_reason:
+                excluded_invalid_vetoes += 1
+                logger.info(
+                    "Excluded match due to invalid/randomized veto data (%s): %s (%s)",
+                    invalid_veto_reason,
                     match.get("event", "Unknown Event"),
                     match.get("url", "no url"),
                 )
@@ -291,6 +318,8 @@ def load_raw_maps() -> pd.DataFrame:
 
         if excluded_showmatches > 0:
             logger.info(f"Excluded {excluded_showmatches} non-standard/showmatch matches before map cleaning.")
+        if excluded_invalid_vetoes > 0:
+            logger.info(f"Excluded {excluded_invalid_vetoes} matches with invalid/randomized veto data before map cleaning.")
         if excluded_nonstandard_rosters > 0:
             logger.info(f"Excluded {excluded_nonstandard_rosters} matches with non-standard rosters before map cleaning.")
                 
