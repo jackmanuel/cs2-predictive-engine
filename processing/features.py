@@ -402,6 +402,15 @@ def feature_pipeline():
         return
         
     df = pd.read_parquet(clean_path)
+
+    # Defensive guard for clean parquet files generated before roster anomalies
+    # were excluded in processing.clean.
+    if "roster_status" in df.columns:
+        initial_roster_len = len(df)
+        df = df[df["roster_status"].fillna("standard") == "standard"].copy()
+        removed_roster_rows = initial_roster_len - len(df)
+        if removed_roster_rows > 0:
+            logger.info(f"Excluded {removed_roster_rows} map rows with roster anomalies before feature replay.")
     
     # Compute features with reduced dimensionality
     feature_df = compute_features(df)

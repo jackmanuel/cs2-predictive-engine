@@ -371,6 +371,7 @@ def load_raw_maps() -> pd.DataFrame:
     excluded_showmatches = 0
     excluded_invalid_vetoes = 0
     excluded_nonstandard_rosters = 0
+    excluded_roster_anomalies = 0
     
     # Pure HLTV files (Canonical Source)
     hltv_pure_path = HLTV_MATCHES_FILE
@@ -382,7 +383,7 @@ def load_raw_maps() -> pd.DataFrame:
             exclusion_reason = get_showmatch_exclusion_reason(match)
             if exclusion_reason:
                 excluded_showmatches += 1
-                logger.info(
+                logger.debug(
                     "Excluded non-standard/showmatch match due to keyword '%s': %s (%s)",
                     exclusion_reason,
                     match.get("event", "Unknown Event"),
@@ -393,9 +394,20 @@ def load_raw_maps() -> pd.DataFrame:
             invalid_veto_reason = get_invalid_veto_exclusion_reason(match)
             if invalid_veto_reason:
                 excluded_invalid_vetoes += 1
-                logger.info(
+                logger.debug(
                     "Excluded match due to invalid/randomized veto data (%s): %s (%s)",
                     invalid_veto_reason,
+                    match.get("event", "Unknown Event"),
+                    match.get("url", "no url"),
+                )
+                continue
+
+            match_flags = get_roster_status_flags(match)
+            if match_flags["roster_status"] != "standard":
+                excluded_roster_anomalies += 1
+                logger.debug(
+                    "Excluded match due to roster anomaly (%s): %s (%s)",
+                    match_flags["roster_status"],
                     match.get("event", "Unknown Event"),
                     match.get("url", "no url"),
                 )
@@ -404,7 +416,7 @@ def load_raw_maps() -> pd.DataFrame:
             roster_exclusion_reason = get_nonstandard_roster_exclusion_reason(match)
             if roster_exclusion_reason:
                 excluded_nonstandard_rosters += 1
-                logger.info(
+                logger.debug(
                     "Excluded match due to non-standard roster (%s): %s (%s)",
                     roster_exclusion_reason,
                     match.get("event", "Unknown Event"),
@@ -425,7 +437,6 @@ def load_raw_maps() -> pd.DataFrame:
 
             # Detect LAN vs Online from match_info blurbs
             is_lan = detect_is_lan(match.get("match_info", []))
-            match_flags = get_roster_status_flags(match)
 
             for m_data in match.get("hltv_maps", []):
                 row = process_hltv_map_data(
@@ -449,6 +460,8 @@ def load_raw_maps() -> pd.DataFrame:
             logger.info(f"Excluded {excluded_invalid_vetoes} matches with invalid/randomized veto data before map cleaning.")
         if excluded_nonstandard_rosters > 0:
             logger.info(f"Excluded {excluded_nonstandard_rosters} matches with non-standard rosters before map cleaning.")
+        if excluded_roster_anomalies > 0:
+            logger.info(f"Excluded {excluded_roster_anomalies} matches with roster anomalies before map cleaning.")
                 
     df = pd.DataFrame(all_maps)
     if df.empty: return df
