@@ -37,6 +37,48 @@ SHOWMATCH_KEYWORDS = [
 
 MAX_STANDARD_PLAYERS = 10
 
+SUBSTITUTION_KEYWORDS = [
+    "substitute",
+    "substitutes",
+    "substituted",
+    "stand-in",
+    "stand in",
+]
+
+TEAM_REPLACEMENT_KEYWORDS = [
+    "withdraw",
+    "withdrawn",
+    "disqualified",
+    "replaced by",
+    "replaces",
+]
+
+MID_MAP_SUB_PATTERNS = [
+    r"\bduring map\b",
+    r"\bmid[- ]?map\b",
+    r"\bafter round\b",
+    r"\bafter the \d+(st|nd|rd|th)? round\b",
+    r"\bround interval\b",
+    r"\bfor the remainder\b",
+]
+
+MAP_SCOPE_PATTERNS = [
+    r"\bon the \d+(st|nd|rd|th)? map\b",
+    r"\bmap \d+\b",
+    r"\b\d+(st|nd|rd|th)? map\b",
+    r"\b\d+(st|nd|rd|th)? and \d+(st|nd|rd|th)? map\b",
+]
+
+SUBSTITUTION_REASON_KEYWORDS = [
+    "visa",
+    "illness",
+    "medical",
+    "sick",
+    "emergency",
+    "technical",
+    "power outage",
+]
+
 
 def normalize_name(name: str) -> str:
     """Normalises a team name to a consistent uppercase format for matching."""
@@ -114,6 +156,73 @@ def get_match_text_haystack(match: dict) -> str:
 
     return " ".join(part for part in text_parts if part).lower()
 
+def get_match_info_lines(match: dict) -> list[str]:
+    """Returns searchable match-info lines as strings."""
+    return [str(line).strip() for line in match.get("match_info", []) if str(line).strip()]
+
+def get_roster_status_flags(match: dict) -> dict:
+    """Extracts roster/anomaly flags from HLTV match blurbs.
+
+    These are metadata-only flags. They do not currently exclude matches from
+    training or alter model features.
+    """
+    lines = get_match_info_lines(match)
+    substitution_lines = []
+    team_replacement_lines = []
+    reason_terms = set()
+
+    has_substitution_note = False
+    has_coach_standin = False
+    has_mid_map_sub = False
+    has_map_specific_sub = False
+    has_team_replacement = False
+
+    for line in lines:
+        low = line.lower()
+
+        if any(keyword in low for keyword in SUBSTITUTION_KEYWORDS):
+            has_substitution_note = True
+            substitution_lines.append(line)
+
+            if "(coach)" in low or "(coach" in low or " coach)" in low:
+                has_coach_standin = True
+
+            if any(re.search(pattern, low) for pattern in MID_MAP_SUB_PATTERNS):
+                has_mid_map_sub = True
+
+            if any(re.search(pattern, low) for pattern in MAP_SCOPE_PATTERNS):
+                has_map_specific_sub = True
+
+            for keyword in SUBSTITUTION_REASON_KEYWORDS:
+                if keyword in low:
+                    reason_terms.add(keyword)
+
+        if any(keyword in low for keyword in TEAM_REPLACEMENT_KEYWORDS):
+            has_team_replacement = True
+            team_replacement_lines.append(line)
+
+    roster_status = "standard"
+    if has_team_replacement:
+        roster_status = "team_replacement"
+    elif has_mid_map_sub:
+        roster_status = "mid_map_substitution"
+    elif has_coach_standin:
+        roster_status = "coach_standin"
+    elif has_substitution_note:
+        roster_status = "substitution"
+
+    return {
+        "has_substitution_note": has_substitution_note,
+        "has_coach_standin": has_coach_standin,
+        "has_mid_map_sub": has_mid_map_sub,
+        "has_map_specific_sub": has_map_specific_sub,
+        "has_team_replacement": has_team_replacement,
+        "substitution_reason_terms": ",".join(sorted(reason_terms)),
+        "substitution_notes": " | ".join(substitution_lines),
+        "team_replacement_notes": " | ".join(team_replacement_lines),
+        "roster_status": roster_status,
+    }
+
 def get_invalid_veto_exclusion_reason(match: dict) -> str | None:
     """Returns a reason when the match description says veto data is invalid."""
     haystack = get_match_text_haystack(match)
@@ -156,7 +265,7 @@ def get_nonstandard_roster_exclusion_reason(match: dict) -> str | None:
 
     return None
 
-def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, ranks=None, match_format="unknown", is_lan=False):
+def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id, match_id, match_date, ranks=None, match_format="unknown", is_lan=False, match_flags=None):
     """Common logic to extract a map row from HLTV map object."""
     map_name = m_data.get("map_name")
     if not map_name or map_name.lower() == "tbd":
@@ -229,7 +338,7 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
         elif n_picker == team_b_id:
             is_team_b_picker = True
 
-    return {
+    row = {
         "match_id": match_id,
         "map_name": map_name,
         "date": match_date,
@@ -250,6 +359,11 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
         "is_forfeit": map_name.lower() in ["default", "forfeit"],
         "is_lan": is_lan
     }
+
+    if match_flags:
+        row.update(match_flags)
+
+    return row
 
 def load_raw_maps() -> pd.DataFrame:
     """Loads raw HLTV match JSON and explodes them into map rows."""
@@ -311,9 +425,22 @@ def load_raw_maps() -> pd.DataFrame:
 
             # Detect LAN vs Online from match_info blurbs
             is_lan = detect_is_lan(match.get("match_info", []))
+            match_flags = get_roster_status_flags(match)
 
             for m_data in match.get("hltv_maps", []):
-                row = process_hltv_map_data(m_data, t1, t2, t1_id, t2_id, m_id, m_date, ranks, match_format=m_format, is_lan=is_lan)
+                row = process_hltv_map_data(
+                    m_data,
+                    t1,
+                    t2,
+                    t1_id,
+                    t2_id,
+                    m_id,
+                    m_date,
+                    ranks,
+                    match_format=m_format,
+                    is_lan=is_lan,
+                    match_flags=match_flags,
+                )
                 if row: all_maps.append(row)
 
         if excluded_showmatches > 0:

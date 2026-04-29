@@ -81,7 +81,16 @@ METADATA_COLS = [
     "team_a_gen_matches_30d",
     "team_b_gen_matches_30d",
     "match_has_forfeit",
-    "is_lan"
+    "is_lan",
+    "has_substitution_note",
+    "has_coach_standin",
+    "has_mid_map_sub",
+    "has_map_specific_sub",
+    "has_team_replacement",
+    "substitution_reason_terms",
+    "substitution_notes",
+    "team_replacement_notes",
+    "roster_status"
 ]
 
 def get_sos(history, current_date, days):
@@ -323,7 +332,16 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "team_a_gen_matches_30d": gen_a_30d["matches"],
             "team_b_gen_matches_30d": gen_b_30d["matches"],
             "match_has_forfeit": row.get("match_has_forfeit", False),
-            "is_lan": row.get("is_lan", False)
+            "is_lan": row.get("is_lan", False),
+            "has_substitution_note": row.get("has_substitution_note", False),
+            "has_coach_standin": row.get("has_coach_standin", False),
+            "has_mid_map_sub": row.get("has_mid_map_sub", False),
+            "has_map_specific_sub": row.get("has_map_specific_sub", False),
+            "has_team_replacement": row.get("has_team_replacement", False),
+            "substitution_reason_terms": row.get("substitution_reason_terms", ""),
+            "substitution_notes": row.get("substitution_notes", ""),
+            "team_replacement_notes": row.get("team_replacement_notes", ""),
+            "roster_status": row.get("roster_status", "standard")
         }
         
         # 3. Label (What we are predicting)
