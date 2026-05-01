@@ -1,10 +1,11 @@
 """
-Shadow Ledger — SQLite-backed model calibration and odds tracking system.
+Shadow Ledger - SQLite-backed model calibration and odds tracking system.
 
-Three tables:
+Four tables:
   - model_versions: Registry of every training run (features, hyperparams, weights)
   - matches:        One row per unique match (metadata + result)
-  - snapshots:      One row per prediction run × match (odds, model_prob, edge)
+  - snapshots:      One row per prediction run x match (model_prob, canonical odds, edge)
+  - snapshot_bookmaker_odds: Raw bookmaker odds rows attached to each snapshot
 
 Usage:
     python -m evaluation.shadow_ledger refresh   # Resolve pending bets via HLTV
@@ -74,10 +75,36 @@ CREATE TABLE IF NOT EXISTS snapshots (
     implied_prob_a  REAL,
     implied_prob_b  REAL,
     edge_a          REAL,
+    edge_b          REAL,
     best_bet        TEXT,
     best_edge       REAL,
-    valid_for_eval  INTEGER DEFAULT 1
+    valid_for_eval  INTEGER DEFAULT 1,
+    odds_source     TEXT,
+    odds_book_count INTEGER DEFAULT 0,
+    odds_summary_json TEXT,
+    analytics_summary_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS snapshot_bookmaker_odds (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    match_url       TEXT NOT NULL REFERENCES matches(match_url),
+    timestamp       TEXT NOT NULL,
+    bookmaker       TEXT,
+    market          TEXT DEFAULT 'moneyline',
+    team_a          TEXT,
+    team_b          TEXT,
+    odds_a          REAL,
+    odds_b          REAL,
+    implied_prob_a  REAL,
+    implied_prob_b  REAL,
+    overround       REAL,
+    source_url      TEXT,
+    raw_json        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshot_bookmaker_odds_snapshot
+ON snapshot_bookmaker_odds(snapshot_id);
 """
 
 
@@ -97,6 +124,19 @@ def get_db():
         conn.execute("ALTER TABLE model_versions ADD COLUMN test_log_loss REAL;")
     except sqlite3.OperationalError:
         pass
+    for statement in [
+        "ALTER TABLE snapshots ADD COLUMN edge_b REAL;",
+        "ALTER TABLE snapshots ADD COLUMN valid_for_eval INTEGER DEFAULT 1;",
+        "ALTER TABLE snapshots ADD COLUMN odds_source TEXT;",
+        "ALTER TABLE snapshots ADD COLUMN odds_book_count INTEGER DEFAULT 0;",
+        "ALTER TABLE snapshots ADD COLUMN odds_summary_json TEXT;",
+        "ALTER TABLE snapshots ADD COLUMN analytics_summary_json TEXT;",
+    ]:
+        try:
+            conn.execute(statement)
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
         
     return conn
 
@@ -247,13 +287,24 @@ def record_predictions(match_results: list, version_id: str = None):
                 best_edge = None
 
             valid_val = item.get("valid_for_eval", 1)
+            odds_rows = item.get("match", {}).get("bookmaker_odds") or item.get("bookmaker_odds") or []
+            odds_summary = item.get("match", {}).get("odds_summary") or item.get("odds_summary") or {}
+            analytics_summary = item.get("match", {}).get("analytics_summary") or {}
+            odds_source = item.get("match", {}).get("odds_source") or odds_summary.get("source")
+            odds_book_count = item.get("match", {}).get("odds_book_count") or len(odds_rows)
+            odds_source_url = (
+                item.get("match", {}).get("odds_source_url")
+                or item.get("match", {}).get("source_url")
+                or item.get("match", {}).get("analytics_url")
+            )
 
-            conn.execute(
+            snapshot_cur = conn.execute(
                 """INSERT INTO snapshots
                    (match_url, version_id, timestamp, model_prob_a,
                     odds_a, odds_b, implied_prob_a, implied_prob_b,
-                    edge_a, edge_b, best_bet, best_edge, valid_for_eval)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    edge_a, edge_b, best_bet, best_edge, valid_for_eval,
+                    odds_source, odds_book_count, odds_summary_json, analytics_summary_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     url,
                     version_id,
@@ -267,9 +318,47 @@ def record_predictions(match_results: list, version_id: str = None):
                     round(edge_b, 2) if edge_b is not None else None,
                     best_bet,
                     round(best_edge, 2) if best_edge is not None else None,
-                    valid_val
+                    valid_val,
+                    odds_source,
+                    odds_book_count,
+                    json.dumps(odds_summary) if odds_summary else None,
+                    json.dumps(analytics_summary) if analytics_summary else None,
                 ),
             )
+            snapshot_id = snapshot_cur.lastrowid
+
+            for odds_row in odds_rows:
+                row_odds_a = odds_row.get("odds_a")
+                row_odds_b = odds_row.get("odds_b")
+                if not row_odds_a or not row_odds_b:
+                    continue
+                implied_a = odds_row.get("implied_prob_a") or (1.0 / row_odds_a)
+                implied_b = odds_row.get("implied_prob_b") or (1.0 / row_odds_b)
+                overround = odds_row.get("overround") or (implied_a + implied_b)
+
+                conn.execute(
+                    """INSERT INTO snapshot_bookmaker_odds
+                       (snapshot_id, match_url, timestamp, bookmaker, market,
+                        team_a, team_b, odds_a, odds_b, implied_prob_a,
+                        implied_prob_b, overround, source_url, raw_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        snapshot_id,
+                        url,
+                        now,
+                        odds_row.get("bookmaker"),
+                        odds_row.get("market", "moneyline"),
+                        item["team_a"],
+                        item["team_b"],
+                        row_odds_a,
+                        row_odds_b,
+                        round(implied_a, 4),
+                        round(implied_b, 4),
+                        round(overround, 4),
+                        odds_source_url,
+                        json.dumps(odds_row),
+                    ),
+                )
             added += 1
 
         conn.commit()
@@ -558,6 +647,7 @@ def show_list():
             """
             SELECT m.match_date, m.team_a, m.team_b, m.format,
                    s.model_prob_a, s.best_bet, s.best_edge, s.odds_a, s.odds_b,
+                   s.odds_source, s.odds_book_count,
                    m.result, s.version_id, s.valid_for_eval,
                    (SELECT COUNT(*) FROM snapshots WHERE match_url = m.match_url) as num_snapshots
             FROM matches m
@@ -629,7 +719,8 @@ def show_odds_history(match_url: str):
         df = pd.read_sql_query(
             """
             SELECT timestamp, version_id, model_prob_a, odds_a, odds_b,
-                   implied_prob_a, implied_prob_b, edge_a, edge_b, best_bet, best_edge
+                   implied_prob_a, implied_prob_b, edge_a, edge_b,
+                   best_bet, best_edge, odds_source, odds_book_count
             FROM snapshots
             WHERE match_url = ?
             ORDER BY timestamp
@@ -638,6 +729,22 @@ def show_odds_history(match_url: str):
             params=(match_url,),
         )
         print(df.to_string(index=False))
+
+        raw_df = pd.read_sql_query(
+            """
+            SELECT bo.timestamp, bo.bookmaker, bo.market, bo.odds_a, bo.odds_b,
+                   bo.overround
+            FROM snapshot_bookmaker_odds bo
+            JOIN snapshots s ON s.id = bo.snapshot_id
+            WHERE s.match_url = ?
+            ORDER BY bo.timestamp, bo.bookmaker
+            """,
+            conn,
+            params=(match_url,),
+        )
+        if not raw_df.empty:
+            print("\n--- Raw Bookmaker Odds ---")
+            print(raw_df.to_string(index=False))
     finally:
         conn.close()
 
@@ -648,7 +755,7 @@ def show_odds_history(match_url: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Shadow Ledger — Model calibration and odds tracking"
+        description="Shadow Ledger - Model calibration and odds tracking"
     )
     subparsers = parser.add_subparsers(dest="command")
 

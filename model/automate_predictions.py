@@ -40,7 +40,7 @@ def simple_format(template, **kwargs):
             except (ValueError, TypeError):
                 return match.group(0)
         return match.group(0)
-    
+
     return re.sub(r'\{(\w+)(:[^}]*)?\}', replacer, template)
 
 # Load templates at startup
@@ -70,11 +70,11 @@ def convert_odds_to_prob(o1, o2):
     """Converts decimal odds to implied probability percentages."""
     if not o1 or not o2:
         return None, None
-    
+
     p1_raw = 1.0 / o1
     p2_raw = 1.0 / o2
     total = p1_raw + p2_raw
-    
+
     p1 = (p1_raw / total) * 100
     p2 = (p2_raw / total) * 100
     return p1, p2
@@ -83,15 +83,15 @@ def archive_hltv_html(html):
     """Saves the raw HLTV matches HTML to data/raw/hltv_archive/ with a timestamp."""
     if not html:
         return
-    
+
     # Path relative to project root (system.path already includes it)
     archive_dir = os.path.join("data", "raw", "hltv_archive")
     os.makedirs(archive_dir, exist_ok=True)
-    
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"hltv_matches_{timestamp}.html"
     filepath = os.path.join(archive_dir, filename)
-    
+
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(html)
     logger.info(f"Archived raw HLTV matches HTML to {filepath}")
@@ -99,7 +99,7 @@ def archive_hltv_html(html):
 def main():
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     default_report_name = f"predictions_report_{timestamp}.html"
-    
+
     parser = argparse.ArgumentParser(description="Automated HLTV Match Prediction Pipeline")
     parser.add_argument("--event-id", type=int, help="HLTV Event ID to scrape matches from")
     parser.add_argument("--output", default=os.path.join("reports", default_report_name), help=f"Output file path (default: reports/{default_report_name})")
@@ -108,7 +108,7 @@ def main():
     parser.add_argument("--threshold", type=float, default=MC_THRESHOLD, help="Probability truncation threshold")
     parser.add_argument("--no-report", action="store_true", help="Do not generate the HTML report")
     parser.add_argument("--no-open", action="store_true", help="Do not open the report in the browser automatically")
-    
+
     args = parser.parse_args()
 
     client = HLTVClient()
@@ -128,13 +128,14 @@ def main():
                  archive_hltv_html(client.last_html)
     except Exception as e:
         logger.error(f"Failed to fetch/parse matches: {e}")
-        sys.exit(1)
-    finally:
         if not args.html_file:
             client.stop()
+        sys.exit(1)
 
     if not matches:
         logger.warning("No matches found to predict.")
+        if not args.html_file:
+            client.stop()
         return
 
     logger.info(f"Found {len(matches)} matches. Starting predictions...")
@@ -144,93 +145,116 @@ def main():
         shared_ctx = PredictorContext()
     except Exception as e:
         logger.error(f"Failed to initialize predictor context: {e}")
+        if not args.html_file:
+            client.stop()
         sys.exit(1)
 
     match_results = []
 
-    for i, match in enumerate(matches):
-        team_a = match['team1']
-        team_b = match['team2']
-        
-        # Filter Predetermined matches
-        t1_low, t2_low = team_a.lower(), team_b.lower()
-        is_undetermined = any(x in t1_low or x in t2_low for x in ["unknown", "tbd"])
-        is_placeholder = any(re.search(r'.+/.+ (winner|loser)', t) for t in [t1_low, t2_low])
+    try:
+        for i, match in enumerate(matches):
+            team_a = match['team1']
+            team_b = match['team2']
 
-        if is_undetermined or is_placeholder:
-            logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Undetermined/Placeholder participants)")
-            continue
+            # Filter Predetermined matches
+            t1_low, t2_low = team_a.lower(), team_b.lower()
+            is_undetermined = any(x in t1_low or x in t2_low for x in ["unknown", "tbd"])
+            is_placeholder = any(re.search(r'.+/.+ (winner|loser)', t) for t in [t1_low, t2_low])
 
-        # Skip matches that have already started (mid-game odds are meaningless for pre-match model)
-        m_date = match.get('date')
-        m_time = match.get('time')
-        if m_date and m_time:
+            if is_undetermined or is_placeholder:
+                logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Undetermined/Placeholder participants)")
+                continue
+
+            # Skip matches that have already started (mid-game odds are meaningless for pre-match model)
+            m_date = match.get('date')
+            m_time = match.get('time')
+            if m_date and m_time:
+                try:
+                    m_dt = datetime.strptime(f"{m_date} {m_time}", "%Y-%m-%d %H:%M")
+                    if datetime.now() > m_dt:
+                        logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Match already started at {m_date} {m_time})")
+                        continue
+
+                    # Check if match is more than 3 days away
+                    is_later = (m_dt - datetime.now()).total_seconds() > (3 * 24 * 3600)
+                except ValueError:
+                    is_later = False
+            else:
+                # If there's no date/time, HLTV has likely replaced the timestamp with a "LIVE" badge
+                logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Match is LIVE or lacks start time)")
+                continue
+
+            fmt = match['format']
+            match_url = match['url']
+
+            if 'bo1' in fmt: fmt = 'bo1'
+            elif 'bo5' in fmt: fmt = 'bo5'
+            else: fmt = 'bo3'
+
+            logger.info(f"[{i+1}/{len(matches)}] Predicting: {team_a} vs {team_b} ({fmt})")
+
             try:
-                m_dt = datetime.strptime(f"{m_date} {m_time}", "%Y-%m-%d %H:%M")
-                if datetime.now() > m_dt:
-                    logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Match already started at {m_date} {m_time})")
-                    continue
-                
-                # Check if match is more than 3 days away
-                is_later = (m_dt - datetime.now()).total_seconds() > (3 * 24 * 3600)
-            except ValueError:
-                is_later = False
-        else:
-            # If there's no date/time, HLTV has likely replaced the timestamp with a "LIVE" badge
-            logger.info(f"[{i+1}/{len(matches)}] Skipping: {team_a} vs {team_b} (Match is LIVE or lacks start time)")
-            continue
+                results = calculate_expected_series_win(
+                    team_a,
+                    team_b,
+                    series_format=fmt,
+                    threshold=args.threshold,
+                    iters=args.iters,
+                    ctx=shared_ctx
+                )
 
-        fmt = match['format']
-        match_url = match['url']
-        
-        if 'bo1' in fmt: fmt = 'bo1'
-        elif 'bo5' in fmt: fmt = 'bo5'
-        else: fmt = 'bo3'
+                if not args.html_file:
+                    try:
+                        analytics = client.fetch_match_betting_analytics(match)
+                        match.update(analytics)
+                        odds_summary = analytics.get("odds_summary") or {}
+                        if odds_summary:
+                            match["odds1"] = odds_summary.get("odds_a_median")
+                            match["odds2"] = odds_summary.get("odds_b_median")
+                            match["odds_source"] = odds_summary.get("source")
+                            match["odds_book_count"] = odds_summary.get("book_count", 0)
+                            match["odds_source_url"] = analytics.get("source_url")
+                            logger.info(
+                                f"  -> Collected {match['odds_book_count']} bookmaker odds rows; "
+                                "using median market odds for edge calculations."
+                            )
+                        else:
+                            logger.warning(f"  -> No bookmaker odds found on analytics page for {team_a} vs {team_b}.")
+                    except Exception as e:
+                        logger.warning(f"  -> Failed to fetch betting analytics for {team_a} vs {team_b}: {e}")
 
-        logger.info(f"[{i+1}/{len(matches)}] Predicting: {team_a} vs {team_b} ({fmt})")
+                prob1 = results["expected_win_prob"]
+                prob2 = 1.0 - prob1
+                t_a_id = results["team_a_id"]
+                t_b_id = results["team_b_id"]
+                seq_counts = results["sequence_counts"]
 
-        try:
-            results = calculate_expected_series_win(
-                team_a, 
-                team_b, 
-                series_format=fmt, 
-                threshold=args.threshold, 
-                iters=args.iters,
-                ctx=shared_ctx
-            )
-            
-            prob1 = results["expected_win_prob"]
-            prob2 = 1.0 - prob1
-            t_a_id = results["team_a_id"]
-            t_b_id = results["team_b_id"]
-            seq_counts = results["sequence_counts"]
-            
-            # Odds Calculation
-            o1 = match.get('odds1')
-            o2 = match.get('odds2')
-            
-            # Normalised (Implied)
-            imp1, imp2 = convert_odds_to_prob(o1, o2)
-            
-            # Unnormalised (Raw)
-            unnorm1, unnorm2 = None, None
-            if o1 and o2:
-                unnorm1 = (1.0 / o1) * 100
-                unnorm2 = (1.0 / o2) * 100
+                # Odds Calculation
+                o1 = match.get('odds1')
+                o2 = match.get('odds2')
 
-            # Calculate Edge (Model Prob - Unnormalised Prob)
-            edge1 = (prob1 * 100) - unnorm1 if unnorm1 is not None else None
-            edge2 = (prob2 * 100) - unnorm2 if unnorm2 is not None else None
-            
-            max_edge = max(edge1, edge2) if edge1 is not None and edge2 is not None else None
-            is_value_t1 = (edge1 > 2.0) if edge1 is not None else False
-            is_value_t2 = (edge2 > 2.0) if edge2 is not None else False
-            
-            t1_maps = len(shared_ctx.gen_histories.get(t_a_id, []))
-            t2_maps = len(shared_ctx.gen_histories.get(t_b_id, []))
-            valid_for_eval = 1 if (t1_maps >= 10 and t2_maps >= 10) else 0
+                # Normalised (Implied)
+                imp1, imp2 = convert_odds_to_prob(o1, o2)
 
-            match_results.append({
+                # Unnormalised (Raw)
+                unnorm1, unnorm2 = None, None
+                if o1 and o2:
+                    unnorm1 = (1.0 / o1) * 100
+                    unnorm2 = (1.0 / o2) * 100
+
+                # Calculate Edge (Model Prob - Unnormalised Prob)
+                edge1 = (prob1 * 100) - unnorm1 if unnorm1 is not None else None
+                edge2 = (prob2 * 100) - unnorm2 if unnorm2 is not None else None
+
+                max_edge = max(edge1, edge2) if edge1 is not None and edge2 is not None else None
+                is_value_t1 = (edge1 > 2.0) if edge1 is not None else False
+                is_value_t2 = (edge2 > 2.0) if edge2 is not None else False
+
+                t1_maps = len(shared_ctx.gen_histories.get(t_a_id, []))
+                t2_maps = len(shared_ctx.gen_histories.get(t_b_id, []))
+                valid_for_eval = 1 if (t1_maps >= 10 and t2_maps >= 10) else 0
+
+                match_results.append({
                 "match": match,
                 "team_a": team_a,
                 "team_b": team_b,
@@ -257,10 +281,13 @@ def main():
                 "t1_maps": t1_maps,
                 "t2_maps": t2_maps,
                 "valid_for_eval": valid_for_eval
-            })
+                })
 
-        except Exception as e:
-            logger.error(f"Error predicting {team_a} vs {team_b}: {e}")
+            except Exception as e:
+                logger.error(f"Error predicting {team_a} vs {team_b}: {e}")
+    finally:
+        if not args.html_file:
+            client.stop()
 
     # Sort by model predicted edge
     match_results.sort(key=lambda x: x['max_edge'] if x['max_edge'] is not None else -9999, reverse=True)
@@ -270,13 +297,16 @@ def main():
         # Odds Section
         odds_section = ""
         if item['imp1'] and item['imp2']:
+            book_count = item["match"].get("odds_book_count")
+            odds_label = f"Median ({book_count})" if book_count else "Market"
             odds_section = simple_format(ODDS_SECTION_TEMPLATE,
-                imp1_str=f"{item['imp1']:.1f}%", 
-                imp2_str=f"{item['imp2']:.1f}%", 
+                imp1_str=f"{item['imp1']:.1f}%",
+                imp2_str=f"{item['imp2']:.1f}%",
                 unnorm1_str=f"{item['unnorm1']:.1f}%",
                 unnorm2_str=f"{item['unnorm2']:.1f}%",
-                o1_str=f"{item['o1']:.2f}", 
-                o2_str=f"{item['o2']:.2f}"
+                o1_str=f"{item['o1']:.2f}",
+                o2_str=f"{item['o2']:.2f}",
+                odds_label=odds_label
             )
         else:
             odds_section = NO_ODDS_SECTION_TEMPLATE
@@ -287,15 +317,15 @@ def main():
         for seq, count in sorted_seqs:
             s_prob = (count / args.iters) * 100
             map_names = [m.strip() for m in seq.split(",")]
-            formatted_names = " → ".join(map_names)
-            
+            formatted_names = " â†’ ".join(map_names)
+
             map_thumbs = ""
             for mname in map_names:
                 m_key = mname.lower().replace(" ", "")
                 fname = MAP_FILENAME_MAP.get(m_key, "placeholder.png")
                 path = f"../static/maps/{fname}"
                 map_thumbs += f'<img src="{path}" class="map-thumb" alt="{mname}" title="{mname}">'
-            
+
             veto_items += simple_format(VETO_ITEM_TEMPLATE,
                 s_prob_str=f"{s_prob:5.1f}%",
                 formatted_names=formatted_names,
@@ -354,11 +384,11 @@ def main():
             value_badge2=value_badge2,
             match_classes=match_classes
         )
-        
+
         # Wrap in a div if it's a later match
         if item['is_later']:
             card = f'<div class="later-match">{card}</div>'
-        
+
         cards_html_list.append(card)
 
     # Final HTML assembly
@@ -374,10 +404,10 @@ def main():
         output_dir = os.path.dirname(args.output)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            
+
         with open(args.output, 'w', encoding='utf-8') as f:
             f.write(final_html)
-        
+
         logger.info(f"Automation complete. HTML report saved to {args.output}")
 
         if not args.no_open:

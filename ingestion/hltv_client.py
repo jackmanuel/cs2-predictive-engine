@@ -2,12 +2,15 @@ import time
 import random
 import re
 import logging
+import statistics
 from datetime import datetime
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
 
 logger = logging.getLogger(__name__)
+
+HLTV_BASE_URL = "https://www.hltv.org"
 
 class HLTVClient:
     """
@@ -42,6 +45,259 @@ class HLTVClient:
         sleep_time = random.uniform(5.5, 8.5)
         logger.debug(f"Waiting {sleep_time:.1f}s for page load/Cloudflare...")
         time.sleep(sleep_time)
+
+    def _absolute_url(self, href: str) -> str:
+        """Returns an absolute HLTV URL for relative links."""
+        if not href:
+            return ""
+        if href.startswith("http"):
+            return href
+        return HLTV_BASE_URL + href
+
+    def _analytics_url_from_match_url(self, match_url: str) -> Optional[str]:
+        """Converts a match page URL to its betting analytics URL."""
+        if not match_url:
+            return None
+        match = re.search(r"/matches/(\d+)/(.+)$", match_url)
+        if not match:
+            return None
+        match_id, slug = match.groups()
+        return f"{HLTV_BASE_URL}/betting/analytics/{match_id}/{slug}"
+
+    def _extract_analytics_summary(self, soup: BeautifulSoup) -> Dict:
+        """Extracts the human-readable analytics summary block when present."""
+        heading = soup.find(
+            lambda tag: tag.name in ["h1", "h2", "h3"]
+            and "analytics summary" in tag.get_text(" ", strip=True).lower()
+        )
+        if not heading:
+            return {}
+
+        lines = []
+        for sibling in heading.find_all_next():
+            if sibling is heading:
+                continue
+            if sibling.name in ["h1", "h2", "h3"] and sibling.get_text(" ", strip=True):
+                break
+            text = sibling.get_text(" ", strip=True)
+            if text and text not in lines:
+                lines.append(text)
+
+        return {"text": "\n".join(lines[:80])}
+
+    def _decimal_odds_from_text(self, text: str) -> List[float]:
+        """Finds plausible decimal odds values in a short text fragment."""
+        values = []
+        for raw in re.findall(r"(?<!\d)([1-9]\d?\.\d{2})(?!\d)", text):
+            try:
+                val = float(raw)
+            except ValueError:
+                continue
+            if 1.01 <= val <= 100.0:
+                values.append(val)
+        return values
+
+    def _infer_bookmaker_name(self, container, team_names: List[str]) -> str:
+        """Best-effort bookmaker name extraction from a likely odds row."""
+        ignored = {"", "image", "logo", "hltv.org", "counter-strike", "cs2"}
+        team_lows = {t.lower() for t in team_names if t}
+
+        for img in container.find_all("img"):
+            for attr in ["alt", "title"]:
+                name = (img.get(attr) or "").strip()
+                name = re.sub(r"^logo for\s+", "", name, flags=re.I)
+                name = re.sub(r"\s+", " ", name)
+                if name and name.lower() not in ignored and name.lower() not in team_lows:
+                    return name
+
+        text = container.get_text(" ", strip=True)
+        for team in team_names:
+            if team:
+                text = re.sub(re.escape(team), " ", text, flags=re.I)
+        text = re.sub(r"(?<!\d)[1-9]\d?\.\d{2}(?!\d)", " ", text)
+        text = re.sub(r"\b(bet now|claim|bonus|terms|promocode|odds|pick a winner)\b", " ", text, flags=re.I)
+        text = re.sub(r"\s+", " ", text).strip(" -|:")
+        return text[:80] if text else "Unknown"
+
+    def _normalise_provider_name(self, provider: str) -> str:
+        """Converts HLTV provider ids into readable bookmaker names."""
+        if not provider:
+            return "Unknown"
+
+        known = {
+            "ggbet": "GG.BET",
+            "thunderpick": "Thunderpick",
+            "1xbet": "1xBet",
+            "vulkan": "Vulkan Bet",
+            "bet20": "20Bet",
+        }
+        key = provider.strip().lower()
+        return known.get(key, provider.strip())
+
+    def _parse_bookmaker_odds_table(self, soup: BeautifulSoup) -> List[Dict]:
+        """Parses HLTV's bookmaker comparison table using data-provider/data-numeric-odds."""
+        odds_rows = []
+        seen = set()
+
+        for row in soup.find_all("tr"):
+            odds_cells = row.find_all(
+                lambda tag: tag.name in ["td", "div"]
+                and "odds" in tag.get("class", [])
+                and tag.get("data-numeric-odds")
+            )
+            if len(odds_cells) < 2:
+                continue
+
+            by_side = {}
+            provider = None
+            for cell in odds_cells:
+                classes = cell.get("class", [])
+                if "team1" in classes:
+                    side = "a"
+                elif "team2" in classes:
+                    side = "b"
+                else:
+                    continue
+
+                try:
+                    value = float(cell.get("data-numeric-odds"))
+                except (TypeError, ValueError):
+                    continue
+
+                if not provider:
+                    provider = cell.get("data-provider")
+                by_side[side] = value
+
+            if "a" not in by_side or "b" not in by_side:
+                continue
+
+            bookmaker = self._normalise_provider_name(provider)
+            key = (bookmaker.lower(), round(by_side["a"], 3), round(by_side["b"], 3))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            odds_a = by_side["a"]
+            odds_b = by_side["b"]
+            odds_rows.append({
+                "bookmaker": bookmaker,
+                "provider_id": provider,
+                "market": "moneyline",
+                "odds_a": odds_a,
+                "odds_b": odds_b,
+                "implied_prob_a": 1.0 / odds_a,
+                "implied_prob_b": 1.0 / odds_b,
+                "overround": (1.0 / odds_a) + (1.0 / odds_b),
+            })
+
+        return odds_rows
+
+    def parse_betting_analytics(self, html: str, team1: str = None, team2: str = None) -> Dict:
+        """
+        Parses an HLTV betting analytics page.
+
+        Returns all discovered two-sided moneyline odds rows plus the analytics summary text.
+        The DOM has changed a few times, so the odds parser intentionally uses conservative
+        structure and class-name heuristics instead of one brittle selector.
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+        team_names = [t for t in [team1, team2] if t]
+        summary = self._extract_analytics_summary(soup)
+
+        odds_rows = self._parse_bookmaker_odds_table(soup)
+        seen = {
+            (row.get("bookmaker", "").lower(), round(row["odds_a"], 3), round(row["odds_b"], 3))
+            for row in odds_rows
+            if row.get("odds_a") and row.get("odds_b")
+        }
+
+        if odds_rows:
+            return {
+                "analytics_summary": summary,
+                "bookmaker_odds": odds_rows,
+                "odds_summary": self.summarize_bookmaker_odds(odds_rows),
+            }
+
+        class_hint = re.compile(r"(book|odds|betting|provider|market)", re.I)
+
+        candidates = soup.find_all(
+            lambda tag: tag.name in ["div", "tr", "li", "a"]
+            and class_hint.search(" ".join(tag.get("class", [])) + " " + (tag.get("id") or ""))
+        )
+
+        for container in candidates:
+            text = container.get_text(" ", strip=True)
+            if not text or len(text) > 700:
+                continue
+
+            values = self._decimal_odds_from_text(text)
+            if len(values) < 2:
+                continue
+
+            odds_a, odds_b = values[0], values[1]
+            bookmaker = self._infer_bookmaker_name(container, team_names)
+            key = (bookmaker.lower(), round(odds_a, 3), round(odds_b, 3))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            odds_rows.append({
+                "bookmaker": bookmaker,
+                "market": "moneyline",
+                "odds_a": odds_a,
+                "odds_b": odds_b,
+                "implied_prob_a": 1.0 / odds_a,
+                "implied_prob_b": 1.0 / odds_b,
+                "overround": (1.0 / odds_a) + (1.0 / odds_b),
+            })
+
+        return {
+            "analytics_summary": summary,
+            "bookmaker_odds": odds_rows,
+            "odds_summary": self.summarize_bookmaker_odds(odds_rows),
+        }
+
+    def summarize_bookmaker_odds(self, odds_rows: List[Dict]) -> Dict:
+        """Summarises raw bookmaker odds into neutral market-level fields."""
+        clean_rows = [
+            row for row in odds_rows
+            if row.get("odds_a") and row.get("odds_b")
+        ]
+        if not clean_rows:
+            return {}
+
+        odds_a = [row["odds_a"] for row in clean_rows]
+        odds_b = [row["odds_b"] for row in clean_rows]
+        return {
+            "source": "hltv_analytics_median",
+            "book_count": len(clean_rows),
+            "odds_a_median": statistics.median(odds_a),
+            "odds_b_median": statistics.median(odds_b),
+            "odds_a_mean": statistics.mean(odds_a),
+            "odds_b_mean": statistics.mean(odds_b),
+            "odds_a_min": min(odds_a),
+            "odds_b_min": min(odds_b),
+            "odds_a_max": max(odds_a),
+            "odds_b_max": max(odds_b),
+        }
+
+    def fetch_match_betting_analytics(self, match: Dict) -> Dict:
+        """Fetches and parses the per-match HLTV betting analytics page."""
+        if not self.driver:
+            self.start()
+
+        url = match.get("analytics_url") or self._analytics_url_from_match_url(match.get("url", ""))
+        if not url:
+            return {"bookmaker_odds": [], "odds_summary": {}, "analytics_summary": {}}
+
+        logger.info(f"Fetching betting analytics for: {match.get('team1')} vs {match.get('team2')}")
+        self.driver.get(url)
+        self._wait_for_cloudflare()
+
+        html = self.driver.page_source
+        parsed = self.parse_betting_analytics(html, match.get("team1"), match.get("team2"))
+        parsed["source_url"] = url
+        return parsed
 
     def fetch_recent_results(self, pages: int = 1, start_page: int = 0) -> List[Dict]:
         """
@@ -87,7 +343,7 @@ class HLTVClient:
                 for a in result_links:
                     href = a.get('href', '')
                     if '/matches/' in href:
-                        match_url = "https://www.hltv.org" + href
+                        match_url = self._absolute_url(href)
                         
                         t1_div = a.find('div', class_='team1')
                         t2_div = a.find('div', class_='team2')
@@ -312,7 +568,7 @@ class HLTVClient:
                             })
                             
                 stats_link_el = m.find('a', class_='results-stats')
-                stats_url = "https://www.hltv.org" + stats_link_el.get('href') if stats_link_el else None
+                stats_url = self._absolute_url(stats_link_el.get('href')) if stats_link_el else None
                 
                 picker = None
                 for v in vetoes:
@@ -484,8 +740,14 @@ class HLTVClient:
                 continue
             
             href = anchor['href']
-            match_data['url'] = "https://www.hltv.org" + href
+            match_data['url'] = self._absolute_url(href)
             match_data['id'] = wrapper.get('data-match-id')
+
+            analytics_anchor = wrapper.find('a', href=lambda h: h and '/betting/analytics/' in h)
+            if analytics_anchor:
+                match_data['analytics_url'] = self._absolute_url(analytics_anchor.get('href'))
+            else:
+                match_data['analytics_url'] = self._analytics_url_from_match_url(match_data['url'])
             
             # Match start date/time (from unix timestamp)
             time_el = match_el.find('div', class_='match-time') or match_el.find('div', {'data-unix': True})
