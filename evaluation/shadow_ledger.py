@@ -29,7 +29,9 @@ from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from config import HLTV_MATCHES_FILE
 from ingestion.hltv_client import HLTVClient
+from processing.clean import normalize_format
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -376,6 +378,161 @@ def record_predictions(match_results: list, version_id: str = None):
 # Refresh (resolve pending results)
 # ---------------------------------------------------------------------------
 
+def _normalise_match_url(url: str) -> str:
+    """Normalises match URLs enough to match ledger rows to canonical scrape rows."""
+    return str(url or "").split("#", 1)[0].split("?", 1)[0].rstrip("/")
+
+
+def _normalise_team_name(name: str) -> str:
+    return " ".join(str(name or "").lower().split())
+
+
+def _parse_score(score):
+    try:
+        return int(score)
+    except (TypeError, ValueError):
+        return None
+
+
+def _required_series_wins(match_format: str, match_info: list = None):
+    fmt = normalize_format(match_format)
+    if fmt == "unknown" and match_info:
+        fmt = normalize_format(" ".join(str(line) for line in match_info))
+
+    if fmt == "bo1":
+        return 1
+    if fmt == "bo3":
+        return 2
+    if fmt == "bo5":
+        return 3
+    return None
+
+
+def _load_canonical_match_index():
+    """Loads canonical scraped match data keyed by normalised match URL."""
+    if not HLTV_MATCHES_FILE.exists():
+        logger.info(f"Canonical match data not found at {HLTV_MATCHES_FILE}; using HLTV fallback.")
+        return {}
+
+    try:
+        with open(HLTV_MATCHES_FILE, "r", encoding="utf-8") as f:
+            matches = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(f"Could not load canonical match data from {HLTV_MATCHES_FILE}: {e}")
+        return {}
+
+    return {
+        _normalise_match_url(match.get("url")): match
+        for match in matches
+        if isinstance(match, dict) and match.get("url")
+    }
+
+
+def _name_matches(candidate: str, expected: str) -> bool:
+    candidate = _normalise_team_name(candidate)
+    expected = _normalise_team_name(expected)
+    return bool(candidate and expected and (candidate == expected or expected in candidate or candidate in expected))
+
+
+def _result_from_match_data(
+    *,
+    match_info: list,
+    match_format: str,
+    maps: list,
+    source_team1: str,
+    source_team2: str,
+    team_a: str,
+    team_b: str,
+    is_finished: bool = False,
+    winner: str = "",
+):
+    """Returns a shadow-ledger result from HLTV-shaped data, or None if unresolved."""
+    info_text = " ".join(match_info or []).lower()
+    fmt_text = str(match_format or "").lower()
+    has_default_map = any(
+        str(m.get("map_name", "")).lower() in ["default", "forfeit"]
+        for m in maps
+        if isinstance(m, dict)
+    )
+
+    is_forfeit = (
+        "forfeit" in info_text
+        or "walkover" in info_text
+        or "withdraw" in info_text
+        or "def" in fmt_text
+        or "default" in fmt_text
+        or has_default_map
+    )
+
+    if is_forfeit:
+        return "forfeit"
+    if "cancel" in info_text:
+        return "cancelled"
+
+    if is_finished:
+        if _name_matches(winner, team_a):
+            return "team_a"
+        if _name_matches(winner, team_b):
+            return "team_b"
+        if winner:
+            return f"unknown:{winner}"
+
+    map_wins = {"team1": 0, "team2": 0}
+    for map_row in maps:
+        if not isinstance(map_row, dict):
+            continue
+        score1 = _parse_score(map_row.get("team1_score"))
+        score2 = _parse_score(map_row.get("team2_score"))
+        if score1 is None or score2 is None or score1 == score2:
+            continue
+        winner = "team1" if score1 > score2 else "team2"
+        map_wins[winner] += 1
+
+    required_wins = _required_series_wins(match_format, match_info)
+    if required_wins is None:
+        return None
+
+    if map_wins["team1"] < required_wins and map_wins["team2"] < required_wins:
+        return None
+
+    canonical_winner = "team1" if map_wins["team1"] > map_wins["team2"] else "team2"
+    winning_team = source_team1 if canonical_winner == "team1" else source_team2
+
+    if _name_matches(winning_team, team_a):
+        return "team_a"
+    if _name_matches(winning_team, team_b):
+        return "team_b"
+
+    return f"unknown:{winning_team}"
+
+
+def _canonical_result_for_match(match: dict, team_a: str, team_b: str):
+    return _result_from_match_data(
+        match_info=match.get("match_info") or [],
+        match_format=match.get("format"),
+        maps=match.get("hltv_maps") or [],
+        source_team1=match.get("team1"),
+        source_team2=match.get("team2"),
+        team_a=team_a,
+        team_b=team_b,
+    )
+
+
+def _scraped_result_for_match(details: dict, team_a: str, team_b: str):
+    meta = details["metadata"]
+    return _result_from_match_data(
+        match_info=details.get("match_info") or [],
+        match_format=meta.get("format"),
+        maps=details.get("maps") or [],
+        source_team1=meta.get("team1"),
+        source_team2=meta.get("team2"),
+        team_a=team_a,
+        team_b=team_b,
+        is_finished=meta.get("is_finished", False),
+        winner=meta.get("winner", ""),
+    )
+
+
 def refresh_shadow():
     """Resolves pending shadow bets by checking HLTV match results.
     Only checks matches whose scheduled start time has already passed."""
@@ -408,61 +565,60 @@ def refresh_shadow():
             return
 
         logger.info(f"Resolving {len(pending)} past matches ({skipped} upcoming, skipped)...")
-        client = HLTVClient()
+        canonical_matches = _load_canonical_match_index()
         updated = 0
+        canonical_updated = 0
+        fallback_rows = []
 
-        try:
-            for row in pending:
-                try:
-                    details = client.fetch_match_details(row["match_url"])
-                    meta = details["metadata"]
-                    
-                    t_a = str(row["team_a"]).strip()
-                    t_b = str(row["team_b"]).strip()
-                    
-                    info_text = " ".join(details.get("match_info", [])).lower()
-                    fmt_text = meta.get("format", "").lower()
-                    has_default_map = any(m.get("map_name", "").lower() in ["default", "forfeit"] for m in details.get("maps", []))
-                    
-                    result = None
+        for row in pending:
+            t_a = str(row["team_a"]).strip()
+            t_b = str(row["team_b"]).strip()
+            match = canonical_matches.get(_normalise_match_url(row["match_url"]))
+            result = _canonical_result_for_match(match, t_a, t_b) if match else None
 
-                    is_forfeit = (
-                         "forfeit" in info_text or 
-                         "walkover" in info_text or 
-                         "withdraw" in info_text or 
-                         "def" in fmt_text or 
-                         "default" in fmt_text or 
-                         has_default_map
-                    )
+            if result is None:
+                fallback_rows.append(row)
+                continue
 
-                    if is_forfeit:
-                        result = "forfeit"
-                    elif "cancel" in info_text:
-                        result = "cancelled"
-                    elif meta["is_finished"]:
-                        winner = meta.get("winner", "")
-                        if winner and t_a.lower() in winner.lower():
-                            result = "team_a"
-                        elif winner and t_b.lower() in winner.lower():
-                            result = "team_b"
-                        else:
-                            result = f"unknown:{winner}"
+            conn.execute(
+                "UPDATE matches SET result = ? WHERE match_url = ?",
+                (result, row["match_url"]),
+            )
+            updated += 1
+            canonical_updated += 1
+            logger.info(f"  Resolved from canonical data: {t_a} vs {t_b} -> {result}")
 
-                    if result is not None:
-                        conn.execute(
-                            "UPDATE matches SET result = ? WHERE match_url = ?",
-                            (result, row["match_url"]),
-                        )
-                        updated += 1
-                        logger.info(f"  Resolved: {t_a} vs {t_b} -> {result}")
-                except Exception as e:
-                    logger.error(f"  Error resolving {row['match_url']}: {e}")
+        if fallback_rows:
+            logger.info(f"Falling back to HLTV scraping for {len(fallback_rows)} unresolved matches.")
+            client = HLTVClient()
 
-            if updated > 0:
-                conn.commit()
-            logger.info(f"Resolved {updated}/{len(pending)} past matches.")
-        finally:
-            client.stop()
+            try:
+                for row in fallback_rows:
+                    try:
+                        details = client.fetch_match_details(row["match_url"])
+
+                        t_a = str(row["team_a"]).strip()
+                        t_b = str(row["team_b"]).strip()
+                        result = _scraped_result_for_match(details, t_a, t_b)
+
+                        if result is not None:
+                            conn.execute(
+                                "UPDATE matches SET result = ? WHERE match_url = ?",
+                                (result, row["match_url"]),
+                            )
+                            updated += 1
+                            logger.info(f"  Resolved from HLTV: {t_a} vs {t_b} -> {result}")
+                    except Exception as e:
+                        logger.error(f"  Error resolving {row['match_url']}: {e}")
+            finally:
+                client.stop()
+
+        if updated > 0:
+            conn.commit()
+        logger.info(
+            f"Resolved {updated}/{len(pending)} past matches "
+            f"({canonical_updated} from canonical data, {updated - canonical_updated} from HLTV)."
+        )
     finally:
         conn.close()
 
