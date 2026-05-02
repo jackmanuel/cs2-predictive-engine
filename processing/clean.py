@@ -3,13 +3,12 @@ import sys
 import logging
 import re
 import json
-from pathlib import Path
 from typing import List
 import pandas as pd
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import RAW_DIR, PROCESSED_DIR, DATA_DIR, DEFAULT_TEAM_RANK, HLTV_MATCHES_FILE
+from config import PROCESSED_DIR, DEFAULT_TEAM_RANK, HLTV_MATCHES_FILE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)

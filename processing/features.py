@@ -3,11 +3,10 @@ import sys
 import logging
 import pandas as pd
 import numpy as np
-from pathlib import Path
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, DATA_DIR, MIN_MATCHES_THRESHOLD, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, DEFAULT_SOS_RANK
+from config import PROCESSED_DIR, MIN_MATCHES_THRESHOLD, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, DEFAULT_SOS_RANK
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)

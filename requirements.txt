@@ -1,9 +1,10 @@
 torch
 pandas
 numpy
-requests
 python-dotenv
 scikit-learn
+scipy
+joblib
 pyarrow
 beautifulsoup4
 undetected-chromedriver
