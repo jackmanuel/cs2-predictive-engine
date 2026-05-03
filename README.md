@@ -53,7 +53,33 @@ Run the full pipeline to ingest, clean, engineer features, and train the model. 
 python pipeline.py
 ```
 
-### 2. Live Match Automation (The Dashboard)
+### 2. Daily Update
+Run the lightweight update workflow without retraining. By default, this runs in a loop about every two hours, with random jitter added between passes. Each pass scrapes the first page of recent HLTV results, checks whether the current model is at least 500 cleaned maps behind the canonical scrape, generates the prediction report, and refreshes the shadow ledger:
+```bash
+python update.py --no-open
+```
+
+The freshness check reuses the same cleaning exclusions as training, so forfeits/defaults and other excluded map rows are not counted as model lag. If the warning triggers, it only prints to the console; `update.py` never retrains the model.
+
+Useful options:
+```bash
+# Run a single update pass and exit
+python update.py --run-once
+
+# Scrape more recent-results pages before predicting
+python update.py --pages 3
+
+# Limit scraping to a fixed number of new matches
+python update.py --matches 20
+
+# Generate predictions for a specific HLTV event
+python update.py --event-id 8242
+
+# Adjust the loop timing
+python update.py --interval-hours 2 --jitter-minutes 45 --no-open
+```
+
+### 3. Live Match Automation (The Dashboard)
 Scrape upcoming matches and generate a premium HTML dashboard. This also automatically records shadow bets for model calibration:
 ```bash
 # Predict matches for a specific HLTV Event
@@ -63,13 +89,13 @@ python model/automate_predictions.py --event-id 8242
 python model/automate_predictions.py
 ```
 
-### 3. Manual Series Prediction
+### 4. Manual Series Prediction
 Predict a specific hypothetical or scheduled matchup:
 ```bash
 python -m model.predict_series "Vitality" "G2" --format bo3
 ```
 
-### 4. Shadow Ledger (Model Calibration)
+### 5. Shadow Ledger (Model Calibration)
 The shadow ledger automatically records every prediction from the dashboard. Use these commands to track model performance:
 ```bash
 # Resolve pending match results via HLTV
@@ -88,7 +114,7 @@ python -m evaluation.shadow_ledger versions
 python -m evaluation.shadow_ledger odds <hltv_match_url>
 ```
 
-### 5. Betting Ledger (Real Bets)
+### 6. Betting Ledger (Real Bets)
 Track real bets with model probability and edge:
 ```bash
 # Record a bet
@@ -129,4 +155,3 @@ All tuning parameters are centralised in `config.py`:
 | **Features** | Temporal rolling windows, mirroring, rank differentials, SoS |
 | **Data Storage** | Parquet (training data), SQLite (shadow ledger + model registry) |
 | **Versioning** | Automatic weight archival with architecture hash tracking |
-

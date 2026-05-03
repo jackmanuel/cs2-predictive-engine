@@ -466,12 +466,11 @@ def load_raw_maps() -> pd.DataFrame:
     if df.empty: return df
     return df.sort_values("date").reset_index(drop=True)
 
-def clean_data():
-    logger.info("Starting map-level data cleaning with rank features...")
-    df = load_raw_maps()
+
+def build_clean_maps(raw_maps: pd.DataFrame = None) -> pd.DataFrame:
+    """Loads raw maps and applies the same map-level exclusions used for training."""
+    df = load_raw_maps() if raw_maps is None else raw_maps.copy()
     if not df.empty:
-        initial_count = len(df)
-        
         # 1. Flag matches that contain a forfeited map
         forfeit_match_ids = df[df["is_forfeit"] == True]["match_id"].unique()
         df["match_has_forfeit"] = df["match_id"].isin(forfeit_match_ids)
@@ -481,8 +480,18 @@ def clean_data():
         
         # 3. Exclude matches where the ENTIRE series was marked as 'def'
         df = df[df["match_format"] != "def"]
-        
-        removed = initial_count - len(df)
+
+        df = df.reset_index(drop=True)
+
+    return df
+
+
+def clean_data():
+    logger.info("Starting map-level data cleaning with rank features...")
+    initial_df = load_raw_maps()
+    df = build_clean_maps(initial_df)
+    if not df.empty:
+        removed = len(initial_df) - len(df)
         if removed > 0:
             logger.info(f"Excluded {removed} maps from default/forfeit wins.")
 
