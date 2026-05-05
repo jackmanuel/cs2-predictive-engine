@@ -38,7 +38,7 @@ from processing.clean import (
     get_nonstandard_roster_exclusion_reason,
     get_roster_status_flags,
     normalize_format,
-    normalise_player_name,
+    normalize_player_name,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -391,8 +391,8 @@ def record_predictions(match_results: list, version_id: str = None):
 # Refresh (resolve pending results)
 # ---------------------------------------------------------------------------
 
-def _normalise_match_url(url: str) -> str:
-    """Normalises match URLs enough to match ledger rows to canonical scrape rows."""
+def _normalize_match_url(url: str) -> str:
+    """Normalizes match URLs enough to match ledger rows to canonical scrape rows."""
     clean_url = str(url or "").split("#", 1)[0].split("?", 1)[0].rstrip("/")
     match = re.search(r"/matches/(\d+)", clean_url)
     if match:
@@ -400,7 +400,7 @@ def _normalise_match_url(url: str) -> str:
     return clean_url
 
 
-def _normalise_team_name(name: str) -> str:
+def _normalize_team_name(name: str) -> str:
     return " ".join(str(name or "").lower().split())
 
 
@@ -426,7 +426,7 @@ def _required_series_wins(match_format: str, match_info: list = None):
 
 
 def _load_canonical_match_index():
-    """Loads canonical scraped match data keyed by normalised match URL."""
+    """Loads canonical scraped match data keyed by normalized match URL."""
     if not HLTV_MATCHES_FILE.exists():
         logger.info(f"Canonical match data not found at {HLTV_MATCHES_FILE}; using HLTV fallback.")
         return {}
@@ -439,15 +439,15 @@ def _load_canonical_match_index():
         return {}
 
     return {
-        _normalise_match_url(match.get("url")): match
+        _normalize_match_url(match.get("url")): match
         for match in matches
         if isinstance(match, dict) and match.get("url")
     }
 
 
 def _name_matches(candidate: str, expected: str) -> bool:
-    candidate = _normalise_team_name(candidate)
-    expected = _normalise_team_name(expected)
+    candidate = _normalize_team_name(candidate)
+    expected = _normalize_team_name(expected)
     return bool(candidate and expected and (candidate == expected or expected in candidate or candidate in expected))
 
 
@@ -559,8 +559,8 @@ def _canonical_participant_change_reason(match: dict, team_a: str, team_b: str):
     final_a = match.get("team1")
     final_b = match.get("team2")
     if (
-        _normalise_team_name(team_a) == _normalise_team_name(final_a)
-        and _normalise_team_name(team_b) == _normalise_team_name(final_b)
+        _normalize_team_name(team_a) == _normalize_team_name(final_a)
+        and _normalize_team_name(team_b) == _normalize_team_name(final_b)
     ):
         return None
 
@@ -577,9 +577,9 @@ def _scraped_eval_exclusion_reason(details: dict):
         return f"roster anomaly: {flags['roster_status']}"
 
     players = {
-        normalise_player_name(player.get("player", ""))
+        normalize_player_name(player.get("player", ""))
         for player in details.get("player_stats", [])
-        if normalise_player_name(player.get("player", ""))
+        if normalize_player_name(player.get("player", ""))
     }
     if len(players) > 10:
         return f"non-standard roster: {len(players)} players recorded across the series"
@@ -595,21 +595,21 @@ def _scraped_participant_change_reason(details: dict, team_a: str, team_b: str):
     final_a = metadata.get("team1")
     final_b = metadata.get("team2")
     if (
-        _normalise_team_name(team_a) == _normalise_team_name(final_a)
-        and _normalise_team_name(team_b) == _normalise_team_name(final_b)
+        _normalize_team_name(team_a) == _normalize_team_name(final_a)
+        and _normalize_team_name(team_b) == _normalize_team_name(final_b)
     ):
         return None
 
     return f"participant changed: expected {team_a} vs {team_b}, final {final_a} vs {final_b}"
 
 
-def _normalise_exclusion_reason_text(reason_text: str | None):
+def _normalize_exclusion_reason_text(reason_text: str | None):
     if not reason_text:
         return None
 
-    normalised_text = str(reason_text).replace("; final ", ", final ")
+    normalized_text = str(reason_text).replace("; final ", ", final ")
     reasons = []
-    for part in normalised_text.split(";"):
+    for part in normalized_text.split(";"):
         reason = part.strip()
         if reason and reason not in reasons:
             reasons.append(reason)
@@ -627,7 +627,7 @@ def _mark_match_invalid_for_eval(conn, match_url: str, reason: str | None):
     ).fetchall()
 
     for snapshot in snapshots:
-        existing_reason = _normalise_exclusion_reason_text(snapshot["eval_exclusion_reason"])
+        existing_reason = _normalize_exclusion_reason_text(snapshot["eval_exclusion_reason"])
         reasons = [
             part.strip()
             for part in str(existing_reason or "").split(";")
@@ -656,18 +656,18 @@ def _label_legacy_low_sample_exclusions(conn):
     return cur.rowcount
 
 
-def _normalise_existing_exclusion_reasons(conn):
+def _normalize_existing_exclusion_reasons(conn):
     """Deduplicates legacy exclusion reason strings after reason-format changes."""
     snapshots = conn.execute(
         "SELECT id, eval_exclusion_reason FROM snapshots WHERE eval_exclusion_reason IS NOT NULL"
     ).fetchall()
     updated = 0
     for snapshot in snapshots:
-        normalised_reason = _normalise_exclusion_reason_text(snapshot["eval_exclusion_reason"])
-        if normalised_reason != snapshot["eval_exclusion_reason"]:
+        normalized_reason = _normalize_exclusion_reason_text(snapshot["eval_exclusion_reason"])
+        if normalized_reason != snapshot["eval_exclusion_reason"]:
             conn.execute(
                 "UPDATE snapshots SET eval_exclusion_reason = ? WHERE id = ?",
-                (normalised_reason, snapshot["id"]),
+                (normalized_reason, snapshot["id"]),
             )
             updated += 1
     return updated
@@ -694,14 +694,14 @@ def audit_roster_exclusions(apply_changes: bool = False, include_pending: bool =
         missing_canonical = 0
         flagged = []
         low_sample_labelled = 0
-        reasons_normalised = 0
+        reasons_normalized = 0
 
         if apply_changes:
-            reasons_normalised = _normalise_existing_exclusion_reasons(conn)
+            reasons_normalized = _normalize_existing_exclusion_reasons(conn)
             low_sample_labelled = _label_legacy_low_sample_exclusions(conn)
 
         for row in rows:
-            match = canonical_matches.get(_normalise_match_url(row["match_url"]))
+            match = canonical_matches.get(_normalize_match_url(row["match_url"]))
             if not match:
                 missing_canonical += 1
                 continue
@@ -742,7 +742,7 @@ def audit_roster_exclusions(apply_changes: bool = False, include_pending: bool =
         print(f"Exclusions found:          {len(flagged)}")
         if apply_changes:
             print(f"Legacy low-sample labels: {low_sample_labelled}")
-            print(f"Reason strings normalised: {reasons_normalised}")
+            print(f"Reason strings normalized: {reasons_normalized}")
 
         if flagged:
             print("\nSample flagged matches:")
@@ -815,7 +815,7 @@ def refresh_shadow():
         for row in pending:
             t_a = str(row["team_a"]).strip()
             t_b = str(row["team_b"]).strip()
-            match = canonical_matches.get(_normalise_match_url(row["match_url"]))
+            match = canonical_matches.get(_normalize_match_url(row["match_url"]))
             result = _canonical_result_for_match(match, t_a, t_b) if match else None
             exclusion_reasons = []
             if match:
@@ -1353,7 +1353,7 @@ def show_text_report():
     print(f"{'='*60}")
 
     if settled.empty:
-        print("\n No settled bets to analyse yet.")
+        print("\n No settled bets to analyze yet.")
         return
 
     # Model favourite accuracy

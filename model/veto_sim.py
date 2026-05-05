@@ -38,7 +38,7 @@ def load_data():
     return pd.read_parquet(clean_path)
 
 def normalize_name(name: str) -> str:
-    """Normalises a team name to a consistent uppercase format for matching."""
+    """Normalizes a team name to a consistent uppercase format for matching."""
     if not name: return ""
     return name.strip().upper()
 

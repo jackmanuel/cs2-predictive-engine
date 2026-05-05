@@ -261,16 +261,16 @@ def main():
                 o1 = match.get('odds1')
                 o2 = match.get('odds2')
 
-                # Normalised (Implied)
+                # Normalized (Implied)
                 imp1, imp2 = convert_odds_to_prob(o1, o2)
 
-                # Unnormalised (Raw)
+                # Unnormalized (Raw)
                 unnorm1, unnorm2 = None, None
                 if o1 and o2:
                     unnorm1 = (1.0 / o1) * 100
                     unnorm2 = (1.0 / o2) * 100
 
-                # Calculate Edge (Model Prob - Unnormalised Prob)
+                # Calculate Edge (Model Prob - Unnormalized Prob)
                 edge1 = (prob1 * 100) - unnorm1 if unnorm1 is not None else None
                 edge2 = (prob2 * 100) - unnorm2 if unnorm2 is not None else None
 

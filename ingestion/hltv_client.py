@@ -119,7 +119,7 @@ class HLTVClient:
         text = re.sub(r"\s+", " ", text).strip(" -|:")
         return text[:80] if text else "Unknown"
 
-    def _normalise_provider_name(self, provider: str) -> str:
+    def _normalize_provider_name(self, provider: str) -> str:
         """Converts HLTV provider ids into readable bookmaker names."""
         if not provider:
             return "Unknown"
@@ -171,7 +171,7 @@ class HLTVClient:
             if "a" not in by_side or "b" not in by_side:
                 continue
 
-            bookmaker = self._normalise_provider_name(provider)
+            bookmaker = self._normalize_provider_name(provider)
             key = (bookmaker.lower(), round(by_side["a"], 3), round(by_side["b"], 3))
             if key in seen:
                 continue

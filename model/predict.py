@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_name(name: str) -> str:
-    """Normalises a team name to a consistent uppercase format for matching."""
+    """Normalizes a team name to a consistent uppercase format for matching."""
     if not name: return ""
     return name.strip().upper()
 

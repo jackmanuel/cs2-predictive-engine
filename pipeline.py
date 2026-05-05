@@ -37,7 +37,7 @@ def run_pipeline():
     try:
         # --- PHASE 1: CLEANING ---
         print(f"\n\033[1;33m[PHASE 1] CLEANING\033[0m")
-        print("Scrubbing raw HLTV data, normalising team names...")
+        print("Scrubbing raw HLTV data, normalizing team names...")
         clean_data()
         
         # --- PHASE 2: FEATURE ENGINEERING ---
@@ -47,7 +47,7 @@ def run_pipeline():
         
         # --- PHASE 3: MODEL TRAINING ---
         print(f"\n\033[1;33m[PHASE 3] TRAINING\033[0m")
-        print("Optimising PyTorch model and exporting training state...")
+        print("Optimizing PyTorch model and exporting training state...")
         train_model()
         
         end_time = time.time()

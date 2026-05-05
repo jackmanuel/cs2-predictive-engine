@@ -80,7 +80,7 @@ SUBSTITUTION_REASON_KEYWORDS = [
 
 
 def normalize_name(name: str) -> str:
-    """Normalises a team name to a consistent uppercase format for matching."""
+    """Normalizes a team name to a consistent uppercase format for matching."""
     if not name: return ""
     return name.strip().upper()
 
@@ -98,7 +98,7 @@ def parse_rank(rank_str: str) -> int:
         return DEFAULT_TEAM_RANK
 
 def normalize_format(fmt: str) -> str:
-    """Normalises format strings like 'bo3' or 'best_of_3' or 'def'."""
+    """Normalizes format strings like 'bo3' or 'best_of_3' or 'def'."""
     fmt = str(fmt).lower().strip()
     if "bo3" in fmt or "best of 3" in fmt: return "bo3"
     if "bo5" in fmt or "best of 5" in fmt: return "bo5"
@@ -233,8 +233,8 @@ def get_invalid_veto_exclusion_reason(match: dict) -> str | None:
 
     return None
 
-def normalise_player_name(player_name: str) -> str:
-    """Normalises a player name for roster-size checks."""
+def normalize_player_name(player_name: str) -> str:
+    """Normalizes a player name for roster-size checks."""
     return str(player_name or "").strip().lower()
 
 def get_nonstandard_roster_exclusion_reason(match: dict) -> str | None:
@@ -247,9 +247,9 @@ def get_nonstandard_roster_exclusion_reason(match: dict) -> str | None:
             continue
 
         map_players = {
-            normalise_player_name(player.get("player", ""))
+            normalize_player_name(player.get("player", ""))
             for player in player_stats
-            if normalise_player_name(player.get("player", ""))
+            if normalize_player_name(player.get("player", ""))
         }
 
         player_count = len(map_players) if map_players else len(player_stats)
@@ -283,7 +283,7 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
     except ValueError:
         return None
 
-    # Normalise names for comparison
+    # Normalize names for comparison
     h_t1 = normalize_name(m_data.get("team1", ""))
     h_t2 = normalize_name(m_data.get("team2", ""))
     

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def backtest():
     """
     Evaluates the trained model on the temporally held-out test set.
-    Uses the serialised scaler and model checkpoint from the training pipeline.
+    Uses the serialized scaler and model checkpoint from the training pipeline.
     """
     data_path = PROCESSED_DIR / "features.parquet"
     model_path = CHECKPOINT_DIR / "best_mvp_model.pt"
@@ -35,7 +35,7 @@ def backtest():
     
     logger.info(f"Backtesting on {len(test_df)} out-of-sample maps...")
     
-    # Load the serialised scaler from training (ensures identical transform)
+    # Load the serialized scaler from training (ensures identical transform)
     scaler = joblib.load(scaler_path)
     
     # Prepare test features using the same scaler as training
