@@ -16,6 +16,8 @@
             --success: #22c55e;
             --danger: #ef4444;
             --gold: #fbbf24;
+            --warning-bg: #451a03;
+            --warning-border: #f59e0b;
             --toggle-bg: #334155;
         }
         
@@ -220,6 +222,33 @@
         body.hide-later .later-match { display: none !important; }
         body.hide-low-sample .low-sample-match { display: none !important; }
         body.hide-no-odds .no-odds-match { display: none !important; }
+
+        .roster-anomaly-match {
+            border-color: rgba(245, 158, 11, 0.8);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(245, 158, 11, 0.18);
+        }
+
+        .roster-warning {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            margin: -0.25rem 0 1rem;
+            padding: 0.7rem 0.8rem;
+            border: 1px solid rgba(245, 158, 11, 0.6);
+            border-radius: 0.5rem;
+            background: rgba(69, 26, 3, 0.55);
+            color: #fde68a;
+            font-size: 0.78rem;
+            line-height: 1.35;
+        }
+
+        .roster-warning-label {
+            color: var(--gold);
+            font-size: 0.68rem;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
 
         .edge-label { font-size: 0.75rem; font-weight: 800; display: block; margin-top: 0.1rem; }
         .edge-pos { color: var(--success); }

@@ -271,7 +271,7 @@ function renderMatches() {
     const body = rows.map(m => `
         <tr>
             <td>${esc([m.match_date, m.match_time].filter(Boolean).join(" "))}</td>
-            <td class="teams"><a href="${esc(m.match_url)}" style="color:inherit" target="_blank" rel="noreferrer">${esc(m.team_a)} vs ${esc(m.team_b)}</a><div class="muted">${esc(m.format || "")} · ${esc(m.version_id || "no version")}</div></td>
+            <td class="teams"><a href="${esc(m.match_url)}" style="color:inherit" target="_blank" rel="noreferrer">${esc(m.team_a)} vs ${esc(m.team_b)}</a><div class="muted">${esc(m.format || "")} - ${esc(m.version_id || "no version")}${m.valid_for_eval === 0 ? ` - excluded: ${esc(m.eval_exclusion_reason || "unspecified")}` : ""}</div></td>
             <td>${resultPill(m)}</td>
             <td class="num">${fmtPct(m.model_prob_a)} / ${fmtPct(m.model_prob_b)}</td>
             <td class="num">${formatOddsPair(m)}</td>

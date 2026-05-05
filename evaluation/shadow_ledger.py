@@ -23,6 +23,7 @@ import json
 import argparse
 import logging
 import math
+import re
 import pandas as pd
 from scipy.stats import ttest_1samp
 from datetime import datetime
@@ -33,7 +34,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import HLTV_MATCHES_FILE
 from ingestion.hltv_client import HLTVClient
-from processing.clean import normalize_format
+from processing.clean import (
+    get_nonstandard_roster_exclusion_reason,
+    get_roster_status_flags,
+    normalize_format,
+    normalise_player_name,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -86,7 +92,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
     odds_source     TEXT,
     odds_book_count INTEGER DEFAULT 0,
     odds_summary_json TEXT,
-    analytics_summary_json TEXT
+    analytics_summary_json TEXT,
+    eval_exclusion_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS snapshot_bookmaker_odds (
@@ -135,6 +142,7 @@ def get_db():
         "ALTER TABLE snapshots ADD COLUMN odds_book_count INTEGER DEFAULT 0;",
         "ALTER TABLE snapshots ADD COLUMN odds_summary_json TEXT;",
         "ALTER TABLE snapshots ADD COLUMN analytics_summary_json TEXT;",
+        "ALTER TABLE snapshots ADD COLUMN eval_exclusion_reason TEXT;",
     ]:
         try:
             conn.execute(statement)
@@ -291,6 +299,7 @@ def record_predictions(match_results: list, version_id: str = None):
                 best_edge = None
 
             valid_val = item.get("valid_for_eval", 1)
+            eval_exclusion_reason = item.get("eval_exclusion_reason")
             odds_rows = item.get("match", {}).get("bookmaker_odds") or item.get("bookmaker_odds") or []
             odds_summary = item.get("match", {}).get("odds_summary") or item.get("odds_summary") or {}
             analytics_summary = item.get("match", {}).get("analytics_summary") or {}
@@ -307,8 +316,9 @@ def record_predictions(match_results: list, version_id: str = None):
                    (match_url, version_id, timestamp, model_prob_a,
                     odds_a, odds_b, implied_prob_a, implied_prob_b,
                     edge_a, edge_b, best_bet, best_edge, valid_for_eval,
-                    odds_source, odds_book_count, odds_summary_json, analytics_summary_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    odds_source, odds_book_count, odds_summary_json, analytics_summary_json,
+                    eval_exclusion_reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     url,
                     version_id,
@@ -327,6 +337,7 @@ def record_predictions(match_results: list, version_id: str = None):
                     odds_book_count,
                     json.dumps(odds_summary) if odds_summary else None,
                     json.dumps(analytics_summary) if analytics_summary else None,
+                    eval_exclusion_reason,
                 ),
             )
             snapshot_id = snapshot_cur.lastrowid
@@ -382,7 +393,11 @@ def record_predictions(match_results: list, version_id: str = None):
 
 def _normalise_match_url(url: str) -> str:
     """Normalises match URLs enough to match ledger rows to canonical scrape rows."""
-    return str(url or "").split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    clean_url = str(url or "").split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    match = re.search(r"/matches/(\d+)", clean_url)
+    if match:
+        return f"hltv:{match.group(1)}"
+    return clean_url
 
 
 def _normalise_team_name(name: str) -> str:
@@ -520,6 +535,231 @@ def _canonical_result_for_match(match: dict, team_a: str, team_b: str):
     )
 
 
+def _canonical_eval_exclusion_reason(match: dict):
+    """Returns an evaluation exclusion reason from canonical finished-match data."""
+    if not match:
+        return None
+
+    flags = get_roster_status_flags(match)
+    if flags["roster_status"] != "standard":
+        return f"roster anomaly: {flags['roster_status']}"
+
+    roster_exclusion_reason = get_nonstandard_roster_exclusion_reason(match)
+    if roster_exclusion_reason:
+        return f"non-standard roster: {roster_exclusion_reason}"
+
+    return None
+
+
+def _canonical_participant_change_reason(match: dict, team_a: str, team_b: str):
+    """Returns an exclusion reason when final HLTV participants differ from the prediction snapshot."""
+    if not match:
+        return None
+
+    final_a = match.get("team1")
+    final_b = match.get("team2")
+    if (
+        _normalise_team_name(team_a) == _normalise_team_name(final_a)
+        and _normalise_team_name(team_b) == _normalise_team_name(final_b)
+    ):
+        return None
+
+    return f"participant changed: expected {team_a} vs {team_b}, final {final_a} vs {final_b}"
+
+
+def _scraped_eval_exclusion_reason(details: dict):
+    """Returns an evaluation exclusion reason from freshly scraped match details."""
+    if not details:
+        return None
+
+    flags = get_roster_status_flags({"match_info": details.get("match_info") or []})
+    if flags["roster_status"] != "standard":
+        return f"roster anomaly: {flags['roster_status']}"
+
+    players = {
+        normalise_player_name(player.get("player", ""))
+        for player in details.get("player_stats", [])
+        if normalise_player_name(player.get("player", ""))
+    }
+    if len(players) > 10:
+        return f"non-standard roster: {len(players)} players recorded across the series"
+
+    return None
+
+
+def _scraped_participant_change_reason(details: dict, team_a: str, team_b: str):
+    if not details:
+        return None
+
+    metadata = details.get("metadata") or {}
+    final_a = metadata.get("team1")
+    final_b = metadata.get("team2")
+    if (
+        _normalise_team_name(team_a) == _normalise_team_name(final_a)
+        and _normalise_team_name(team_b) == _normalise_team_name(final_b)
+    ):
+        return None
+
+    return f"participant changed: expected {team_a} vs {team_b}, final {final_a} vs {final_b}"
+
+
+def _normalise_exclusion_reason_text(reason_text: str | None):
+    if not reason_text:
+        return None
+
+    normalised_text = str(reason_text).replace("; final ", ", final ")
+    reasons = []
+    for part in normalised_text.split(";"):
+        reason = part.strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+
+    return "; ".join(reasons) if reasons else None
+
+
+def _mark_match_invalid_for_eval(conn, match_url: str, reason: str | None):
+    if not reason:
+        return
+
+    snapshots = conn.execute(
+        "SELECT id, eval_exclusion_reason FROM snapshots WHERE match_url = ?",
+        (match_url,),
+    ).fetchall()
+
+    for snapshot in snapshots:
+        existing_reason = _normalise_exclusion_reason_text(snapshot["eval_exclusion_reason"])
+        reasons = [
+            part.strip()
+            for part in str(existing_reason or "").split(";")
+            if part.strip()
+        ]
+        if reason not in reasons:
+            reasons.insert(0, reason)
+
+        conn.execute(
+            """UPDATE snapshots
+               SET valid_for_eval = 0,
+                   eval_exclusion_reason = ?
+               WHERE id = ?""",
+            ("; ".join(reasons), snapshot["id"]),
+        )
+
+
+def _label_legacy_low_sample_exclusions(conn):
+    """Labels invalid legacy snapshots created before exclusion reasons existed."""
+    cur = conn.execute(
+        """UPDATE snapshots
+           SET eval_exclusion_reason = 'low sample'
+           WHERE valid_for_eval = 0
+             AND (eval_exclusion_reason IS NULL OR TRIM(eval_exclusion_reason) = '')"""
+    )
+    return cur.rowcount
+
+
+def _normalise_existing_exclusion_reasons(conn):
+    """Deduplicates legacy exclusion reason strings after reason-format changes."""
+    snapshots = conn.execute(
+        "SELECT id, eval_exclusion_reason FROM snapshots WHERE eval_exclusion_reason IS NOT NULL"
+    ).fetchall()
+    updated = 0
+    for snapshot in snapshots:
+        normalised_reason = _normalise_exclusion_reason_text(snapshot["eval_exclusion_reason"])
+        if normalised_reason != snapshot["eval_exclusion_reason"]:
+            conn.execute(
+                "UPDATE snapshots SET eval_exclusion_reason = ? WHERE id = ?",
+                (normalised_reason, snapshot["id"]),
+            )
+            updated += 1
+    return updated
+
+
+def audit_roster_exclusions(apply_changes: bool = False, include_pending: bool = False):
+    """Audits existing ledger matches against canonical exclusion data."""
+    canonical_matches = _load_canonical_match_index()
+    if not canonical_matches:
+        print("No canonical match data found; roster audit cannot run.")
+        return
+
+    conn = get_db()
+    try:
+        where_clause = "" if include_pending else "WHERE result != 'Pending'"
+        rows = conn.execute(
+            f"""SELECT match_url, team_a, team_b, result
+                FROM matches
+                {where_clause}
+                ORDER BY COALESCE(match_date, ''), COALESCE(match_time, ''), team_a"""
+        ).fetchall()
+
+        audited = 0
+        missing_canonical = 0
+        flagged = []
+        low_sample_labelled = 0
+        reasons_normalised = 0
+
+        if apply_changes:
+            reasons_normalised = _normalise_existing_exclusion_reasons(conn)
+            low_sample_labelled = _label_legacy_low_sample_exclusions(conn)
+
+        for row in rows:
+            match = canonical_matches.get(_normalise_match_url(row["match_url"]))
+            if not match:
+                missing_canonical += 1
+                continue
+
+            audited += 1
+            reasons = [
+                reason
+                for reason in [
+                    _canonical_participant_change_reason(match, row["team_a"], row["team_b"]),
+                    _canonical_eval_exclusion_reason(match),
+                ]
+                if reason
+            ]
+            if not reasons:
+                continue
+
+            flagged.append(
+                {
+                    "match_url": row["match_url"],
+                    "team_a": row["team_a"],
+                    "team_b": row["team_b"],
+                    "result": row["result"],
+                    "reason": "; ".join(reasons),
+                }
+            )
+            if apply_changes:
+                for reason in reasons:
+                    _mark_match_invalid_for_eval(conn, row["match_url"], reason)
+
+        if apply_changes:
+            conn.commit()
+
+        mode = "APPLIED" if apply_changes else "DRY RUN"
+        print(f"\n--- Evaluation Exclusion Audit ({mode}) ---")
+        print(f"Ledger matches scanned:    {len(rows)}")
+        print(f"Matched canonical records: {audited}")
+        print(f"Missing canonical records: {missing_canonical}")
+        print(f"Exclusions found:          {len(flagged)}")
+        if apply_changes:
+            print(f"Legacy low-sample labels: {low_sample_labelled}")
+            print(f"Reason strings normalised: {reasons_normalised}")
+
+        if flagged:
+            print("\nSample flagged matches:")
+            for item in flagged[:20]:
+                print(
+                    f" - {item['team_a']} vs {item['team_b']} "
+                    f"({item['result']}): {item['reason']}"
+                )
+            if len(flagged) > 20:
+                print(f" ... {len(flagged) - 20} more")
+
+        if not apply_changes:
+            print("\nNo changes written. Re-run with --apply to update shadow ledger snapshots.")
+    finally:
+        conn.close()
+
+
 def _scraped_result_for_match(details: dict, team_a: str, team_b: str):
     meta = details["metadata"]
     return _result_from_match_data(
@@ -577,6 +817,16 @@ def refresh_shadow():
             t_b = str(row["team_b"]).strip()
             match = canonical_matches.get(_normalise_match_url(row["match_url"]))
             result = _canonical_result_for_match(match, t_a, t_b) if match else None
+            exclusion_reasons = []
+            if match:
+                exclusion_reasons = [
+                    reason
+                    for reason in [
+                        _canonical_participant_change_reason(match, t_a, t_b),
+                        _canonical_eval_exclusion_reason(match),
+                    ]
+                    if reason
+                ]
 
             if result is None:
                 fallback_rows.append(row)
@@ -586,9 +836,13 @@ def refresh_shadow():
                 "UPDATE matches SET result = ? WHERE match_url = ?",
                 (result, row["match_url"]),
             )
+            for exclusion_reason in exclusion_reasons:
+                _mark_match_invalid_for_eval(conn, row["match_url"], exclusion_reason)
             updated += 1
             canonical_updated += 1
             logger.info(f"  Resolved from canonical data: {t_a} vs {t_b} -> {result}")
+            for exclusion_reason in exclusion_reasons:
+                logger.info(f"    Excluded from evaluation: {exclusion_reason}")
 
         if fallback_rows:
             logger.info(f"Falling back to HLTV scraping for {len(fallback_rows)} unresolved matches.")
@@ -602,14 +856,26 @@ def refresh_shadow():
                         t_a = str(row["team_a"]).strip()
                         t_b = str(row["team_b"]).strip()
                         result = _scraped_result_for_match(details, t_a, t_b)
+                        exclusion_reasons = [
+                            reason
+                            for reason in [
+                                _scraped_participant_change_reason(details, t_a, t_b),
+                                _scraped_eval_exclusion_reason(details),
+                            ]
+                            if reason
+                        ]
 
                         if result is not None:
                             conn.execute(
                                 "UPDATE matches SET result = ? WHERE match_url = ?",
                                 (result, row["match_url"]),
                             )
+                            for exclusion_reason in exclusion_reasons:
+                                _mark_match_invalid_for_eval(conn, row["match_url"], exclusion_reason)
                             updated += 1
                             logger.info(f"  Resolved from HLTV: {t_a} vs {t_b} -> {result}")
+                            for exclusion_reason in exclusion_reasons:
+                                logger.info(f"    Excluded from evaluation: {exclusion_reason}")
                     except Exception as e:
                         logger.error(f"  Error resolving {row['match_url']}: {e}")
             finally:
@@ -645,6 +911,7 @@ def _load_latest_snapshot_frame(conn):
                s.best_edge, s.version_id, s.valid_for_eval, s.odds_a, s.odds_b,
                s.implied_prob_a, s.implied_prob_b, s.edge_a, s.edge_b,
                s.odds_source, s.odds_book_count, s.odds_summary_json,
+               s.eval_exclusion_reason,
                (SELECT COUNT(*) FROM snapshots WHERE match_url = m.match_url) AS num_snapshots
         FROM matches m
         JOIN (
@@ -1004,7 +1271,7 @@ def render_shadow_report_html(context):
 
     cards = "\n".join(
         [
-            card("Valid matches", str(summary["valid_matches"]), f"{summary['total_matches']} total"),
+            card("Valid matches", str(summary["valid_matches"]), f"{summary['total_matches']} total, {summary['excluded']} excluded"),
             card("Settled", str(summary["settled"]), f"{summary['pending']} pending, {summary['other']} other"),
             card("Model favourite", _count_pct(summary["model_correct"], summary["settled"]), "latest snapshot per match"),
             card("Bookmaker favourite", _count_pct(summary["bookie_correct"], summary["settled"]), "latest available odds"),
@@ -1048,7 +1315,7 @@ def show_text_report():
             """
             SELECT m.match_url, m.team_a, m.team_b, m.result,
                    s.model_prob_a, s.best_bet, s.best_edge, s.version_id, s.valid_for_eval,
-                   s.odds_a, s.odds_b
+                   s.odds_a, s.odds_b, s.eval_exclusion_reason
             FROM matches m
             JOIN (
                 SELECT match_url, MAX(id) as max_id
@@ -1080,7 +1347,9 @@ def show_text_report():
     print(f" Total matches:    {len(df_all)}")
     print(f" Valid matches:    {len(df)} (Settled: {len(settled)}, Pending: {len(pending)}, Other: {len(other_results)})")
     if invalid_count > 0:
-        print(f" Excluded matches: {invalid_count} (<10 maps of historical data)")
+        reasons = df_all[df_all["valid_for_eval"] == 0]["eval_exclusion_reason"].fillna("unspecified")
+        reason_text = ", ".join(f"{reason}: {count}" for reason, count in reasons.value_counts().items())
+        print(f" Excluded matches: {invalid_count} ({reason_text})")
     print(f"{'='*60}")
 
     if settled.empty:
@@ -1216,7 +1485,7 @@ def show_list():
             SELECT m.match_date, m.team_a, m.team_b, m.format,
                    s.model_prob_a, s.best_bet, s.best_edge, s.odds_a, s.odds_b,
                    s.odds_source, s.odds_book_count,
-                   m.result, s.version_id, s.valid_for_eval,
+                   m.result, s.version_id, s.valid_for_eval, s.eval_exclusion_reason,
                    (SELECT COUNT(*) FROM snapshots WHERE match_url = m.match_url) as num_snapshots
             FROM matches m
             JOIN (
@@ -1328,6 +1597,9 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("refresh", help="Resolve pending shadow bets via HLTV")
+    audit_parser = subparsers.add_parser("audit-rosters", help="Audit historical ledger matches for roster anomalies and participant changes")
+    audit_parser.add_argument("--apply", action="store_true", help="Write roster exclusions to the shadow ledger")
+    audit_parser.add_argument("--include-pending", action="store_true", help="Also audit matches that are still pending")
     report_parser = subparsers.add_parser("report", help="Generate interactive HTML calibration analysis")
     report_parser.add_argument("--output", help="HTML output path")
     report_parser.add_argument("--text", action="store_true", help="Print the legacy command-line report")
@@ -1341,6 +1613,8 @@ def main():
 
     if args.command == "refresh":
         refresh_shadow()
+    elif args.command == "audit-rosters":
+        audit_roster_exclusions(apply_changes=args.apply, include_pending=args.include_pending)
     elif args.command == "report":
         if args.text:
             show_text_report()

@@ -6,6 +6,7 @@ import logging
 import re
 import webbrowser
 from datetime import datetime
+from html import escape
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,6 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model.predict import calculate_expected_series_win
 from ingestion.hltv_client import HLTVClient
 from evaluation.shadow_ledger import record_predictions as record_shadow_bets
+from processing.clean import get_roster_status_flags
 from config import MC_ITERATIONS, MC_THRESHOLD
 
 logging.basicConfig(
@@ -65,6 +67,15 @@ MAP_FILENAME_MAP = {
     "train": "de_train.png",
     "vertigo": "de_vertigo.png"
 }
+
+def annotate_roster_status(match, details=None):
+    """Adds roster-anomaly metadata from HLTV match blurbs."""
+    if details and details.get("match_info"):
+        match["match_info"] = details.get("match_info") or []
+
+    flags = get_roster_status_flags(match)
+    match.update(flags)
+    return flags
 
 def convert_odds_to_prob(o1, o2):
     """Converts decimal odds to implied probability percentages."""
@@ -194,6 +205,23 @@ def main():
             logger.info(f"[{i+1}/{len(matches)}] Predicting: {team_a} vs {team_b} ({fmt})")
 
             try:
+                if not args.html_file:
+                    try:
+                        details = client.fetch_match_details(match_url)
+                        roster_flags = annotate_roster_status(match, details)
+                        if roster_flags["roster_status"] != "standard":
+                            logger.warning(
+                                "  -> Roster warning for %s vs %s: %s",
+                                team_a,
+                                team_b,
+                                roster_flags.get("substitution_notes") or roster_flags["roster_status"],
+                            )
+                    except Exception as e:
+                        logger.warning(f"  -> Failed to fetch roster details for {team_a} vs {team_b}: {e}")
+                        annotate_roster_status(match)
+                else:
+                    annotate_roster_status(match)
+
                 results = calculate_expected_series_win(
                     team_a,
                     team_b,
@@ -252,7 +280,14 @@ def main():
 
                 t1_maps = len(shared_ctx.gen_histories.get(t_a_id, []))
                 t2_maps = len(shared_ctx.gen_histories.get(t_b_id, []))
-                valid_for_eval = 1 if (t1_maps >= 10 and t2_maps >= 10) else 0
+                roster_status = match.get("roster_status", "standard")
+                eval_exclusion_reasons = []
+                if roster_status != "standard":
+                    eval_exclusion_reasons.append(f"roster anomaly: {roster_status}")
+                if t1_maps < 10 or t2_maps < 10:
+                    eval_exclusion_reasons.append("low sample")
+                eval_exclusion_reason = "; ".join(eval_exclusion_reasons) if eval_exclusion_reasons else None
+                valid_for_eval = 0 if eval_exclusion_reason else 1
 
                 match_results.append({
                 "match": match,
@@ -280,7 +315,10 @@ def main():
                 "is_later": is_later,
                 "t1_maps": t1_maps,
                 "t2_maps": t2_maps,
-                "valid_for_eval": valid_for_eval
+                "valid_for_eval": valid_for_eval,
+                "eval_exclusion_reason": eval_exclusion_reason,
+                "roster_status": roster_status,
+                "roster_warning": match.get("substitution_notes") or match.get("team_replacement_notes") or ""
                 })
 
             except Exception as e:
@@ -338,8 +376,18 @@ def main():
 
         # Match Classes
         low_sample_class = "low-sample-match" if item['valid_for_eval'] == 0 else ""
+        roster_class = "roster-anomaly-match" if item.get("roster_status") != "standard" else ""
         no_odds_class = "no-odds-match" if item['o1'] is None or item['o2'] is None else ""
-        match_classes = f"{low_sample_class} {no_odds_class}".strip()
+        match_classes = f"{low_sample_class} {roster_class} {no_odds_class}".strip()
+        roster_warning_html = ""
+        if item.get("roster_status") != "standard":
+            warning_text = escape(str(item.get("roster_warning") or item.get("roster_status")))
+            roster_warning_html = (
+                '<div class="roster-warning">'
+                '<span class="roster-warning-label">Roster warning</span>'
+                f'<span>{warning_text}</span>'
+                '</div>'
+            )
 
         # Edge Labels
         edge1_class = "edge-pos" if (item['edge1'] is not None and item['edge1'] > 0) else "edge-neg"
@@ -382,7 +430,8 @@ def main():
             t2_maps=item['t2_maps'],
             value_badge1=value_badge1,
             value_badge2=value_badge2,
-            match_classes=match_classes
+            match_classes=match_classes,
+            roster_warning=roster_warning_html
         )
 
         # Wrap in a div if it's a later match
