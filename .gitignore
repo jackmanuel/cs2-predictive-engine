@@ -48,3 +48,5 @@ static/maps/
 # Exemptions
 !model/templates/
 !model/templates/*.html
+!evaluation/templates/
+!evaluation/templates/*.html

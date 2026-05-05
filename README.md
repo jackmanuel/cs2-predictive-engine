@@ -10,7 +10,7 @@ A high-performance Python framework for Counter-Strike 2 match prediction. This 
 - **Monte Carlo Veto Simulator:** Simulates thousands of veto paths to model map pool variance and "permaban" bluffing.
 - **Neural Map Predictor:** A PyTorch-based binary classifier trained on temporal features (rolling win rates, streaks, H2H).
 - **Automated Match Dashboard:** Scrapes upcoming HLTV matches and generates premium HTML reports with integrated betting odds and map visuals.
-- **Shadow Ledger:** SQLite-backed paper-trading system that tracks odds movement, model predictions, and calibration across model versions.
+- **Shadow Ledger Performance Report:** SQLite-backed paper-trading system with an interactive HTML report for calibration bins, match browsing, model version comparison, odds, and paper-trading returns.
 - **Model Version Registry:** Every training run is archived with its weights, features, hyperparameters, and architecture hash for full reproducibility.
 - **Zero Future Leakage:** Temporal feature engineering ensures models are only trained on data available *at the time of the match*.
 
@@ -23,7 +23,7 @@ A high-performance Python framework for Counter-Strike 2 match prediction. This 
 3.  **Simulation Layer:** `veto_sim.py` models team banning/picking behaviour using historical bias and Laplace smoothing.
 4.  **Model Layer:** `net.py` (Architecture) + `predict.py` (Inference) use mirrored data samples to eliminate positional bias.
 5.  **Reporting Layer:** `automate_predictions.py` orchestrates end-to-end flow from live scraping to HTML dashboard generation.
-6.  **Evaluation Layer:** `shadow_ledger.py` (SQLite calibration tracker) + `backtest.py` (held-out test evaluation).
+6.  **Evaluation Layer:** `shadow_ledger.py` (SQLite calibration tracker and HTML performance report) + `backtest.py` (held-out test evaluation).
 
 ---
 
@@ -95,14 +95,22 @@ Predict a specific hypothetical or scheduled matchup:
 python -m model.predict_series "Vitality" "G2" --format bo3
 ```
 
-### 5. Shadow Ledger (Model Calibration)
-The shadow ledger automatically records every prediction from the dashboard. Use these commands to track model performance:
+### 5. Shadow Ledger (Model Performance Statistics)
+The shadow ledger automatically records every prediction from the dashboard. It stores the latest model probability, median market odds when available, edge calculations, model version, and eventual match result.
+
+Generate the interactive **Model Performance Statistics** report:
 ```bash
 # Resolve pending match results via HLTV
 python -m evaluation.shadow_ledger refresh
 
-# Show calibration report (edge buckets, favourite/underdog splits)
+# Generate the interactive HTML report
 python -m evaluation.shadow_ledger report
+
+# Choose a report output path
+python -m evaluation.shadow_ledger report --output reports/shadow_ledger_report.html
+
+# Print the legacy command-line summary
+python -m evaluation.shadow_ledger report --text
 
 # Show all tracked matches with latest predictions
 python -m evaluation.shadow_ledger list
@@ -113,6 +121,16 @@ python -m evaluation.shadow_ledger versions
 # Show full odds history for a specific match
 python -m evaluation.shadow_ledger odds <hltv_match_url>
 ```
+
+The HTML report includes:
+
+- **Top-level performance cards:** valid matches, settled/pending counts, model favourite accuracy, bookmaker favourite accuracy, Brier score, log loss, calibration error, and actionable edge bets.
+- **Calibration bins:** compares assigned team win probabilities with actual win rates, so bins like `40-45%` show whether teams assigned that likelihood are winning at roughly that rate.
+- **Edge strategy breakdowns:** flat and confidence-weighted paper-trading ROI by edge bucket, plus favourite/underdog splits and p-values.
+- **Compact match browser:** searchable table of actual match results with model odds, median market odds, result, edge, book count, and snapshot count.
+- **Model version history:** model versions with Brier/log loss comparison, training maps, feature counts, and matches predicted.
+
+The report template lives at `evaluation/templates/shadow_ledger_report.html`; `shadow_ledger.py` prepares the data and injects it into the template.
 
 ### 6. Betting Ledger (Real Bets)
 Track real bets with model probability and edge:

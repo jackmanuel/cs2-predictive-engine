@@ -22,9 +22,12 @@ import shutil
 import json
 import argparse
 import logging
+import math
 import pandas as pd
 from scipy.stats import ttest_1samp
 from datetime import datetime
+from html import escape
+from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -626,7 +629,417 @@ def refresh_shadow():
 # Reports
 # ---------------------------------------------------------------------------
 
-def show_report():
+def _report_output_path(output_path: str = None) -> str:
+    if output_path:
+        return output_path
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join("reports", f"shadow_ledger_report_{timestamp}.html")
+
+
+def _load_latest_snapshot_frame(conn):
+    return pd.read_sql_query(
+        """
+        SELECT m.match_url, m.team_a, m.team_b, m.format, m.match_date, m.match_time,
+               m.first_seen, m.result,
+               s.id AS snapshot_id, s.timestamp, s.model_prob_a, s.best_bet,
+               s.best_edge, s.version_id, s.valid_for_eval, s.odds_a, s.odds_b,
+               s.implied_prob_a, s.implied_prob_b, s.edge_a, s.edge_b,
+               s.odds_source, s.odds_book_count, s.odds_summary_json,
+               (SELECT COUNT(*) FROM snapshots WHERE match_url = m.match_url) AS num_snapshots
+        FROM matches m
+        JOIN (
+            SELECT match_url, MAX(id) as max_id
+            FROM snapshots
+            GROUP BY match_url
+        ) latest ON m.match_url = latest.match_url
+        JOIN snapshots s ON s.id = latest.max_id
+        ORDER BY COALESCE(m.match_date, ''), COALESCE(m.match_time, ''), m.team_a
+        """,
+        conn,
+    )
+
+
+def _load_version_frame(conn):
+    return pd.read_sql_query(
+        """
+        SELECT v.version_id, v.trained_at, ROUND(v.test_brier_score, 4) as brier,
+               ROUND(v.test_log_loss, 4) as logloss, v.best_val_loss,
+               v.epochs_run, v.num_features, v.architecture_hash,
+               (SELECT COUNT(DISTINCT s.match_url) FROM snapshots s WHERE s.version_id = v.version_id) as matches_predicted,
+               json_extract(v.data_stats_json, '$.total_maps') as training_maps
+        FROM model_versions v
+        ORDER BY v.trained_at DESC
+        """,
+        conn,
+    )
+
+
+def _clean_json_value(value):
+    if value is None:
+        return None
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return _clean_json_value(value.item())
+    return value
+
+
+def _records_for_json(df):
+    return [
+        {key: _clean_json_value(value) for key, value in row.items()}
+        for row in df.to_dict(orient="records")
+    ]
+
+
+def _apply_median_odds_from_summary(df):
+    if "odds_summary_json" not in df.columns:
+        return df
+
+    df = df.copy()
+    for idx, row in df.iterrows():
+        raw_summary = row.get("odds_summary_json")
+        if not raw_summary:
+            continue
+        try:
+            summary = json.loads(raw_summary)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        median_a = summary.get("odds_a_median")
+        median_b = summary.get("odds_b_median")
+        if median_a and median_b:
+            df.at[idx, "odds_a"] = median_a
+            df.at[idx, "odds_b"] = median_b
+    return df
+
+
+def _pct(value, digits=1):
+    if value is None or pd.isna(value):
+        return "n/a"
+    return f"{value * 100:.{digits}f}%"
+
+
+def _signed_pct(value, digits=1):
+    if value is None or pd.isna(value):
+        return "n/a"
+    return f"{value:+.{digits}f}%"
+
+
+def _decimal(value, digits=2):
+    if value is None or pd.isna(value):
+        return "n/a"
+    return f"{value:.{digits}f}"
+
+
+def _count_pct(wins, total):
+    if not total:
+        return "0/0 (n/a)"
+    return f"{int(wins)}/{int(total)} ({wins / total * 100:.1f}%)"
+
+
+def _make_calibration_bins(settled):
+    if settled.empty:
+        return [], {"evaluations": 0, "expected_wins": 0.0, "observed_wins": 0.0, "ece": None}
+
+    team_rows = []
+    for _, row in settled.iterrows():
+        team_rows.append(
+            {
+                "team": row["team_a"],
+                "opponent": row["team_b"],
+                "assigned_prob": row["model_prob_a"],
+                "won": row["result"] == "team_a",
+                "odds": row["odds_a"],
+                "match_url": row["match_url"],
+            }
+        )
+        team_rows.append(
+            {
+                "team": row["team_b"],
+                "opponent": row["team_a"],
+                "assigned_prob": 1 - row["model_prob_a"],
+                "won": row["result"] == "team_b",
+                "odds": row["odds_b"],
+                "match_url": row["match_url"],
+            }
+        )
+
+    team_df = pd.DataFrame(team_rows)
+    bins = []
+    expected_total = 0.0
+    observed_total = 0.0
+    weighted_abs_error = 0.0
+
+    for lo in range(0, 100, 5):
+        hi = lo + 5
+        if hi == 100:
+            bucket = team_df[(team_df["assigned_prob"] >= lo / 100) & (team_df["assigned_prob"] <= 1)]
+        else:
+            bucket = team_df[(team_df["assigned_prob"] >= lo / 100) & (team_df["assigned_prob"] < hi / 100)]
+        count = len(bucket)
+        wins = int(bucket["won"].sum()) if count else 0
+        avg_prob = bucket["assigned_prob"].mean() if count else None
+        observed = wins / count if count else None
+        error = observed - avg_prob if count else None
+        if count:
+            expected_total += avg_prob * count
+            observed_total += observed * count
+            weighted_abs_error += abs(error) * count
+        bins.append(
+            {
+                "bin": f"{lo}-{hi}%",
+                "lo": lo,
+                "hi": hi,
+                "count": count,
+                "wins": wins,
+                "losses": count - wins,
+                "avg_prob": avg_prob,
+                "observed": observed,
+                "error": error,
+            }
+        )
+
+    total = len(team_df)
+    summary = {
+        "evaluations": total,
+        "expected_wins": expected_total,
+        "observed_wins": observed_total,
+        "ece": weighted_abs_error / total if total else None,
+    }
+    return bins, summary
+
+
+def _make_edge_stats(settled):
+    empty = {
+        "actionable_count": 0,
+        "skipped_count": len(settled),
+        "flat_roi": None,
+        "confidence_roi": None,
+        "flat_p_value": None,
+        "buckets": [],
+        "fav_dog": [],
+    }
+    if settled.empty:
+        return empty
+
+    has_edge = settled[(settled["best_edge"].notna()) & (settled["best_edge"] >= 0)].copy()
+    if has_edge.empty:
+        return empty
+
+    has_edge["edge_bet_won"] = has_edge["best_bet"] == has_edge["result"]
+    has_edge["bet_odds"] = has_edge.apply(
+        lambda r: r["odds_a"] if r["best_bet"] == "team_a" else r["odds_b"], axis=1
+    )
+    has_edge["flat_profit"] = has_edge.apply(
+        lambda r: (r["bet_odds"] - 1) if r["edge_bet_won"] else -1, axis=1
+    )
+    has_edge["conf_bet"] = has_edge["best_edge"].apply(lambda e: max(0, e))
+    has_edge["conf_profit"] = has_edge.apply(
+        lambda r: r["conf_bet"] * (r["bet_odds"] - 1) if r["edge_bet_won"] else -r["conf_bet"], axis=1
+    )
+
+    flat_p_value = None
+    if len(has_edge) > 1:
+        _, p_val = ttest_1samp(has_edge["flat_profit"].values, 0, alternative="greater")
+        if pd.notna(p_val):
+            flat_p_value = float(p_val)
+
+    conf_invested = has_edge["conf_bet"].sum()
+    stats = {
+        "actionable_count": len(has_edge),
+        "skipped_count": len(settled) - len(has_edge),
+        "flat_roi": has_edge["flat_profit"].sum() / len(has_edge),
+        "confidence_roi": has_edge["conf_profit"].sum() / conf_invested if conf_invested > 0 else None,
+        "flat_p_value": flat_p_value,
+        "buckets": [],
+        "fav_dog": [],
+    }
+
+    for lo, hi, label in [(0, 2, "<2%"), (2, 5, "2-5%"), (5, 10, "5-10%"), (10, 999, "10%+")]:
+        bucket = has_edge[(has_edge["best_edge"] >= lo) & (has_edge["best_edge"] < hi)]
+        if bucket.empty:
+            continue
+        flat_p_value = None
+        if len(bucket) > 1:
+            _, p_val = ttest_1samp(bucket["flat_profit"].values, 0, alternative="greater")
+            if pd.notna(p_val):
+                flat_p_value = float(p_val)
+        conf_invested = bucket["conf_bet"].sum()
+        wins = int(bucket["edge_bet_won"].sum())
+        stats["buckets"].append(
+            {
+                "bucket": label,
+                "wins": wins,
+                "losses": len(bucket) - wins,
+                "win_rate": wins / len(bucket),
+                "avg_edge": bucket["best_edge"].mean() / 100,
+                "flat_roi": bucket["flat_profit"].sum() / len(bucket),
+                "confidence_roi": bucket["conf_profit"].sum() / conf_invested if conf_invested > 0 else None,
+                "p_value": flat_p_value,
+            }
+        )
+
+    has_edge["bet_is_fav"] = has_edge.apply(
+        lambda r: (r["best_bet"] == "team_a" and r["model_prob_a"] >= 0.5)
+        or (r["best_bet"] == "team_b" and r["model_prob_a"] < 0.5),
+        axis=1,
+    )
+    for label, bucket in [("Backing favourites", has_edge[has_edge["bet_is_fav"]]), ("Backing underdogs", has_edge[~has_edge["bet_is_fav"]])]:
+        if bucket.empty:
+            continue
+        wins = int(bucket["edge_bet_won"].sum())
+        conf_invested = bucket["conf_bet"].sum()
+        stats["fav_dog"].append(
+            {
+                "label": label,
+                "wins": wins,
+                "total": len(bucket),
+                "win_rate": wins / len(bucket),
+                "flat_roi": bucket["flat_profit"].sum() / len(bucket),
+                "confidence_roi": bucket["conf_profit"].sum() / conf_invested if conf_invested > 0 else None,
+            }
+        )
+
+    return stats
+
+
+def build_report_context():
+    conn = get_db()
+    try:
+        df = _load_latest_snapshot_frame(conn)
+        version_df = _load_version_frame(conn)
+    finally:
+        conn.close()
+
+    if df.empty:
+        return None
+
+    df = _apply_median_odds_from_summary(df)
+    df_all = df.copy()
+    df = df[df["valid_for_eval"] == 1].copy()
+    invalid_count = len(df_all) - len(df)
+    settled = df[df["result"].isin(["team_a", "team_b"])].copy()
+    pending = df[df["result"] == "Pending"].copy()
+    other_results = df[~df["result"].isin(["team_a", "team_b", "Pending"])].copy()
+
+    model_correct = 0
+    bookie_correct = 0
+    overall_acc = None
+    bookie_acc = None
+    brier = None
+    log_loss = None
+    if not settled.empty:
+        settled["actual_a"] = (settled["result"] == "team_a").astype(int)
+        settled["model_fav"] = settled["model_prob_a"].apply(lambda p: "team_a" if p >= 0.5 else "team_b")
+        settled["fav_correct"] = settled["model_fav"] == settled["result"]
+        settled["bookmaker_fav"] = settled.apply(
+            lambda r: "team_a" if r["odds_a"] < r["odds_b"] else "team_b", axis=1
+        )
+        settled["bookie_fav_correct"] = settled["bookmaker_fav"] == settled["result"]
+        model_correct = int(settled["fav_correct"].sum())
+        bookie_correct = int(settled["bookie_fav_correct"].sum())
+        overall_acc = model_correct / len(settled)
+        bookie_acc = bookie_correct / len(settled)
+        brier = ((settled["model_prob_a"] - settled["actual_a"]) ** 2).mean()
+        clipped = settled["model_prob_a"].clip(0.0001, 0.9999)
+        log_loss = -(settled["actual_a"] * clipped.apply(math.log) + (1 - settled["actual_a"]) * (1 - clipped).apply(math.log)).mean()
+
+    calibration_bins, calibration_summary = _make_calibration_bins(settled)
+    edge_stats = _make_edge_stats(settled)
+
+    match_rows = []
+    for row in _records_for_json(df_all):
+        row.pop("odds_summary_json", None)
+        row["model_prob_b"] = 1 - row["model_prob_a"] if row.get("model_prob_a") is not None else None
+        match_rows.append(row)
+
+    versions = _records_for_json(version_df)
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "generated_at": generated_at,
+        "summary": {
+            "total_matches": len(df_all),
+            "valid_matches": len(df),
+            "settled": len(settled),
+            "pending": len(pending),
+            "other": len(other_results),
+            "excluded": invalid_count,
+            "model_correct": model_correct,
+            "bookie_correct": bookie_correct,
+            "model_accuracy": overall_acc,
+            "bookie_accuracy": bookie_acc,
+            "brier": brier,
+            "log_loss": log_loss,
+        },
+        "calibration_bins": calibration_bins,
+        "calibration_summary": calibration_summary,
+        "edge_stats": edge_stats,
+        "matches": match_rows,
+        "versions": versions,
+    }
+
+
+def _load_shadow_report_template():
+    template_path = Path(__file__).resolve().parent / "templates" / "shadow_ledger_report.html"
+    with template_path.open("r", encoding="utf-8") as f:
+        return f.read()
+
+
+def render_shadow_report_html(context):
+    data_json = json.dumps(context, ensure_ascii=False).replace("</", "<\\/")
+    summary = context["summary"]
+    cal = context["calibration_summary"]
+    edge = context["edge_stats"]
+
+    def card(label, value, note=""):
+        note_html = f"<span>{escape(note)}</span>" if note else ""
+        return f"""
+        <div class="metric">
+            <span>{escape(label)}</span>
+            <strong>{escape(value)}</strong>
+            {note_html}
+        </div>
+        """
+
+    cards = "\n".join(
+        [
+            card("Valid matches", str(summary["valid_matches"]), f"{summary['total_matches']} total"),
+            card("Settled", str(summary["settled"]), f"{summary['pending']} pending, {summary['other']} other"),
+            card("Model favourite", _count_pct(summary["model_correct"], summary["settled"]), "latest snapshot per match"),
+            card("Bookmaker favourite", _count_pct(summary["bookie_correct"], summary["settled"]), "latest available odds"),
+            card("Brier score", _decimal(summary["brier"], 4), "probability error; lower is better"),
+            card("Log loss", _decimal(summary["log_loss"], 4), "punishes confident misses; lower is better"),
+            card("Calibration error", _pct(cal["ece"], 2), f"expected calibration error across {cal['evaluations']} team evaluations"),
+            card("Actionable edge bets", str(edge["actionable_count"]), f"{edge['skipped_count']} skipped"),
+        ]
+    )
+
+    replacements = {
+        "__GENERATED_AT__": escape(context["generated_at"]),
+        "__EXCLUDED_MATCHES__": str(summary["excluded"]),
+        "__METRIC_CARDS__": cards,
+        "__REPORT_DATA_JSON__": data_json,
+    }
+    html = _load_shadow_report_template()
+    for placeholder, value in replacements.items():
+        html = html.replace(placeholder, value)
+    return html
+
+def show_report(output_path: str = None):
+    context = build_report_context()
+    if context is None:
+        print("Shadow ledger is empty.")
+        return
+
+    output_path = _report_output_path(output_path)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_shadow_report_html(context), encoding="utf-8")
+    print(f"Shadow ledger HTML report saved to {output}")
+
+
+def show_text_report():
     """Shows calibration analysis of resolved shadow bets."""
     conn = get_db()
     try:
@@ -915,7 +1328,9 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("refresh", help="Resolve pending shadow bets via HLTV")
-    subparsers.add_parser("report", help="Show calibration analysis")
+    report_parser = subparsers.add_parser("report", help="Generate interactive HTML calibration analysis")
+    report_parser.add_argument("--output", help="HTML output path")
+    report_parser.add_argument("--text", action="store_true", help="Print the legacy command-line report")
     subparsers.add_parser("list", help="Show all shadow bets (latest snapshot per match)")
     subparsers.add_parser("versions", help="Show model version history")
 
@@ -927,7 +1342,10 @@ def main():
     if args.command == "refresh":
         refresh_shadow()
     elif args.command == "report":
-        show_report()
+        if args.text:
+            show_text_report()
+        else:
+            show_report(args.output)
     elif args.command == "list":
         show_list()
     elif args.command == "versions":

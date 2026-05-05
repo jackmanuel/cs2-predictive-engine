@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Performance Statistics</title>
+<style>
+:root {
+    --bg: #101214;
+    --panel: #181c20;
+    --panel-2: #20262b;
+    --line: #303941;
+    --text: #eef3f5;
+    --muted: #9aa7ad;
+    --accent: #65d1b4;
+    --accent-2: #f4c95d;
+    --bad: #ff6b6b;
+    --good: #65d17a;
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+}
+.shell { max-width: 1480px; margin: 0 auto; padding: 28px; }
+header { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+h1 { margin: 0; font-size: clamp(30px, 4vw, 52px); letter-spacing: 0; line-height: 1; }
+.eyebrow { color: var(--accent); font-weight: 800; text-transform: uppercase; font-size: 12px; letter-spacing: .08em; margin-bottom: 8px; }
+.meta { color: var(--muted); text-align: right; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.metric, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.metric { padding: 14px; min-height: 96px; display: flex; flex-direction: column; justify-content: space-between; }
+.metric span, .note { color: var(--muted); font-size: 12px; }
+.metric strong { font-size: 24px; margin: 8px 0 4px; }
+.section { margin-top: 18px; }
+.section-title { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin: 0 0 8px; }
+h2 { margin: 0; font-size: 18px; }
+.panel { padding: 14px; }
+.split { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(360px, .75fr); gap: 12px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 8px 7px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; position: sticky; top: 0; background: var(--panel); z-index: 1; cursor: pointer; }
+tr:hover td { background: rgba(255,255,255,.025); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.good { color: var(--good); }
+.bad { color: var(--bad); }
+.muted { color: var(--muted); }
+.soft { color: var(--muted); font-style: italic; }
+.shade { font-weight: 800; }
+.bar { height: 8px; background: #273139; border-radius: 20px; overflow: hidden; min-width: 74px; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+.controls { display: grid; grid-template-columns: 1.3fr repeat(5, minmax(120px, .45fr)); gap: 8px; margin-bottom: 10px; }
+input, select {
+    width: 100%; border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+    border-radius: 6px; padding: 9px 10px; outline: none;
+}
+.table-wrap { max-height: 680px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.match { min-width: 940px; }
+.teams { font-weight: 750; }
+.pill { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; }
+.pill.win { border-color: rgba(101, 209, 122, .45); color: var(--good); }
+.pill.loss { border-color: rgba(255, 107, 107, .45); color: var(--bad); }
+.footer { color: var(--muted); margin-top: 18px; font-size: 12px; }
+@media (max-width: 980px) {
+    .shell { padding: 18px; }
+    header, .section-title { align-items: flex-start; flex-direction: column; }
+    .meta { text-align: left; }
+    .grid, .split, .controls { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+    <header>
+        <div>
+            <div class="eyebrow">CS2 Predictive Engine</div>
+            <h1>Model Performance Statistics</h1>
+        </div>
+        <div class="meta">
+            <div>Generated __GENERATED_AT__</div>
+            <div>__EXCLUDED_MATCHES__ excluded from evaluation because they were marked invalid</div>
+        </div>
+    </header>
+
+    <section class="grid">__METRIC_CARDS__</section>
+
+    <section class="section split">
+        <div class="panel">
+            <div class="section-title">
+                <h2>Model Calibration By Assigned Win Likelihood</h2>
+                <span class="note">Each settled match contributes two team evaluations. Observed is the actual win rate in that bin.</span>
+            </div>
+            <table id="calibration-table"></table>
+        </div>
+        <div class="panel">
+            <div class="section-title"><h2>Edge Strategy</h2><span class="note">Current stats preserved from the CLI report.</span></div>
+            <table id="edge-table"></table>
+            <div style="height:12px"></div>
+            <table id="favdog-table"></table>
+        </div>
+    </section>
+
+    <section class="section panel">
+        <div class="section-title">
+            <h2>Match Browser</h2>
+            <span class="note" id="match-count"></span>
+        </div>
+        <div class="controls">
+            <input id="search" placeholder="Search teams, versions, source, URL">
+            <select id="status">
+                <option value="all">All results</option>
+                <option value="settled">Settled</option>
+                <option value="Pending">Pending</option>
+                <option value="other">Other</option>
+            </select>
+            <select id="version"><option value="all">All versions</option></select>
+            <select id="valid">
+                <option value="all">All evaluation flags</option>
+                <option value="1">Valid only</option>
+                <option value="0">Excluded only</option>
+            </select>
+            <select id="edge-filter">
+                <option value="all">All edges</option>
+                <option value="positive">Positive edge</option>
+                <option value="10">Edge >= 10%</option>
+            </select>
+            <select id="sort">
+                <option value="date-desc">Newest first</option>
+                <option value="date-asc">Oldest first</option>
+                <option value="edge-desc">Largest edge</option>
+                <option value="confidence-desc">Highest model confidence</option>
+                <option value="team-asc">Team A-Z</option>
+            </select>
+        </div>
+        <div class="table-wrap">
+            <table class="match" id="matches-table"></table>
+        </div>
+    </section>
+
+    <section class="section panel">
+        <div class="section-title"><h2>Model Versions</h2><span class="note">Greener Brier/log loss cells are better; redder cells are worse.</span></div>
+        <table id="versions-table"></table>
+    </section>
+
+    <div class="footer">Median odds are represented by the latest snapshot currently stored for each match. Rows with no bookmaker prices are shown as no odds.</div>
+</div>
+<script>
+const report = __REPORT_DATA_JSON__;
+const fmtPct = (v, d = 1) => v === null || v === undefined ? "n/a" : `${(v * 100).toFixed(d)}%`;
+const fmtSignedPct = (v, d = 1) => v === null || v === undefined ? "n/a" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(d)}%`;
+const fmtOdds = v => v === null || v === undefined ? "n/a" : Number(v).toFixed(2);
+const fmtNum = (v, d = 2) => v === null || v === undefined ? "n/a" : Number(v).toFixed(d);
+const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+const noOdds = `<span class="soft">no odds</span>`;
+const noEdge = `<span class="soft">no edge</span>`;
+const formatOddsPair = match => (match.odds_a === null || match.odds_a === undefined || match.odds_b === null || match.odds_b === undefined)
+    ? noOdds
+    : `${fmtOdds(match.odds_a)} / ${fmtOdds(match.odds_b)}`;
+const formatEdgePair = match => (match.edge_a === null || match.edge_a === undefined || match.edge_b === null || match.edge_b === undefined)
+    ? noEdge
+    : `${fmtSignedPct(match.edge_a / 100)} / ${fmtSignedPct(match.edge_b / 100)}`;
+function shade(value, min, max, reverse = false) {
+    if (value === null || value === undefined || min === null || max === null || min === max) return "";
+    const raw = Math.max(0, Math.min(1, (Number(value) - min) / (max - min)));
+    const score = reverse ? 1 - raw : raw;
+    const hue = 5 + score * 120;
+    return `color: hsl(${hue}, 70%, 64%);`;
+}
+function gapShade(value) {
+    if (value === null || value === undefined) return "";
+    const score = Math.max(0, Math.min(1, Math.abs(value) / 0.15));
+    const hue = 125 - score * 120;
+    const lightness = 66 - score * 8;
+    return `color: hsl(${hue}, 70%, ${lightness}%); font-weight: 800;`;
+}
+
+function renderTable(id, headers, rows) {
+    const table = document.getElementById(id);
+    table.innerHTML = `<thead><tr>${headers.map(h => `<th class="${h.cls || ""}">${esc(h.label)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody>`;
+}
+
+function renderCalibration() {
+    const rows = report.calibration_bins.map(b => `
+        <tr>
+            <td><span class="pill">${b.bin}</span></td>
+            <td class="num">${b.count}</td>
+            <td class="num">${b.wins}/${b.count}</td>
+            <td class="num">${fmtPct(b.avg_prob)}</td>
+            <td class="num">${fmtPct(b.observed)}</td>
+            <td class="num" style="${gapShade(b.error)}">${fmtSignedPct(b.error)}</td>
+            <td><div class="bar"><i style="width:${Math.max(0, Math.min(100, (b.observed ?? 0) * 100))}%"></i></div></td>
+        </tr>
+    `);
+    renderTable("calibration-table", [
+        {label:"Bin"}, {label:"Eval", cls:"num"}, {label:"Wins", cls:"num"},
+        {label:"Avg model", cls:"num"}, {label:"Actual win", cls:"num"},
+        {label:"Gap", cls:"num"}, {label:"Actual rate bar"}
+    ], rows);
+}
+
+function renderEdge() {
+    const rows = report.edge_stats.buckets.map(b => `
+        <tr>
+            <td><span class="pill">${b.bucket}</span></td>
+            <td class="num">${b.wins}/${b.wins + b.losses}</td>
+            <td class="num">${fmtPct(b.win_rate)}</td>
+            <td class="num">${fmtSignedPct(b.avg_edge)}</td>
+            <td class="num ${b.flat_roi >= 0 ? "good" : "bad"}">${fmtSignedPct(b.flat_roi)}</td>
+            <td class="num ${b.confidence_roi >= 0 ? "good" : "bad"}">${fmtSignedPct(b.confidence_roi)}</td>
+            <td class="num">${b.p_value === null ? "-" : fmtNum(b.p_value, 3)}</td>
+        </tr>
+    `);
+    renderTable("edge-table", [
+        {label:"Bucket"}, {label:"W", cls:"num"}, {label:"Win", cls:"num"},
+        {label:"Avg edge", cls:"num"}, {label:"Flat ROI", cls:"num"},
+        {label:"Conf ROI", cls:"num"}, {label:"p", cls:"num"}
+    ], rows);
+    const favRows = report.edge_stats.fav_dog.map(r => `
+        <tr>
+            <td>${esc(r.label)}</td>
+            <td class="num">${r.wins}/${r.total}</td>
+            <td class="num">${fmtPct(r.win_rate)}</td>
+            <td class="num ${r.flat_roi >= 0 ? "good" : "bad"}">${fmtSignedPct(r.flat_roi)}</td>
+            <td class="num ${r.confidence_roi >= 0 ? "good" : "bad"}">${fmtSignedPct(r.confidence_roi)}</td>
+        </tr>
+    `);
+    renderTable("favdog-table", [
+        {label:"Side"}, {label:"W", cls:"num"}, {label:"Win", cls:"num"},
+        {label:"Flat ROI", cls:"num"}, {label:"Conf ROI", cls:"num"}
+    ], favRows);
+}
+
+function resultPill(match) {
+    if (match.result === "team_a") return `<span class="pill win">${esc(match.team_a)} won</span>`;
+    if (match.result === "team_b") return `<span class="pill win">${esc(match.team_b)} won</span>`;
+    if (match.result === "Pending") return `<span class="pill">Pending</span>`;
+    return `<span class="pill loss">${esc(match.result)}</span>`;
+}
+function renderMatches() {
+    const q = document.getElementById("search").value.toLowerCase();
+    const status = document.getElementById("status").value;
+    const version = document.getElementById("version").value;
+    const valid = document.getElementById("valid").value;
+    const edge = document.getElementById("edge-filter").value;
+    const sort = document.getElementById("sort").value;
+    let rows = report.matches.filter(m => {
+        const hay = [m.team_a, m.team_b, m.version_id, m.odds_source, m.match_url].join(" ").toLowerCase();
+        if (q && !hay.includes(q)) return false;
+        if (version !== "all" && m.version_id !== version) return false;
+        if (valid !== "all" && String(m.valid_for_eval) !== valid) return false;
+        if (status === "settled" && !["team_a", "team_b"].includes(m.result)) return false;
+        if (status === "Pending" && m.result !== "Pending") return false;
+        if (status === "other" && ["team_a", "team_b", "Pending"].includes(m.result)) return false;
+        if (edge === "positive" && !(m.best_edge >= 0)) return false;
+        if (edge === "10" && !(m.best_edge >= 10)) return false;
+        return true;
+    });
+    rows.sort((a, b) => {
+        const dateA = [a.match_date || "", a.match_time || ""].join(" ");
+        const dateB = [b.match_date || "", b.match_time || ""].join(" ");
+        if (sort === "date-asc") return dateA.localeCompare(dateB);
+        if (sort === "edge-desc") return (b.best_edge ?? -999) - (a.best_edge ?? -999);
+        if (sort === "confidence-desc") return Math.abs((b.model_prob_a ?? .5) - .5) - Math.abs((a.model_prob_a ?? .5) - .5);
+        if (sort === "team-asc") return String(a.team_a || "").localeCompare(String(b.team_a || ""));
+        return dateB.localeCompare(dateA);
+    });
+    document.getElementById("match-count").textContent = `${rows.length} of ${report.matches.length} matches shown`;
+    const body = rows.map(m => `
+        <tr>
+            <td>${esc([m.match_date, m.match_time].filter(Boolean).join(" "))}</td>
+            <td class="teams"><a href="${esc(m.match_url)}" style="color:inherit" target="_blank" rel="noreferrer">${esc(m.team_a)} vs ${esc(m.team_b)}</a><div class="muted">${esc(m.format || "")} · ${esc(m.version_id || "no version")}</div></td>
+            <td>${resultPill(m)}</td>
+            <td class="num">${fmtPct(m.model_prob_a)} / ${fmtPct(m.model_prob_b)}</td>
+            <td class="num">${formatOddsPair(m)}</td>
+            <td class="num">${formatEdgePair(m)}</td>
+            <td><span class="pill">${esc(m.best_bet || "n/a")} ${m.best_edge === null ? "" : fmtSignedPct(m.best_edge / 100)}</span></td>
+            <td class="num">${m.odds_book_count ?? 0}</td>
+            <td class="num">${m.num_snapshots ?? 1}</td>
+        </tr>
+    `);
+    renderTable("matches-table", [
+        {label:"Date"}, {label:"Match"}, {label:"Result"}, {label:"Model A/B", cls:"num"},
+        {label:"Median odds A/B", cls:"num"}, {label:"Edge A/B", cls:"num"},
+        {label:"Best"}, {label:"Books", cls:"num"}, {label:"Snaps", cls:"num"}
+    ], body);
+}
+
+function renderVersions() {
+    const briers = report.versions.map(v => v.brier).filter(v => v !== null && v !== undefined);
+    const logs = report.versions.map(v => v.logloss).filter(v => v !== null && v !== undefined);
+    const brierMin = briers.length ? Math.min(...briers) : null;
+    const brierMax = briers.length ? Math.max(...briers) : null;
+    const logMin = logs.length ? Math.min(...logs) : null;
+    const logMax = logs.length ? Math.max(...logs) : null;
+    const rows = report.versions.map(v => `
+        <tr>
+            <td>${esc(v.version_id)}</td>
+            <td>${esc(v.trained_at)}</td>
+            <td class="num shade" style="${shade(v.brier, brierMin, brierMax, true)}">${fmtNum(v.brier, 4)}</td>
+            <td class="num shade" style="${shade(v.logloss, logMin, logMax, true)}">${fmtNum(v.logloss, 4)}</td>
+            <td class="num">${v.matches_predicted ?? 0}</td>
+            <td class="num">${v.training_maps ?? "n/a"}</td>
+            <td class="num">${v.num_features ?? "n/a"}</td>
+        </tr>
+    `);
+    renderTable("versions-table", [
+        {label:"Version"}, {label:"Trained"}, {label:"Brier", cls:"num"},
+        {label:"Log loss", cls:"num"}, {label:"Matches", cls:"num"},
+        {label:"Training maps", cls:"num"}, {label:"Features", cls:"num"}
+    ], rows);
+}
+
+function initControls() {
+    const versionSelect = document.getElementById("version");
+    [...new Set(report.matches.map(m => m.version_id).filter(Boolean))].sort().reverse().forEach(v => {
+        const option = document.createElement("option");
+        option.value = v;
+        option.textContent = v;
+        versionSelect.appendChild(option);
+    });
+    ["search", "status", "version", "valid", "edge-filter", "sort"].forEach(id => {
+        document.getElementById(id).addEventListener("input", renderMatches);
+    });
+}
+renderCalibration();
+renderEdge();
+renderVersions();
+initControls();
+renderMatches();
+</script>
+</body>
+</html>
