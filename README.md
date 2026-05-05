@@ -19,7 +19,7 @@ A high-performance Python framework for Counter-Strike 2 match prediction. This 
 ## Architecture
 
 1.  **Ingestion Layer:** `hltv_client.py` handles complex interactions with HLTV, bypassing protections to build a canonical match database.
-2.  **Processing Layer:** `clean.py` normalises raw data; `features.py` computes temporal differentials with configurable rolling windows.
+2.  **Processing Layer:** `clean.py` normalizes raw data; `features.py` computes temporal differentials with configurable rolling windows.
 3.  **Simulation Layer:** `veto_sim.py` models team banning/picking behaviour using historical bias and Laplace smoothing.
 4.  **Model Layer:** `net.py` (Architecture) + `predict.py` (Inference) use mirrored data samples to eliminate positional bias.
 5.  **Reporting Layer:** `automate_predictions.py` orchestrates end-to-end flow from live scraping to HTML dashboard generation.
