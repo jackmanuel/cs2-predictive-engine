@@ -152,7 +152,26 @@ The default suite compares the current feature set against variants that remove 
 
 See `docs/model_evaluation.md` for the evaluation methodology, metric definitions, and current feature hypotheses.
 
-### 7. Betting Ledger (Real Bets)
+### 7. Polymarket Settlement Forfeit/Default Model
+Train the separate settlement-risk adjustment model. This does not retrain or replace the winner model:
+```bash
+python -m model.train_forfeit
+```
+
+Outputs:
+
+- `data/checkpoints/forfeit_model.joblib` calibrated logistic regression bundle
+- `data/processed/forfeit_features.parquet` leakage-safe match-level features
+- `data/forfeit_training_state.json` current training-state snapshot
+- `reports/forfeit_model_evaluation.md` future-held-out evaluation report
+- `reports/forfeit_model_metrics.json` machine-readable metrics
+
+Manual series predictions can print the final Polymarket fair probabilities with:
+```bash
+python -m model.predict_series "Vitality" "G2" --format bo3 --polymarket-adjust --event "IEM Cologne 2026" --lan
+```
+
+### 8. Betting Ledger (Real Bets)
 Track real bets with model probability and edge:
 ```bash
 # Record a bet

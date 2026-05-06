@@ -6,6 +6,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.predict import calculate_expected_series_win
+from model.forfeit import ForfeitPredictorContext, polymarket_fair_probs, predict_forfeit_probability
 from config import MC_ITERATIONS, MC_THRESHOLD
 
 def main():
@@ -16,6 +17,9 @@ def main():
     parser.add_argument("--starts-veto", help="Which team starts the veto (team_a/a or team_b/b). Defaults to random.")
     parser.add_argument("--iters", type=int, default=MC_ITERATIONS, help=f"Monte Carlo iterations for veto simulation (default: {MC_ITERATIONS})")
     parser.add_argument("--threshold", type=float, default=MC_THRESHOLD, help=f"Probability truncation threshold (default: {MC_THRESHOLD})")
+    parser.add_argument("--polymarket-adjust", action="store_true", help="Apply the separate settlement forfeit/default adjustment.")
+    parser.add_argument("--event", default="Manual prediction", help="Event name for forfeit/default risk features.")
+    parser.add_argument("--lan", action="store_true", help="Mark the match as LAN for forfeit/default risk features.")
     
     args = parser.parse_args()
 
@@ -65,6 +69,28 @@ def main():
         print(f"\n FINAL EXPECTED SERIES PROBABILITIES:")
         print(f" {t_a_id:20} | {prob*100:6.2f}%")
         print(f" {t_b_id:20} | {(1-prob)*100:6.2f}%")
+
+        if args.polymarket_adjust:
+            forfeit_ctx = ForfeitPredictorContext()
+            rank_a = ctx.latest_ranks.get(t_a_id, {}).get("world")
+            rank_b = ctx.latest_ranks.get(t_b_id, {}).get("world")
+            settlement_match = {
+                "team1": args.team_a,
+                "team2": args.team_b,
+                "event": args.event,
+                "format": args.format,
+                "is_lan": args.lan,
+                "team1_rank": rank_a,
+                "team2_rank": rank_b,
+            }
+            forfeit_prob = predict_forfeit_probability(settlement_match, forfeit_ctx)
+            fair_a, fair_b = polymarket_fair_probs(prob, forfeit_prob)
+            print("-" * 60)
+            print(f" POLYMARKET SETTLEMENT ADJUSTMENT:")
+            print(f" Settlement-affecting forfeit/default risk: {forfeit_prob*100:6.2f}%")
+            print(f" {t_a_id:20} | {fair_a*100:6.2f}% fair")
+            print(f" {t_b_id:20} | {fair_b*100:6.2f}% fair")
+
         print("-" * 60)
         print(f" (Logic: Weighted sum of all veto paths with cumulative probability >= {args.threshold*100:.0f}%)")
         print("="*60 + "\n")

@@ -5,12 +5,7 @@ venv/
 .env
 
 # Data artifacts
-data/raw/
-data/processed/
-data/checkpoints/
-data/shadow_ledger.db
-data/betting_ledger.csv
-data/training_state.json
+data/
 
 # Python
 __pycache__/
@@ -37,6 +32,7 @@ Thumbs.db
 debug_scraper.py
 hltv_match_example.json
 scratch/
+reports/
 *.txt
 *.md
 *.html

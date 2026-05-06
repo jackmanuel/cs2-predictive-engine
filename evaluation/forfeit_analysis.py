@@ -62,6 +62,7 @@ ORGANIZER_PREFIXES = [
     "RES",
     "Fragadelphia",
     "Exort",
+    "Tipsport",
     "LORGAR",
     "A1",
     "Galaxy Battle",
