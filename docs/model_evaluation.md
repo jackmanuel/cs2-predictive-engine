@@ -47,6 +47,24 @@ Preview any run without training:
 python -m evaluation.feature_experiments --dry-run
 ```
 
+By default, each completed run writes timestamped CSVs under `reports/`, for
+example:
+
+```text
+reports/feature_experiment_promising_14d_4folds_5seeds_20260505_193147_results.csv
+reports/feature_experiment_promising_14d_4folds_5seeds_20260505_193147_summary.csv
+```
+
+Use `--run-name` to choose the report stem while still getting separate results
+and summary files:
+
+```bash
+python -m evaluation.feature_experiments --fold-days 14 --run-name h2h_window_check
+```
+
+Use `--output` and `--summary-output` only when you intentionally want exact
+paths.
+
 ## How Folds Work
 
 A fold is a fixed temporal train/evaluate split. For example:
@@ -84,9 +102,9 @@ These notes are working hypotheses, not permanent conclusions.
 - `win_rate_90d_diff`, `win_rate_30d_diff`, and `win_rate_7d_diff` measure form
   at different horizons. The 7-day feature may be noisy, but it uses smoothed
   win rates rather than a zero baseline.
-- `h2h_a_wins` and `h2h_b_wins` currently represent all-time prior head-to-head
-  map counts within the processed corpus. Recent-window H2H variants, especially
-  30-day counts, are worth testing because old H2H may become stale.
+- `h2h_a_wins_30d` and `h2h_b_wins_30d` represent prior head-to-head map counts
+  within the last 30 days. This replaced all-time H2H counts after walk-forward
+  experiments showed the 30-day variant was more promising.
 - `sos_90d_diff` and `sos_diff` are theoretically valuable because raw win rates
   do not account for opponent strength. The current implementation is an average
   opponent-rank proxy, so it may be improved later with performance above

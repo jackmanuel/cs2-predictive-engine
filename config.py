@@ -31,6 +31,7 @@ FORM_WINDOW_DAYS_LONG = 90  # Long-term macro form
 FORM_WINDOW_DAYS = 30       # General win rate, dominance, resilience, SoS, comfort
 FORM_WINDOW_DAYS_SHORT = 7  # Short-term momentum
 MAP_WINDOW_DAYS = 90        # Map-specific win rate (needs wider window for sample size)
+H2H_WINDOW_DAYS = 30        # Recent head-to-head map counts
 VETO_WINDOW_DAYS = 90       # Veto sim historical stats window
 
 DEFAULT_SOS_RANK = 100      # Fallback opponent rank for SoS when no history exists

@@ -148,7 +148,7 @@ python -m evaluation.feature_experiments --folds 1 --seeds 1 --epochs 10 --patie
 python -m evaluation.feature_experiments --preset full
 ```
 
-The default suite compares the current feature set against variants that remove `lan_rate_diff`, remove `dominance_diff`/`resilience_diff`, remove those features together, and replace all-time H2H counts with 30-day or 90-day H2H windows. Results are written to `reports/feature_experiment_results.csv` and `reports/feature_experiment_summary.csv`.
+The default suite compares the current feature set against variants that remove `lan_rate_diff`, remove `dominance_diff`/`resilience_diff`, remove those features together, and test shorter/longer H2H windows around the production 30-day H2H counts. Results are written to timestamped CSVs under `reports/`; use `--run-name` or explicit output paths when you want stable names.
 
 See `docs/model_evaluation.md` for the evaluation methodology, metric definitions, and current feature hypotheses.
 
@@ -176,6 +176,7 @@ All tuning parameters are centralised in `config.py`:
 | `FORM_WINDOW_DAYS` | 30 | Rolling window for win rate, dominance, resilience, SoS |
 | `FORM_WINDOW_DAYS_SHORT` | 7 | Short-term momentum window |
 | `MAP_WINDOW_DAYS` | 90 | Map-specific win rate window (wider for sample size) |
+| `H2H_WINDOW_DAYS` | 30 | Recent head-to-head map count window |
 | `VETO_WINDOW_DAYS` | 90 | Veto simulation historical stats window |
 | `MC_ITERATIONS` | 10,000 | Monte Carlo veto simulation iterations |
 | `MC_THRESHOLD` | 0.90 | Cumulative probability cutoff for veto path selection |

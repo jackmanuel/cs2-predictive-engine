@@ -13,6 +13,7 @@ import logging
 import random
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -44,8 +45,7 @@ from processing.features import MODEL_FEATURES, TARGET_COL
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_FEATURES_PATH = PROCESSED_DIR / "features.parquet"
-DEFAULT_RESULTS_PATH = PROJECT_ROOT / "reports" / "feature_experiment_results.csv"
-DEFAULT_SUMMARY_PATH = PROJECT_ROOT / "reports" / "feature_experiment_summary.csv"
+DEFAULT_REPORT_DIR = PROJECT_ROOT / "reports"
 
 H2H_METADATA_COLUMNS = ["date", "match_id", "team_a_id", "team_b_id", TARGET_COL]
 
@@ -153,14 +153,22 @@ def parse_args() -> argparse.Namespace:
         help="Adam weight decay. Default: 1e-4.",
     )
     parser.add_argument(
+        "--run-name",
+        default=None,
+        help=(
+            "Optional report name stem. Defaults to a timestamped name derived "
+            "from the preset/folds/seeds."
+        ),
+    )
+    parser.add_argument(
         "--output",
-        default=str(DEFAULT_RESULTS_PATH),
-        help="Detailed per-run CSV output path.",
+        default=None,
+        help="Detailed per-run CSV output path. Defaults to a timestamped report.",
     )
     parser.add_argument(
         "--summary-output",
-        default=str(DEFAULT_SUMMARY_PATH),
-        help="Aggregated summary CSV output path.",
+        default=None,
+        help="Aggregated summary CSV output path. Defaults to a timestamped report.",
     )
     parser.add_argument(
         "--dry-run",
@@ -180,13 +188,16 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
     def with_h2h_window(days: int, base_features: Iterable[str] = baseline) -> tuple[str, ...]:
         features = []
         for feature in base_features:
-            if feature == "h2h_a_wins":
+            if feature.startswith("h2h_a_wins"):
                 features.append(f"h2h_a_wins_{days}d")
-            elif feature == "h2h_b_wins":
+            elif feature.startswith("h2h_b_wins"):
                 features.append(f"h2h_b_wins_{days}d")
             else:
                 features.append(feature)
         return tuple(features)
+
+    def without_h2h(base_features: Iterable[str] = baseline) -> tuple[str, ...]:
+        return tuple(feature for feature in base_features if not feature.startswith("h2h_"))
 
     no_lan_dom_res = without("lan_rate_diff", "dominance_diff", "resilience_diff")
 
@@ -195,6 +206,7 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
             "baseline_all",
             baseline,
             "Current production feature set.",
+            h2h_window_days=30,
         ),
         FeatureVariant(
             "no_lan_rate",
@@ -212,9 +224,15 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
             "Remove LAN rate, dominance, and resilience together.",
         ),
         FeatureVariant(
+            "h2h_14d_counts",
+            with_h2h_window(14),
+            "Replace production H2H counts with 14-day counts.",
+            h2h_window_days=14,
+        ),
+        FeatureVariant(
             "h2h_30d_counts",
             with_h2h_window(30),
-            "Replace all-time prior H2H map counts with 30-day counts.",
+            "Use 30-day H2H map counts.",
             h2h_window_days=30,
         ),
         FeatureVariant(
@@ -222,6 +240,12 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
             with_h2h_window(90),
             "Replace all-time prior H2H map counts with 90-day counts.",
             h2h_window_days=90,
+        ),
+        FeatureVariant(
+            "no_lan_dom_res_h2h_14d",
+            with_h2h_window(14, no_lan_dom_res),
+            "Remove the most suspicious features and use 14-day H2H counts.",
+            h2h_window_days=14,
         ),
         FeatureVariant(
             "no_lan_dom_res_h2h_30d",
@@ -252,7 +276,7 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
         ),
         FeatureVariant(
             "no_h2h",
-            without("h2h_a_wins", "h2h_b_wins"),
+            without_h2h(),
             "Remove H2H counts entirely.",
         ),
     ]
@@ -265,9 +289,9 @@ def preset_names(preset: str) -> list[str]:
         "no_lan_rate",
         "no_dominance_resilience",
         "no_lan_dom_resilience",
-        "h2h_30d_counts",
+        "h2h_14d_counts",
         "h2h_90d_counts",
-        "no_lan_dom_res_h2h_30d",
+        "no_lan_dom_res_h2h_14d",
         "no_lan_dom_res_h2h_90d",
     ]
     if preset == "promising":
@@ -286,7 +310,10 @@ def load_feature_frame(features_path: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"Feature parquet not found: {features_path}")
 
     df = pd.read_parquet(features_path)
-    required = sorted(set(MODEL_FEATURES + H2H_METADATA_COLUMNS))
+    required = sorted(
+        set(H2H_METADATA_COLUMNS)
+        | {feature for feature in MODEL_FEATURES if not feature.startswith("h2h_")}
+    )
     missing = [column for column in required if column not in df.columns]
     if missing:
         raise RuntimeError(f"Feature parquet is missing required columns: {missing}")
@@ -625,6 +652,44 @@ def write_outputs(
     return results_df, summary_df
 
 
+def slugify(value: str) -> str:
+    cleaned = []
+    for char in value.lower():
+        if char.isalnum():
+            cleaned.append(char)
+        elif char in {"-", "_"}:
+            cleaned.append(char)
+        else:
+            cleaned.append("_")
+    slug = "".join(cleaned).strip("_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug or "feature_experiment"
+
+
+def default_report_stem(args: argparse.Namespace) -> str:
+    if args.run_name:
+        return slugify(args.run_name)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    variant_label = "custom" if args.variants else args.preset
+    return slugify(
+        f"feature_experiment_{variant_label}_{args.fold_days}d_"
+        f"{args.folds}folds_{len(args.seeds)}seeds_{timestamp}"
+    )
+
+
+def resolve_output_paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    stem = default_report_stem(args)
+    output_path = Path(args.output) if args.output else DEFAULT_REPORT_DIR / f"{stem}_results.csv"
+    summary_path = (
+        Path(args.summary_output)
+        if args.summary_output
+        else DEFAULT_REPORT_DIR / f"{stem}_summary.csv"
+    )
+    return output_path, summary_path
+
+
 def print_plan(variants: list[FeatureVariant], folds: list[TemporalFold], seeds: list[int]) -> None:
     print("\n=== Feature Experiment Plan ===")
     print(f"Variants: {len(variants)}")
@@ -716,8 +781,7 @@ def main() -> int:
                 )
                 results.append(train_and_score(feature_df, variant, fold, seed, args))
 
-    output_path = Path(args.output)
-    summary_path = Path(args.summary_output)
+    output_path, summary_path = resolve_output_paths(args)
     _, summary_df = write_outputs(results, output_path, summary_path)
     print_summary(summary_df, output_path, summary_path)
     return 0

@@ -11,7 +11,7 @@ from typing import List, Tuple
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, CHECKPOINT_DIR, DEFAULT_TEAM_RANK, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, DEFAULT_SOS_RANK, MC_ITERATIONS, MC_THRESHOLD
+from config import PROCESSED_DIR, CHECKPOINT_DIR, DEFAULT_TEAM_RANK, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, H2H_WINDOW_DAYS, DEFAULT_SOS_RANK, MC_ITERATIONS, MC_THRESHOLD
 from model.net import MatchPredictor
 from processing.features import MODEL_FEATURES, get_sos, get_recent_stats, get_dominance_metrics
 import model.veto_sim as veto_sim
@@ -43,7 +43,7 @@ def load_latest_state():
     team_first_picks = {}
     team_total_series = {}
     team_latest_ranks = {} # team_id -> {"world": int}
-    h2h_stats = {}
+    h2h_history = {}
     team_sos_history = {}  # team_id -> [(datetime, log_rank_opp)]
     team_lan_history = {}  # team_id -> [(datetime, is_lan_int)]
     current_streaks = {}   # team_id -> int
@@ -86,8 +86,8 @@ def load_latest_state():
         label = 1 if row["winner_id"] == t_a else 0
         
         h2h_key = tuple(sorted([str(t_a), str(t_b)]))
-        if h2h_key not in h2h_stats:
-            h2h_stats[h2h_key] = {h2h_key[0]: 0, h2h_key[1]: 0}
+        if h2h_key not in h2h_history:
+            h2h_history[h2h_key] = []
             
         if t_a not in team_sos_history: team_sos_history[t_a] = []
         if t_b not in team_sos_history: team_sos_history[t_b] = []
@@ -135,12 +135,10 @@ def load_latest_state():
             team_total_series[t_b].append(date)
             match_picked_seen[m_id].add(t_b)
         
-        if label == 1:
-            h2h_stats[h2h_key][str(t_a)] += 1
-        else:
-            h2h_stats[h2h_key][str(t_b)] += 1
+        winner = str(t_a) if label == 1 else str(t_b)
+        h2h_history[h2h_key].append((date, winner))
             
-    return team_general_histories, team_map_histories, team_latest_ranks, h2h_stats, current_streaks, team_first_picks, team_total_series, team_sos_history, team_lan_history
+    return team_general_histories, team_map_histories, team_latest_ranks, h2h_history, current_streaks, team_first_picks, team_total_series, team_sos_history, team_lan_history
 
 def combine_probs(probs: List[float], bo: int) -> float:
     """
@@ -184,7 +182,7 @@ class PredictorContext:
     predictions without reloading data from disk repeatedly.
     """
     def __init__(self):
-        self.gen_histories, self.map_histories, self.latest_ranks, self.h2h_stats, \
+        self.gen_histories, self.map_histories, self.latest_ranks, self.h2h_history, \
         self.latest_streaks, self.team_fpicks, self.team_tseries, self.sos_histories, \
         self.lan_histories = load_latest_state()
         
@@ -230,8 +228,14 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
         wr_7d_diff = g_a_7d["win_rate"] - g_b_7d["win_rate"]
         
         h2h_key = tuple(sorted([str(t_a_id), str(t_b_id)]))
-        h2h_a = ctx.h2h_stats.get(h2h_key, {}).get(str(t_a_id), 0)
-        h2h_b = ctx.h2h_stats.get(h2h_key, {}).get(str(t_b_id), 0)
+        h2h_cutoff = now - pd.Timedelta(days=H2H_WINDOW_DAYS)
+        recent_h2h = [
+            winner
+            for date, winner in ctx.h2h_history.get(h2h_key, [])
+            if date >= h2h_cutoff
+        ]
+        h2h_a_30d = sum(1 for winner in recent_h2h if winner == str(t_a_id))
+        h2h_b_30d = sum(1 for winner in recent_h2h if winner == str(t_b_id))
         
         is_a_picker = 0
         is_b_picker = 0
@@ -310,8 +314,8 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             "team_a_win_streak": np.log1p(s_a),
             "team_b_win_streak": np.log1p(s_b),
             "picker_diff": is_a_picker - is_b_picker,
-            "h2h_a_wins": h2h_a,
-            "h2h_b_wins": h2h_b,
+            "h2h_a_wins_30d": h2h_a_30d,
+            "h2h_b_wins_30d": h2h_b_30d,
             "map_win_rate_diff": map_wr_diff,
             "map_comfort_diff": map_comfort_diff,
             "dominance_diff": dominance_diff,

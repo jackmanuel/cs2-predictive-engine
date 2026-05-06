@@ -3,7 +3,9 @@ import random
 import re
 import logging
 import statistics
+import subprocess
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
@@ -11,6 +13,40 @@ import undetected_chromedriver as uc
 logger = logging.getLogger(__name__)
 
 HLTV_BASE_URL = "https://www.hltv.org"
+
+
+def detect_chrome_major_version() -> Optional[int]:
+    """Returns the installed Chrome major version when it can be detected."""
+    candidates = [
+        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+    ]
+
+    for chrome_path in candidates:
+        if not chrome_path.exists():
+            continue
+
+        try:
+            completed = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-Item -LiteralPath '{chrome_path}').VersionInfo.ProductVersion",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            logger.debug(f"Could not detect Chrome version at {chrome_path}: {exc}")
+            continue
+
+        match = re.search(r"^(\d+)", completed.stdout.strip())
+        if match:
+            return int(match.group(1))
+
+    return None
 
 class HLTVClient:
     """
@@ -26,8 +62,13 @@ class HLTVClient:
             logger.info("Initializing Selenium Browser (Non-headless)...")
             options = uc.ChromeOptions()
             options.add_argument('--window-size=1024,768')
-            # Using version_main=146 to avoid version mismatch issues
-            self.driver = uc.Chrome(headless=False, version_main=146, options=options)
+            chrome_major = detect_chrome_major_version()
+            if chrome_major:
+                logger.info(f"Using Chrome major version {chrome_major} for undetected-chromedriver.")
+                self.driver = uc.Chrome(headless=False, version_main=chrome_major, options=options)
+            else:
+                logger.warning("Could not detect Chrome major version; using undetected-chromedriver default.")
+                self.driver = uc.Chrome(headless=False, options=options)
             
     def stop(self):
         """Stops the Chrome instance."""

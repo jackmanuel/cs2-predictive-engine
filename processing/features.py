@@ -6,7 +6,7 @@ import numpy as np
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, MIN_MATCHES_THRESHOLD, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, DEFAULT_SOS_RANK
+from config import PROCESSED_DIR, MIN_MATCHES_THRESHOLD, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, H2H_WINDOW_DAYS, DEFAULT_SOS_RANK
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -19,8 +19,8 @@ MODEL_FEATURES = [
     "team_a_win_streak",
     "team_b_win_streak",
     "picker_diff",
-    "h2h_a_wins",
-    "h2h_b_wins",
+    "h2h_a_wins_30d",
+    "h2h_b_wins_30d",
     "map_win_rate_diff",
     "map_comfort_diff",
     "dominance_diff",
@@ -53,9 +53,12 @@ def mirror_data(df: pd.DataFrame) -> pd.DataFrame:
             mirrored_df[a_col] = df[b_col]
             mirrored_df[b_col] = df[a_col]
             
-    if "h2h_a_wins" in df.columns and "h2h_b_wins" in df.columns:
-        mirrored_df["h2h_a_wins"] = df["h2h_b_wins"]
-        mirrored_df["h2h_b_wins"] = df["h2h_a_wins"]
+    for col in df.columns:
+        if col.startswith("h2h_a_wins"):
+            b_col = "h2h_b_wins" + col[len("h2h_a_wins"):]
+            if b_col in df.columns:
+                mirrored_df[col] = df[b_col]
+                mirrored_df[b_col] = df[col]
         
     if "score_a" in df.columns and "score_b" in df.columns:
         mirrored_df["score_a"] = df["score_b"]
@@ -196,7 +199,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     team_first_picks = {}     # team_id -> map_name -> [datetime]
     team_total_series = {}    # team_id -> [datetime]
     match_picked_seen = {}    # match_id -> set(team_id)
-    h2h_stats = {}            # (team_x, team_y) (sorted) -> wins_x, wins_y
+    h2h_history = {}          # (team_x, team_y) (sorted) -> [(date, winner_id)]
     team_sos_history = {}     # team_id -> [(datetime, log_rank_opp)]
     team_lan_history = {}     # team_id -> [(datetime, is_lan_bool)]
     
@@ -227,11 +230,14 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         
         # Determine H2H prior
         h2h_key = tuple(sorted([str(t_a), str(t_b)]))
-        if h2h_key not in h2h_stats:
-            h2h_stats[h2h_key] = {h2h_key[0]: 0, h2h_key[1]: 0}
-            
-        h2h_a_wins = h2h_stats[h2h_key].get(str(t_a), 0)
-        h2h_b_wins = h2h_stats[h2h_key].get(str(t_b), 0)
+        if h2h_key not in h2h_history:
+            h2h_history[h2h_key] = []
+
+        h2h_cutoff = date - pd.Timedelta(days=H2H_WINDOW_DAYS)
+        recent_h2h = [(d, winner) for d, winner in h2h_history[h2h_key] if d >= h2h_cutoff]
+        h2h_history[h2h_key] = recent_h2h
+        h2h_a_wins_30d = sum(1 for _, winner in recent_h2h if winner == str(t_a))
+        h2h_b_wins_30d = sum(1 for _, winner in recent_h2h if winner == str(t_b))
         
         gen_a_90d = get_recent_stats(team_general_history[t_a], date, FORM_WINDOW_DAYS_LONG)
         gen_b_90d = get_recent_stats(team_general_history[t_b], date, FORM_WINDOW_DAYS_LONG)
@@ -307,8 +313,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             "team_a_win_streak": np.log1p(s_a),
             "team_b_win_streak": np.log1p(s_b),
             "picker_diff": (1 if row["team_a_picked"] else 0) - (1 if row["team_b_picked"] else 0),
-            "h2h_a_wins": h2h_a_wins,
-            "h2h_b_wins": h2h_b_wins,
+            "h2h_a_wins_30d": h2h_a_wins_30d,
+            "h2h_b_wins_30d": h2h_b_wins_30d,
             "map_win_rate_diff": map_wr_diff,
             "map_comfort_diff": map_comfort_diff,
             "dominance_diff": dominance_diff,
@@ -387,10 +393,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
             team_total_series[t_b].append(date)
             match_picked_seen[m_id].add(t_b)
         
-        if win_a:
-            h2h_stats[h2h_key][str(t_a)] += 1
-        else:
-            h2h_stats[h2h_key][str(t_b)] += 1
+        h2h_winner = str(t_a) if win_a else str(t_b)
+        h2h_history[h2h_key].append((date, h2h_winner))
             
     return pd.DataFrame(features_list)
 
