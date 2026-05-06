@@ -50,3 +50,5 @@ static/maps/
 !model/templates/*.html
 !evaluation/templates/
 !evaluation/templates/*.html
+!docs/
+!docs/*.md

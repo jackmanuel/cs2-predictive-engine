@@ -132,7 +132,27 @@ The HTML report includes:
 
 The report template lives at `evaluation/templates/shadow_ledger_report.html`; `shadow_ledger.py` prepares the data and injects it into the template.
 
-### 6. Betting Ledger (Real Bets)
+### 6. Feature Experiment Runner
+Run walk-forward feature ablations before promoting feature changes into the production model:
+```bash
+# Default promising suite: 8 variants x 4 weekly folds x 5 seeds
+python -m evaluation.feature_experiments
+
+# Inspect the planned folds and variants without training
+python -m evaluation.feature_experiments --dry-run
+
+# Fast smoke run while iterating
+python -m evaluation.feature_experiments --folds 1 --seeds 1 --epochs 10 --patience 3
+
+# Broader suite with additional exploratory ablations
+python -m evaluation.feature_experiments --preset full
+```
+
+The default suite compares the current feature set against variants that remove `lan_rate_diff`, remove `dominance_diff`/`resilience_diff`, remove those features together, and replace all-time H2H counts with 30-day or 90-day H2H windows. Results are written to `reports/feature_experiment_results.csv` and `reports/feature_experiment_summary.csv`.
+
+See `docs/model_evaluation.md` for the evaluation methodology, metric definitions, and current feature hypotheses.
+
+### 7. Betting Ledger (Real Bets)
 Track real bets with model probability and edge:
 ```bash
 # Record a bet
