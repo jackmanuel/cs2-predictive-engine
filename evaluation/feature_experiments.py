@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--preset",
-        choices=["promising", "full"],
+        choices=["promising", "full", "sample_depth"],
         default="promising",
         help="Variant set to evaluate. Default: promising.",
     )
@@ -185,6 +185,13 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
         remove = set(columns)
         return tuple(feature for feature in baseline if feature not in remove)
 
+    def with_added(*columns: str, base_features: Iterable[str] = baseline) -> tuple[str, ...]:
+        features = list(base_features)
+        for column in columns:
+            if column not in features:
+                features.append(column)
+        return tuple(features)
+
     def with_h2h_window(days: int, base_features: Iterable[str] = baseline) -> tuple[str, ...]:
         features = []
         for feature in base_features:
@@ -279,6 +286,50 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
             without_h2h(),
             "Remove H2H counts entirely.",
         ),
+        FeatureVariant(
+            "sample_depth_raw_counts",
+            with_added("team_a_gen_matches_30d", "team_b_gen_matches_30d"),
+            "Add each team's prior 30-day map count as a direct sample-depth signal.",
+        ),
+        FeatureVariant(
+            "sample_depth_log_counts",
+            with_added("log_team_a_gen_matches_30d", "log_team_b_gen_matches_30d"),
+            "Add log-scaled prior 30-day map counts for each team.",
+        ),
+        FeatureVariant(
+            "sample_depth_log_diff",
+            with_added("log_gen_matches_30d_diff"),
+            "Add the log-scaled 30-day sample-depth differential only.",
+        ),
+        FeatureVariant(
+            "sample_depth_min_log",
+            with_added("log_min_gen_matches_30d"),
+            "Add the weaker side's log-scaled 30-day sample depth.",
+        ),
+        FeatureVariant(
+            "sample_depth_log_full",
+            with_added(
+                "log_team_a_gen_matches_30d",
+                "log_team_b_gen_matches_30d",
+                "log_gen_matches_30d_diff",
+                "log_min_gen_matches_30d",
+            ),
+            "Add log-scaled team counts, their differential, and the minimum-depth confidence signal.",
+        ),
+        FeatureVariant(
+            "sample_depth_all_counts",
+            with_added(
+                "team_a_gen_matches_30d",
+                "team_b_gen_matches_30d",
+                "gen_matches_30d_diff",
+                "min_gen_matches_30d",
+                "log_team_a_gen_matches_30d",
+                "log_team_b_gen_matches_30d",
+                "log_gen_matches_30d_diff",
+                "log_min_gen_matches_30d",
+            ),
+            "Add raw and log-scaled 30-day sample-depth signals.",
+        ),
     ]
     return {variant.name: variant for variant in variants}
 
@@ -294,14 +345,26 @@ def preset_names(preset: str) -> list[str]:
         "no_lan_dom_res_h2h_14d",
         "no_lan_dom_res_h2h_90d",
     ]
+    sample_depth = [
+        "baseline_all",
+        "sample_depth_raw_counts",
+        "sample_depth_log_counts",
+        "sample_depth_log_diff",
+        "sample_depth_min_log",
+        "sample_depth_log_full",
+        "sample_depth_all_counts",
+    ]
     if preset == "promising":
         return promising
+    if preset == "sample_depth":
+        return sample_depth
     return [
         *promising,
         "no_7d_form",
         "single_sos_90d",
         "single_sos_30d",
         "no_h2h",
+        *[name for name in sample_depth if name != "baseline_all"],
     ]
 
 
@@ -356,14 +419,51 @@ def add_h2h_window_features(df: pd.DataFrame, window_days: int) -> pd.DataFrame:
     return enriched
 
 
+def add_sample_depth_features(df: pd.DataFrame) -> pd.DataFrame:
+    required = ["team_a_gen_matches_30d", "team_b_gen_matches_30d"]
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        raise RuntimeError(
+            "Sample-depth experiments require metadata columns missing from the frame: "
+            f"{missing}"
+        )
+
+    enriched = df.copy()
+    team_a_counts = enriched["team_a_gen_matches_30d"].astype(np.float32)
+    team_b_counts = enriched["team_b_gen_matches_30d"].astype(np.float32)
+
+    enriched["gen_matches_30d_diff"] = team_a_counts - team_b_counts
+    enriched["min_gen_matches_30d"] = np.minimum(team_a_counts, team_b_counts)
+    enriched["log_team_a_gen_matches_30d"] = np.log1p(team_a_counts)
+    enriched["log_team_b_gen_matches_30d"] = np.log1p(team_b_counts)
+    enriched["log_gen_matches_30d_diff"] = (
+        enriched["log_team_a_gen_matches_30d"] - enriched["log_team_b_gen_matches_30d"]
+    )
+    enriched["log_min_gen_matches_30d"] = np.log1p(enriched["min_gen_matches_30d"])
+    return enriched
+
+
 def ensure_variant_columns(df: pd.DataFrame, variants: Iterable[FeatureVariant]) -> pd.DataFrame:
     enriched = df
+    required = {feature for variant in variants for feature in variant.features}
+    if any(
+        feature in required
+        for feature in {
+            "gen_matches_30d_diff",
+            "min_gen_matches_30d",
+            "log_team_a_gen_matches_30d",
+            "log_team_b_gen_matches_30d",
+            "log_gen_matches_30d_diff",
+            "log_min_gen_matches_30d",
+        }
+    ):
+        enriched = add_sample_depth_features(enriched)
+
     for variant in variants:
         if variant.h2h_window_days is not None:
             enriched = add_h2h_window_features(enriched, variant.h2h_window_days)
 
-    required = sorted({feature for variant in variants for feature in variant.features})
-    missing = [feature for feature in required if feature not in enriched.columns]
+    missing = [feature for feature in sorted(required) if feature not in enriched.columns]
     if missing:
         raise RuntimeError(f"Experiment features are missing from the frame: {missing}")
     return enriched
