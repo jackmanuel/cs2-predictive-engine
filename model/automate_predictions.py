@@ -12,6 +12,7 @@ from html import escape
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.predict import calculate_expected_series_win
+from model.forfeit import ForfeitPredictorContext, polymarket_fair_probs, predict_forfeit_probability
 from ingestion.hltv_client import HLTVClient
 from evaluation.shadow_ledger import record_predictions as record_shadow_bets
 from processing.clean import get_roster_status_flags
@@ -67,6 +68,8 @@ MAP_FILENAME_MAP = {
     "train": "de_train.png",
     "vertigo": "de_vertigo.png"
 }
+
+FORFEIT_WARNING_THRESHOLD = 0.05
 
 def annotate_roster_status(match, details=None):
     """Adds roster-anomaly metadata from HLTV match blurbs."""
@@ -160,6 +163,12 @@ def main():
             client.stop()
         sys.exit(1)
 
+    try:
+        forfeit_ctx = ForfeitPredictorContext()
+    except Exception as e:
+        forfeit_ctx = None
+        logger.warning(f"Forfeit warning model unavailable; report will omit forfeit warnings: {e}")
+
     match_results = []
 
     try:
@@ -208,6 +217,8 @@ def main():
                 if not args.html_file:
                     try:
                         details = client.fetch_match_details(match_url)
+                        if details.get("team_ranks"):
+                            match["team_ranks"] = details["team_ranks"]
                         roster_flags = annotate_roster_status(match, details)
                         if roster_flags["roster_status"] != "standard":
                             logger.warning(
@@ -256,6 +267,25 @@ def main():
                 t_a_id = results["team_a_id"]
                 t_b_id = results["team_b_id"]
                 seq_counts = results["sequence_counts"]
+
+                forfeit_prob = None
+                forfeit_fair1 = None
+                forfeit_fair2 = None
+                if forfeit_ctx is not None:
+                    try:
+                        settlement_match = dict(match)
+                        settlement_match.update({
+                            "team1": team_a,
+                            "team2": team_b,
+                            "format": fmt,
+                            "team1_rank": shared_ctx.latest_ranks.get(t_a_id, {}).get("world"),
+                            "team2_rank": shared_ctx.latest_ranks.get(t_b_id, {}).get("world"),
+                        })
+                        forfeit_prob = predict_forfeit_probability(settlement_match, forfeit_ctx)
+                        if forfeit_prob > FORFEIT_WARNING_THRESHOLD:
+                            forfeit_fair1, forfeit_fair2 = polymarket_fair_probs(prob1, forfeit_prob)
+                    except Exception as e:
+                        logger.warning(f"  -> Failed to calculate forfeit warning for {team_a} vs {team_b}: {e}")
 
                 # Odds Calculation
                 o1 = match.get('odds1')
@@ -318,7 +348,10 @@ def main():
                 "valid_for_eval": valid_for_eval,
                 "eval_exclusion_reason": eval_exclusion_reason,
                 "roster_status": roster_status,
-                "roster_warning": match.get("substitution_notes") or match.get("team_replacement_notes") or ""
+                "roster_warning": match.get("substitution_notes") or match.get("team_replacement_notes") or "",
+                "forfeit_prob": forfeit_prob,
+                "forfeit_fair1": forfeit_fair1,
+                "forfeit_fair2": forfeit_fair2
                 })
 
             except Exception as e:
@@ -378,7 +411,8 @@ def main():
         low_sample_class = "low-sample-match" if item['valid_for_eval'] == 0 else ""
         roster_class = "roster-anomaly-match" if item.get("roster_status") != "standard" else ""
         no_odds_class = "no-odds-match" if item['o1'] is None or item['o2'] is None else ""
-        match_classes = f"{low_sample_class} {roster_class} {no_odds_class}".strip()
+        forfeit_class = "forfeit-warning-match" if item.get("forfeit_fair1") is not None else ""
+        match_classes = f"{low_sample_class} {roster_class} {no_odds_class} {forfeit_class}".strip()
         roster_warning_html = ""
         if item.get("roster_status") != "standard":
             warning_text = escape(str(item.get("roster_warning") or item.get("roster_status")))
@@ -386,6 +420,18 @@ def main():
                 '<div class="roster-warning">'
                 '<span class="roster-warning-label">Roster warning</span>'
                 f'<span>{warning_text}</span>'
+                '</div>'
+            )
+        forfeit_warning_html = ""
+        if item.get("forfeit_fair1") is not None and item.get("forfeit_fair2") is not None:
+            forfeit_warning_html = (
+                '<div class="forfeit-warning">'
+                '<span class="forfeit-warning-label">Forfeit/default warning</span>'
+                f'<span>Settlement-affecting risk: {item["forfeit_prob"] * 100:.1f}%</span>'
+                '<div class="forfeit-adjusted-grid">'
+                f'<span>{escape(item["team_a"])} fair</span><strong>{item["forfeit_fair1"] * 100:.1f}%</strong>'
+                f'<span>{escape(item["team_b"])} fair</span><strong>{item["forfeit_fair2"] * 100:.1f}%</strong>'
+                '</div>'
                 '</div>'
             )
 
@@ -431,7 +477,8 @@ def main():
             value_badge1=value_badge1,
             value_badge2=value_badge2,
             match_classes=match_classes,
-            roster_warning=roster_warning_html
+            roster_warning=roster_warning_html,
+            forfeit_warning=forfeit_warning_html
         )
 
         # Wrap in a div if it's a later match
