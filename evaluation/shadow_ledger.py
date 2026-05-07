@@ -25,7 +25,7 @@ import logging
 import math
 import re
 import pandas as pd
-from scipy.stats import ttest_1samp
+from scipy.stats import binomtest, ttest_1samp
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -1005,9 +1005,124 @@ def _count_pct(wins, total):
     return f"{int(wins)}/{int(total)} ({wins / total * 100:.1f}%)"
 
 
-def _make_calibration_bins(settled):
+def _wilson_interval(wins: int, count: int, z: float = 1.96) -> tuple[float | None, float | None]:
+    if count <= 0:
+        return None, None
+    observed = wins / count
+    denom = 1 + z**2 / count
+    centre = observed + z**2 / (2 * count)
+    margin = z * math.sqrt((observed * (1 - observed) + z**2 / (4 * count)) / count)
+    return max(0.0, (centre - margin) / denom), min(1.0, (centre + margin) / denom)
+
+
+def _calibration_verdict(count: int, error: float | None, p_value: float | None) -> str:
+    if count < 20:
+        return "Low sample"
+    if error is None or p_value is None:
+        return "No signal"
+    if p_value < 0.01:
+        return "Strong warning"
+    if p_value < 0.05:
+        return "Suspicious"
+    if abs(error) >= 0.08:
+        return "Watch"
+    return "Looks OK"
+
+
+def _calibration_bin_record(label: str, lo: float | None, hi: float | None, bucket: pd.DataFrame) -> dict:
+    count = len(bucket)
+    wins = int(bucket["won"].sum()) if count else 0
+    avg_prob = float(bucket["assigned_prob"].mean()) if count else None
+    observed = wins / count if count else None
+    expected_wins = avg_prob * count if count and avg_prob is not None else None
+    delta_wins = wins - expected_wins if expected_wins is not None else None
+    error = observed - avg_prob if count and avg_prob is not None else None
+    ci_low, ci_high = _wilson_interval(wins, count)
+    p_value = None
+    if count and avg_prob is not None and 0 < avg_prob < 1:
+        p_value = float(binomtest(wins, count, avg_prob).pvalue)
+    return {
+        "bin": label,
+        "lo": lo,
+        "hi": hi,
+        "count": count,
+        "wins": wins,
+        "losses": count - wins,
+        "expected_wins": expected_wins,
+        "delta_wins": delta_wins,
+        "avg_prob": avg_prob,
+        "observed": observed,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "error": error,
+        "abs_error": abs(error) if error is not None else None,
+        "p_value": p_value,
+        "verdict": _calibration_verdict(count, error, p_value),
+    }
+
+
+def _summarize_calibration_bins(bins: list[dict], total: int) -> dict:
+    expected_total = sum((b["expected_wins"] or 0.0) for b in bins)
+    observed_total = sum(b["wins"] for b in bins)
+    weighted_abs_error = sum((b["abs_error"] or 0.0) * b["count"] for b in bins)
+    weighted_error = sum((b["error"] or 0.0) * b["count"] for b in bins)
+    populated_errors = [b["abs_error"] for b in bins if b["abs_error"] is not None]
+    return {
+        "evaluations": total,
+        "expected_wins": expected_total,
+        "observed_wins": observed_total,
+        "ece": weighted_abs_error / total if total else None,
+        "mce": max(populated_errors) if populated_errors else None,
+        "signed_bias": weighted_error / total if total else None,
+    }
+
+
+def _make_fixed_calibration_bins(calibration_df: pd.DataFrame, start: int, stop: int, width: int) -> tuple[list[dict], dict]:
+    bins = []
+    if calibration_df.empty:
+        return bins, _summarize_calibration_bins(bins, 0)
+
+    for lo in range(start, stop, width):
+        hi = lo + width
+        if hi == stop:
+            bucket = calibration_df[
+                (calibration_df["assigned_prob"] >= lo / 100)
+                & (calibration_df["assigned_prob"] <= stop / 100)
+            ]
+        else:
+            bucket = calibration_df[
+                (calibration_df["assigned_prob"] >= lo / 100)
+                & (calibration_df["assigned_prob"] < hi / 100)
+            ]
+        bins.append(_calibration_bin_record(f"{lo}-{hi}%", lo, hi, bucket))
+    return bins, _summarize_calibration_bins(bins, len(calibration_df))
+
+
+def _make_adaptive_calibration_bins(calibration_df: pd.DataFrame, bucket_count: int = 10) -> tuple[list[dict], dict]:
+    if calibration_df.empty:
+        return [], _summarize_calibration_bins([], 0)
+
+    sorted_df = calibration_df.sort_values("assigned_prob").reset_index(drop=True)
+    actual_bucket_count = min(bucket_count, len(sorted_df))
+    chunks = []
+    for bucket_index in range(actual_bucket_count):
+        start = math.floor(bucket_index * len(sorted_df) / actual_bucket_count)
+        end = math.floor((bucket_index + 1) * len(sorted_df) / actual_bucket_count)
+        chunk = sorted_df.iloc[start:end]
+        if len(chunk):
+            chunks.append(chunk)
+    bins = []
+    for chunk in chunks:
+        lo = float(chunk["assigned_prob"].min())
+        hi = float(chunk["assigned_prob"].max())
+        label = f"{lo * 100:.1f}-{hi * 100:.1f}%"
+        bins.append(_calibration_bin_record(label, lo * 100, hi * 100, chunk))
+    return bins, _summarize_calibration_bins(bins, len(calibration_df))
+
+
+def _make_team_calibration_frame(settled):
     if settled.empty:
-        return [], {"evaluations": 0, "expected_wins": 0.0, "observed_wins": 0.0, "ece": None}
+        return pd.DataFrame(columns=["team", "opponent", "assigned_prob", "won", "odds", "match_url"])
 
     team_rows = []
     for _, row in settled.iterrows():
@@ -1032,48 +1147,32 @@ def _make_calibration_bins(settled):
             }
         )
 
-    team_df = pd.DataFrame(team_rows)
-    bins = []
-    expected_total = 0.0
-    observed_total = 0.0
-    weighted_abs_error = 0.0
+    return pd.DataFrame(team_rows)
 
-    for lo in range(0, 100, 5):
-        hi = lo + 5
-        if hi == 100:
-            bucket = team_df[(team_df["assigned_prob"] >= lo / 100) & (team_df["assigned_prob"] <= 1)]
-        else:
-            bucket = team_df[(team_df["assigned_prob"] >= lo / 100) & (team_df["assigned_prob"] < hi / 100)]
-        count = len(bucket)
-        wins = int(bucket["won"].sum()) if count else 0
-        avg_prob = bucket["assigned_prob"].mean() if count else None
-        observed = wins / count if count else None
-        error = observed - avg_prob if count else None
-        if count:
-            expected_total += avg_prob * count
-            observed_total += observed * count
-            weighted_abs_error += abs(error) * count
-        bins.append(
+
+def _make_favourite_calibration_frame(settled):
+    if settled.empty:
+        return pd.DataFrame(columns=["team", "opponent", "assigned_prob", "won", "odds", "match_url"])
+
+    favourite_rows = []
+    for _, row in settled.iterrows():
+        team_a_favoured = row["model_prob_a"] >= 0.5
+        favourite_rows.append(
             {
-                "bin": f"{lo}-{hi}%",
-                "lo": lo,
-                "hi": hi,
-                "count": count,
-                "wins": wins,
-                "losses": count - wins,
-                "avg_prob": avg_prob,
-                "observed": observed,
-                "error": error,
+                "team": row["team_a"] if team_a_favoured else row["team_b"],
+                "opponent": row["team_b"] if team_a_favoured else row["team_a"],
+                "assigned_prob": row["model_prob_a"] if team_a_favoured else 1 - row["model_prob_a"],
+                "won": row["result"] == ("team_a" if team_a_favoured else "team_b"),
+                "odds": row["odds_a"] if team_a_favoured else row["odds_b"],
+                "match_url": row["match_url"],
             }
         )
+    return pd.DataFrame(favourite_rows)
 
-    total = len(team_df)
-    summary = {
-        "evaluations": total,
-        "expected_wins": expected_total,
-        "observed_wins": observed_total,
-        "ece": weighted_abs_error / total if total else None,
-    }
+
+def _make_calibration_bins(settled):
+    team_df = _make_team_calibration_frame(settled)
+    bins, summary = _make_fixed_calibration_bins(team_df, 0, 100, 5)
     return bins, summary
 
 
@@ -1189,6 +1288,24 @@ def build_report_context():
     settled = df[df["result"].isin(["team_a", "team_b"])].copy()
     pending = df[df["result"] == "Pending"].copy()
     other_results = df[~df["result"].isin(["team_a", "team_b", "Pending"])].copy()
+    excluded_reasons = (
+        df_all[df_all["valid_for_eval"] != 1]["eval_exclusion_reason"]
+        .fillna("unspecified")
+        .replace("", "unspecified")
+        .value_counts()
+        .rename_axis("reason")
+        .reset_index(name="count")
+        .to_dict("records")
+    )
+    other_result_counts = (
+        other_results["result"]
+        .fillna("unknown")
+        .replace("", "unknown")
+        .value_counts()
+        .rename_axis("result")
+        .reset_index(name="count")
+        .to_dict("records")
+    )
 
     model_correct = 0
     bookie_correct = 0
@@ -1212,7 +1329,16 @@ def build_report_context():
         clipped = settled["model_prob_a"].clip(0.0001, 0.9999)
         log_loss = -(settled["actual_a"] * clipped.apply(math.log) + (1 - settled["actual_a"]) * (1 - clipped).apply(math.log)).mean()
 
-    calibration_bins, calibration_summary = _make_calibration_bins(settled)
+    team_calibration_df = _make_team_calibration_frame(settled)
+    favourite_calibration_df = _make_favourite_calibration_frame(settled)
+    calibration_bins, calibration_summary = _make_fixed_calibration_bins(team_calibration_df, 0, 100, 5)
+    adaptive_calibration_bins, adaptive_calibration_summary = _make_adaptive_calibration_bins(team_calibration_df)
+    favourite_calibration_bins, favourite_calibration_summary = _make_fixed_calibration_bins(
+        favourite_calibration_df, 50, 100, 5
+    )
+    favourite_adaptive_bins, favourite_adaptive_summary = _make_adaptive_calibration_bins(
+        favourite_calibration_df
+    )
     edge_stats = _make_edge_stats(settled)
 
     match_rows = []
@@ -1232,6 +1358,8 @@ def build_report_context():
             "pending": len(pending),
             "other": len(other_results),
             "excluded": invalid_count,
+            "excluded_reasons": excluded_reasons,
+            "other_results": other_result_counts,
             "model_correct": model_correct,
             "bookie_correct": bookie_correct,
             "model_accuracy": overall_acc,
@@ -1241,6 +1369,12 @@ def build_report_context():
         },
         "calibration_bins": calibration_bins,
         "calibration_summary": calibration_summary,
+        "adaptive_calibration_bins": adaptive_calibration_bins,
+        "adaptive_calibration_summary": adaptive_calibration_summary,
+        "favourite_calibration_bins": favourite_calibration_bins,
+        "favourite_calibration_summary": favourite_calibration_summary,
+        "favourite_adaptive_bins": favourite_adaptive_bins,
+        "favourite_adaptive_summary": favourite_adaptive_summary,
         "edge_stats": edge_stats,
         "matches": match_rows,
         "versions": versions,
@@ -1256,14 +1390,47 @@ def _load_shadow_report_template():
 def render_shadow_report_html(context):
     data_json = json.dumps(context, ensure_ascii=False).replace("</", "<\\/")
     summary = context["summary"]
-    cal = context["calibration_summary"]
+    fav_cal = context["favourite_calibration_summary"]
+    fav_adaptive_cal = context["favourite_adaptive_summary"]
     edge = context["edge_stats"]
 
-    def card(label, value, note=""):
-        note_html = f"<span>{escape(note)}</span>" if note else ""
+    def breakdown(items, label_key):
+        if not items:
+            return "none"
+        parts = [f"{item[label_key]} {item['count']}" for item in items[:3]]
+        remaining = sum(item["count"] for item in items[3:])
+        if remaining:
+            parts.append(f"other {remaining}")
+        return "; ".join(parts)
+
+    card_titles = {
+        "Brier score": "Probability error; lower is better.",
+        "Log loss": "Punishes confident misses; lower is better.",
+        "Favourite calibration error": (
+            "Average absolute gap between favourite win rate and model probability across 5% bins."
+        ),
+        "Favourite max miss": "Largest single 5% favourite-bin gap.",
+        "Favourite bias": (
+            "Signed gap: actual favourite wins minus expected; negative means overconfident."
+        ),
+        "Adaptive favourite error": (
+            "Same average absolute gap, but with equal-count favourite bins."
+        ),
+        "Adaptive max miss": "Largest equal-count favourite-bin gap.",
+    }
+
+    def help_icon(title_text):
+        if not title_text:
+            return ""
+        escaped = escape(title_text)
+        return f'<button class="info" aria-label="{escaped}" title="{escaped}">?</button>'
+
+    def card(label, value, note="", title=""):
+        note_html = f"\n            <span>{escape(note)}</span>" if note else '\n            <span class="metric-note-placeholder" aria-hidden="true">&nbsp;</span>'
+        title_text = title or card_titles.get(label, "")
         return f"""
         <div class="metric">
-            <span>{escape(label)}</span>
+            <span class="metric-label">{escape(label)}{help_icon(title_text)}</span>
             <strong>{escape(value)}</strong>
             {note_html}
         </div>
@@ -1271,13 +1438,27 @@ def render_shadow_report_html(context):
 
     cards = "\n".join(
         [
-            card("Valid matches", str(summary["valid_matches"]), f"{summary['total_matches']} total, {summary['excluded']} excluded"),
-            card("Settled", str(summary["settled"]), f"{summary['pending']} pending, {summary['other']} other"),
+            card(
+                "Eval-eligible matches",
+                str(summary["valid_matches"]),
+                f"Excluded {summary['excluded']} matches due to low sample size or roster anomalies",
+                f"{summary['total_matches']} total matches. Excluded breakdown: {breakdown(summary['excluded_reasons'], 'reason')}",
+            ),
+            card(
+                "Settled eval matches",
+                str(summary["settled"]),
+                f"{summary['pending']} pending; {summary['other']} forfeits",
+                f"{summary['settled']} settled of {summary['valid_matches']} evaluation-eligible matches. Other results: {breakdown(summary['other_results'], 'result')}",
+            ),
             card("Model favourite", _count_pct(summary["model_correct"], summary["settled"]), "latest snapshot per match"),
             card("Bookmaker favourite", _count_pct(summary["bookie_correct"], summary["settled"]), "latest available odds"),
-            card("Brier score", _decimal(summary["brier"], 4), "probability error; lower is better"),
-            card("Log loss", _decimal(summary["log_loss"], 4), "punishes confident misses; lower is better"),
-            card("Calibration error", _pct(cal["ece"], 2), f"expected calibration error across {cal['evaluations']} team evaluations"),
+            card("Brier score", _decimal(summary["brier"], 4)),
+            card("Log loss", _decimal(summary["log_loss"], 4)),
+            card("Favourite calibration error", _pct(fav_cal["ece"], 2)),
+            card("Favourite max miss", _pct(fav_cal["mce"], 2)),
+            card("Favourite bias", _pct(fav_cal["signed_bias"], 2)),
+            card("Adaptive favourite error", _pct(fav_adaptive_cal["ece"], 2)),
+            card("Adaptive max miss", _pct(fav_adaptive_cal["mce"], 2)),
             card("Actionable edge bets", str(edge["actionable_count"]), f"{edge['skipped_count']} skipped"),
         ]
     )

@@ -34,12 +34,21 @@ h1 { margin: 0; font-size: clamp(30px, 4vw, 52px); letter-spacing: 0; line-heigh
 .metric, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 .metric { padding: 14px; min-height: 96px; display: flex; flex-direction: column; justify-content: space-between; }
 .metric span, .note { color: var(--muted); font-size: 12px; }
+.metric-label { display: flex; align-items: center; gap: 6px; }
+.metric-note-placeholder { visibility: hidden; }
 .metric strong { font-size: 24px; margin: 8px 0 4px; }
+.info {
+    display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 50%;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+    font-size: 11px; font-weight: 800; cursor: help; padding: 0; line-height: 1;
+}
+.info:hover, .info:focus { color: var(--text); border-color: var(--accent); outline: none; }
 .section { margin-top: 18px; }
 .section-title { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin: 0 0 8px; }
 h2 { margin: 0; font-size: 18px; }
-.panel { padding: 14px; }
+.panel { padding: 14px; overflow: auto; }
 .split { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(360px, .75fr); gap: 12px; }
+.calibration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 8px 7px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
 th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; position: sticky; top: 0; background: var(--panel); z-index: 1; cursor: pointer; }
@@ -63,12 +72,16 @@ input, select {
 .pill { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; }
 .pill.win { border-color: rgba(101, 209, 122, .45); color: var(--good); }
 .pill.loss { border-color: rgba(255, 107, 107, .45); color: var(--bad); }
+.verdict { font-weight: 800; }
+.verdict.ok { color: var(--good); }
+.verdict.watch, .verdict.low { color: var(--accent-2); }
+.verdict.bad { color: var(--bad); }
 .footer { color: var(--muted); margin-top: 18px; font-size: 12px; }
 @media (max-width: 980px) {
     .shell { padding: 18px; }
     header, .section-title { align-items: flex-start; flex-direction: column; }
     .meta { text-align: left; }
-    .grid, .split, .controls { grid-template-columns: 1fr; }
+    .grid, .split, .calibration-grid, .controls { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -87,13 +100,35 @@ input, select {
 
     <section class="grid">__METRIC_CARDS__</section>
 
-    <section class="section split">
+    <section class="section panel">
+        <div class="section-title">
+            <h2>Team Calibration By Assigned Win Likelihood</h2>
+            <span class="note">Mirrored view: each match contributes both teams. Good for seeing both tails; signed bias cancels by construction.</span>
+        </div>
+        <table id="calibration-table"></table>
+    </section>
+
+    <section class="section calibration-grid">
         <div class="panel">
             <div class="section-title">
-                <h2>Model Calibration By Assigned Win Likelihood</h2>
-                <span class="note">Each settled match contributes two team evaluations. Observed is the actual win rate in that bin.</span>
+                <h2>Favourite Calibration</h2>
+                <span class="note">One row per settled match, using only the model's favoured side.</span>
             </div>
-            <table id="calibration-table"></table>
+            <table id="favourite-calibration-table"></table>
+        </div>
+        <div class="panel">
+            <div class="section-title">
+                <h2>Adaptive Calibration</h2>
+                <span class="note">Mirrored equal-count bins reduce the tiny-sample problem in the extremes.</span>
+            </div>
+            <table id="adaptive-calibration-table"></table>
+        </div>
+    </section>
+
+    <section class="section split">
+        <div class="panel">
+            <div class="section-title"><h2>Favourite Adaptive Calibration</h2><span class="note">Equal-count bins for the model's favoured side only.</span></div>
+            <table id="favourite-adaptive-table"></table>
         </div>
         <div class="panel">
             <div class="section-title"><h2>Edge Strategy</h2><span class="note">Current stats preserved from the CLI report.</span></div>
@@ -153,6 +188,7 @@ const fmtPct = (v, d = 1) => v === null || v === undefined ? "n/a" : `${(v * 100
 const fmtSignedPct = (v, d = 1) => v === null || v === undefined ? "n/a" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(d)}%`;
 const fmtOdds = v => v === null || v === undefined ? "n/a" : Number(v).toFixed(2);
 const fmtNum = (v, d = 2) => v === null || v === undefined ? "n/a" : Number(v).toFixed(d);
+const fmtWins = v => v === null || v === undefined ? "n/a" : Number(v).toFixed(1);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 const noOdds = `<span class="soft">no odds</span>`;
 const noEdge = `<span class="soft">no edge</span>`;
@@ -176,29 +212,80 @@ function gapShade(value) {
     const lightness = 66 - score * 8;
     return `color: hsl(${hue}, 70%, ${lightness}%); font-weight: 800;`;
 }
+function verdictClass(verdict) {
+    if (verdict === "Looks OK") return "ok";
+    if (verdict === "Strong warning" || verdict === "Suspicious") return "bad";
+    if (verdict === "Watch") return "watch";
+    return "low";
+}
 
 function renderTable(id, headers, rows) {
     const table = document.getElementById(id);
-    table.innerHTML = `<thead><tr>${headers.map(h => `<th class="${h.cls || ""}">${esc(h.label)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody>`;
+    table.innerHTML = `<thead><tr>${headers.map(h => `<th class="${h.cls || ""}" ${h.title ? `title="${esc(h.title)}"` : ""}>${esc(h.label)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody>`;
 }
 
-function renderCalibration() {
-    const rows = report.calibration_bins.map(b => `
+function calibrationRows(bins) {
+    return bins.map(b => `
         <tr>
             <td><span class="pill">${b.bin}</span></td>
             <td class="num">${b.count}</td>
             <td class="num">${b.wins}/${b.count}</td>
+            <td class="num">${fmtWins(b.expected_wins)}</td>
+            <td class="num" style="${gapShade((b.delta_wins ?? 0) / Math.max(1, b.count))}">${fmtWins(b.delta_wins)}</td>
             <td class="num">${fmtPct(b.avg_prob)}</td>
             <td class="num">${fmtPct(b.observed)}</td>
+            <td class="num">${fmtPct(b.ci_low)}-${fmtPct(b.ci_high)}</td>
             <td class="num" style="${gapShade(b.error)}">${fmtSignedPct(b.error)}</td>
-            <td><div class="bar"><i style="width:${Math.max(0, Math.min(100, (b.observed ?? 0) * 100))}%"></i></div></td>
+            <td class="num">${b.p_value === null || b.p_value === undefined ? "-" : fmtNum(b.p_value, 3)}</td>
+            <td><span class="verdict ${verdictClass(b.verdict)}">${esc(b.verdict)}</span></td>
         </tr>
     `);
-    renderTable("calibration-table", [
-        {label:"Bin"}, {label:"Eval", cls:"num"}, {label:"Wins", cls:"num"},
-        {label:"Avg model", cls:"num"}, {label:"Actual win", cls:"num"},
-        {label:"Gap", cls:"num"}, {label:"Actual rate bar"}
-    ], rows);
+}
+function compactCalibrationRows(bins) {
+    return bins.map(b => `
+        <tr>
+            <td><span class="pill">${b.bin}</span></td>
+            <td class="num">${b.count}</td>
+            <td class="num">${fmtWins(b.expected_wins)}</td>
+            <td class="num">${b.wins}/${b.count}<div class="muted">${fmtPct(b.observed)}</div></td>
+            <td class="num" style="${gapShade(b.error)}">${fmtSignedPct(b.error)}</td>
+            <td class="num">${b.p_value === null || b.p_value === undefined ? "-" : fmtNum(b.p_value, 3)}</td>
+            <td><span class="verdict ${verdictClass(b.verdict)}">${esc(b.verdict)}</span></td>
+        </tr>
+    `);
+}
+function renderCalibrationTable(id, bins, compact = false) {
+    if (compact) {
+        renderTable(id, [
+            {label:"Bin", title:"The model-probability range for this row."},
+            {label:"N", cls:"num", title:"Number of predictions in this bin."},
+            {label:"Exp W", cls:"num", title:"Expected wins if the model probabilities in this bin are calibrated."},
+            {label:"Actual", cls:"num", title:"Actual wins and observed win rate."},
+            {label:"Gap", cls:"num", title:"Observed win rate minus average model probability. Positive means underconfident; negative means overconfident."},
+            {label:"p", cls:"num", title:"Two-sided exact binomial p-value under H0: this bin's true win probability equals its average model probability."},
+            {label:"Verdict", title:"Heuristic label using sample size, binomial p-value, and absolute gap."}
+        ], compactCalibrationRows(bins));
+        return;
+    }
+    renderTable(id, [
+        {label:"Bin", title:"The model-probability range for this row."},
+        {label:"Eval", cls:"num", title:"Number of predictions in this bin."},
+        {label:"Wins", cls:"num", title:"Actual wins in this bin."},
+        {label:"Exp W", cls:"num", title:"Expected wins if the model probabilities in this bin are calibrated. This is count multiplied by average model probability."},
+        {label:"Delta W", cls:"num", title:"Actual wins minus expected wins. Positive means the bin won more often than predicted; negative means less often."},
+        {label:"Avg model", cls:"num", title:"Average model probability for predictions in this bin."},
+        {label:"Actual win", cls:"num", title:"Observed win rate in this bin."},
+        {label:"95% CI", cls:"num", title:"Wilson 95% confidence interval around the observed win rate. Wide intervals mean the bin is sample-starved."},
+        {label:"Gap", cls:"num", title:"Observed win rate minus average model probability. Positive means underconfident; negative means overconfident."},
+        {label:"p", cls:"num", title:"Two-sided exact binomial p-value under H0: this bin's true win probability equals its average model probability. Small values mean this win/loss count would be unusual if the bin were perfectly calibrated."},
+        {label:"Verdict", title:"Heuristic label using sample size, binomial p-value, and absolute gap. Low sample bins are deliberately not treated as strong evidence."}
+    ], calibrationRows(bins));
+}
+function renderCalibration() {
+    renderCalibrationTable("calibration-table", report.calibration_bins);
+    renderCalibrationTable("favourite-calibration-table", report.favourite_calibration_bins, true);
+    renderCalibrationTable("adaptive-calibration-table", report.adaptive_calibration_bins, true);
+    renderCalibrationTable("favourite-adaptive-table", report.favourite_adaptive_bins, true);
 }
 
 function renderEdge() {
