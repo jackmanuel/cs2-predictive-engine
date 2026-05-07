@@ -79,6 +79,34 @@ are comparable. The outer evaluation window is never used for early stopping.
 Within each fold's training period, the runner reserves the most recent
 `--inner-val-ratio` portion as an inner validation set for early stopping.
 
+## Post-Hoc Calibration
+
+Each fold also runs a simple post-hoc shrinkage calibration diagnostic. After
+the neural net is trained, the runner saves predictions on the inner validation
+split, chooses the shrink factor that minimizes inner validation log loss, and
+then applies that factor to the outer evaluation predictions:
+
+```text
+p_calibrated = 0.5 + shrink * (p_raw - 0.5)
+```
+
+The default candidates are:
+
+```text
+0.70 0.80 0.90 1.00
+```
+
+Override them with:
+
+```bash
+python -m evaluation.feature_experiments --calibration-shrink-values 0.70 0.80 0.90 1.00 1.10
+```
+
+This is deliberately fitted only on inner validation data. The outer
+walk-forward fold is still untouched until final evaluation, so calibrated
+Brier/log loss/ECE are comparable without future leakage. ROC AUC is reported
+separately because calibration should not usually improve ranking quality.
+
 ## Metrics
 
 - **Brier score:** mean squared error of predicted probabilities. Lower is
@@ -89,6 +117,8 @@ Within each fold's training period, the runner reserves the most recent
   but this ignores confidence.
 - **ROC AUC:** ranking quality. Higher is better. A model can have good AUC but
   poor probability calibration.
+- **ECE:** expected calibration error across probability bins. Lower is better;
+  it is a compact view of average calibration gap.
 
 The summary CSV also includes deltas versus `baseline_all`. Negative Brier/log
 loss deltas mean a variant improved on the current feature set.

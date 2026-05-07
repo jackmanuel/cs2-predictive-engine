@@ -135,6 +135,16 @@ def parse_args() -> argparse.Namespace:
         help="Temporal validation fraction carved from each fold's training data.",
     )
     parser.add_argument(
+        "--calibration-shrink-values",
+        nargs="+",
+        type=float,
+        default=[0.70, 0.80, 0.90, 1.00],
+        help=(
+            "Shrinkage calibrator candidates fit on inner validation predictions. "
+            "Use 1.00 to leave probabilities unchanged. Default: 0.70 0.80 0.90 1.00."
+        ),
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=BATCH_SIZE,
@@ -590,6 +600,34 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
+def shrink_probabilities(preds: np.ndarray, shrink: float) -> np.ndarray:
+    calibrated = 0.5 + shrink * (preds - 0.5)
+    return np.clip(calibrated, 1e-7, 1 - 1e-7)
+
+
+def choose_shrink_calibrator(
+    y_true: np.ndarray,
+    preds: np.ndarray,
+    shrink_values: Iterable[float],
+) -> tuple[float, dict]:
+    candidates = []
+    for shrink in shrink_values:
+        if shrink < 0:
+            raise ValueError("--calibration-shrink-values must be non-negative.")
+        calibrated_preds = shrink_probabilities(preds, shrink)
+        metrics = compute_metrics(y_true, calibrated_preds)
+        candidates.append((shrink, metrics))
+
+    if not candidates:
+        raise ValueError("--calibration-shrink-values must include at least one value.")
+
+    best_shrink, best_metrics = min(
+        candidates,
+        key=lambda item: (item[1]["log_loss"], item[1]["brier_score"], abs(item[0] - 1.0)),
+    )
+    return best_shrink, best_metrics
+
+
 def train_and_score(
     df: pd.DataFrame,
     variant: FeatureVariant,
@@ -666,11 +704,24 @@ def train_and_score(
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
+        x_val, y_val = val_dataset.tensors
+        val_preds = model(x_val).numpy().reshape(-1)
+        y_val_true = y_val.numpy().reshape(-1)
+
         x_eval, y_eval = eval_dataset.tensors
         preds = model(x_eval).numpy().reshape(-1)
         y_true = y_eval.numpy().reshape(-1)
 
+    inner_val_raw_metrics = compute_metrics(y_val_true, val_preds)
+    calibration_shrink, inner_val_calibrated_metrics = choose_shrink_calibrator(
+        y_val_true,
+        val_preds,
+        args.calibration_shrink_values,
+    )
+    calibrated_preds = shrink_probabilities(preds, calibration_shrink)
+
     metrics = compute_metrics(y_true, preds)
+    calibrated_metrics = compute_metrics(y_true, calibrated_preds)
     return {
         "variant": variant.name,
         "description": variant.description,
@@ -690,10 +741,27 @@ def train_and_score(
         "inner_val_rows": len(inner_val_df),
         "epochs_run": epochs_run,
         "best_inner_val_loss": best_val_loss,
+        "calibration_method": "shrink_to_0.5",
+        "calibration_shrink": calibration_shrink,
+        "inner_val_brier_score": inner_val_raw_metrics["brier_score"],
+        "inner_val_log_loss": inner_val_raw_metrics["log_loss"],
+        "inner_val_ece": inner_val_raw_metrics["ece"],
+        "inner_val_calibrated_brier_score": inner_val_calibrated_metrics["brier_score"],
+        "inner_val_calibrated_log_loss": inner_val_calibrated_metrics["log_loss"],
+        "inner_val_calibrated_ece": inner_val_calibrated_metrics["ece"],
         "brier_score": metrics["brier_score"],
         "log_loss": metrics["log_loss"],
+        "ece": metrics["ece"],
         "accuracy": metrics["accuracy"],
         "roc_auc": metrics["roc_auc"],
+        "calibrated_brier_score": calibrated_metrics["brier_score"],
+        "calibrated_log_loss": calibrated_metrics["log_loss"],
+        "calibrated_ece": calibrated_metrics["ece"],
+        "calibrated_accuracy": calibrated_metrics["accuracy"],
+        "calibrated_roc_auc": calibrated_metrics["roc_auc"],
+        "delta_calibrated_brier_score": calibrated_metrics["brier_score"] - metrics["brier_score"],
+        "delta_calibrated_log_loss": calibrated_metrics["log_loss"] - metrics["log_loss"],
+        "delta_calibrated_ece": calibrated_metrics["ece"] - metrics["ece"],
     }
 
 
@@ -706,8 +774,20 @@ def summarize_results(results_df: pd.DataFrame) -> pd.DataFrame:
         std_brier=("brier_score", "std"),
         mean_log_loss=("log_loss", "mean"),
         std_log_loss=("log_loss", "std"),
+        mean_ece=("ece", "mean"),
+        mean_calibrated_brier=("calibrated_brier_score", "mean"),
+        std_calibrated_brier=("calibrated_brier_score", "std"),
+        mean_calibrated_log_loss=("calibrated_log_loss", "mean"),
+        std_calibrated_log_loss=("calibrated_log_loss", "std"),
+        mean_calibrated_ece=("calibrated_ece", "mean"),
+        mean_delta_calibrated_brier=("delta_calibrated_brier_score", "mean"),
+        mean_delta_calibrated_log_loss=("delta_calibrated_log_loss", "mean"),
+        mean_delta_calibrated_ece=("delta_calibrated_ece", "mean"),
+        median_calibration_shrink=("calibration_shrink", "median"),
         mean_accuracy=("accuracy", "mean"),
         mean_roc_auc=("roc_auc", "mean"),
+        mean_calibrated_accuracy=("calibrated_accuracy", "mean"),
+        mean_calibrated_roc_auc=("calibrated_roc_auc", "mean"),
         mean_epochs=("epochs_run", "mean"),
         description=("description", "first"),
     ).reset_index()
@@ -812,7 +892,14 @@ def print_summary(summary_df: pd.DataFrame, output_path: Path, summary_path: Pat
         "runs",
         "num_features",
         "mean_brier",
+        "mean_calibrated_brier",
+        "mean_delta_calibrated_brier",
         "mean_log_loss",
+        "mean_calibrated_log_loss",
+        "mean_delta_calibrated_log_loss",
+        "mean_ece",
+        "mean_calibrated_ece",
+        "median_calibration_shrink",
         "mean_accuracy",
         "mean_roc_auc",
         "mean_delta_brier_vs_baseline",
@@ -821,7 +908,14 @@ def print_summary(summary_df: pd.DataFrame, output_path: Path, summary_path: Pat
     display = summary_df[display_columns].copy()
     for column in [
         "mean_brier",
+        "mean_calibrated_brier",
+        "mean_delta_calibrated_brier",
         "mean_log_loss",
+        "mean_calibrated_log_loss",
+        "mean_delta_calibrated_log_loss",
+        "mean_ece",
+        "mean_calibrated_ece",
+        "median_calibration_shrink",
         "mean_accuracy",
         "mean_roc_auc",
         "mean_delta_brier_vs_baseline",
