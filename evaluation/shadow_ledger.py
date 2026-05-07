@@ -24,6 +24,7 @@ import argparse
 import logging
 import math
 import re
+import webbrowser
 import pandas as pd
 from scipy.stats import binomtest, ttest_1samp
 from datetime import datetime
@@ -1170,6 +1171,52 @@ def _make_favourite_calibration_frame(settled):
     return pd.DataFrame(favourite_rows)
 
 
+def _make_biggest_upsets(settled, limit: int = 5):
+    if settled.empty:
+        return []
+
+    upset_rows = []
+    for _, row in settled.iterrows():
+        model_prob_a = row.get("model_prob_a")
+        if model_prob_a is None or pd.isna(model_prob_a):
+            continue
+
+        team_a_favoured = model_prob_a >= 0.5
+        favourite_result = "team_a" if team_a_favoured else "team_b"
+        if row.get("result") == favourite_result:
+            continue
+
+        favourite_prob = model_prob_a if team_a_favoured else 1 - model_prob_a
+        upset_rows.append(
+            {
+                "match_url": row["match_url"],
+                "match_date": row.get("match_date"),
+                "match_time": row.get("match_time"),
+                "format": row.get("format"),
+                "version_id": row.get("version_id"),
+                "favourite": row["team_a"] if team_a_favoured else row["team_b"],
+                "underdog": row["team_b"] if team_a_favoured else row["team_a"],
+                "favourite_prob": favourite_prob,
+                "underdog_prob": 1 - favourite_prob,
+                "favourite_odds": row.get("odds_a") if team_a_favoured else row.get("odds_b"),
+                "underdog_odds": row.get("odds_b") if team_a_favoured else row.get("odds_a"),
+            }
+        )
+
+    upset_rows.sort(
+        key=lambda r: (
+            r["favourite_prob"] if r["favourite_prob"] is not None else -1,
+            r.get("match_date") or "",
+            r.get("match_time") or "",
+        ),
+        reverse=True,
+    )
+    return [
+        {key: _clean_json_value(value) for key, value in row.items()}
+        for row in upset_rows[:limit]
+    ]
+
+
 def _make_calibration_bins(settled):
     team_df = _make_team_calibration_frame(settled)
     bins, summary = _make_fixed_calibration_bins(team_df, 0, 100, 5)
@@ -1340,6 +1387,7 @@ def build_report_context():
         favourite_calibration_df
     )
     edge_stats = _make_edge_stats(settled)
+    biggest_upsets = _make_biggest_upsets(settled)
 
     match_rows = []
     for row in _records_for_json(df_all):
@@ -1376,6 +1424,7 @@ def build_report_context():
         "favourite_adaptive_bins": favourite_adaptive_bins,
         "favourite_adaptive_summary": favourite_adaptive_summary,
         "edge_stats": edge_stats,
+        "biggest_upsets": biggest_upsets,
         "matches": match_rows,
         "versions": versions,
     }
@@ -1474,7 +1523,7 @@ def render_shadow_report_html(context):
         html = html.replace(placeholder, value)
     return html
 
-def show_report(output_path: str = None):
+def show_report(output_path: str = None, open_browser: bool = True):
     context = build_report_context()
     if context is None:
         print("Shadow ledger is empty.")
@@ -1485,6 +1534,11 @@ def show_report(output_path: str = None):
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_shadow_report_html(context), encoding="utf-8")
     print(f"Shadow ledger HTML report saved to {output}")
+    if open_browser:
+        try:
+            webbrowser.open(output.resolve().as_uri())
+        except Exception as e:
+            logger.warning(f"Failed to open report in browser: {e}")
 
 
 def show_text_report():
@@ -1784,6 +1838,7 @@ def main():
     report_parser = subparsers.add_parser("report", help="Generate interactive HTML calibration analysis")
     report_parser.add_argument("--output", help="HTML output path")
     report_parser.add_argument("--text", action="store_true", help="Print the legacy command-line report")
+    report_parser.add_argument("--no-open", action="store_true", help="Do not open the HTML report in the default browser")
     subparsers.add_parser("list", help="Show all shadow bets (latest snapshot per match)")
     subparsers.add_parser("versions", help="Show model version history")
 
@@ -1800,7 +1855,7 @@ def main():
         if args.text:
             show_text_report()
         else:
-            show_report(args.output)
+            show_report(args.output, open_browser=not args.no_open)
     elif args.command == "list":
         show_list()
     elif args.command == "versions":

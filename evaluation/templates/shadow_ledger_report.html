@@ -53,6 +53,7 @@ table { width: 100%; border-collapse: collapse; }
 th, td { padding: 8px 7px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
 th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; position: sticky; top: 0; background: var(--panel); z-index: 1; cursor: pointer; }
 tr:hover td { background: rgba(255,255,255,.025); }
+tr.clickable { cursor: pointer; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .good { color: var(--good); }
 .bad { color: var(--bad); }
@@ -178,6 +179,14 @@ input, select {
     <section class="section panel">
         <div class="section-title"><h2>Model Versions</h2><span class="note">Greener Brier/log loss cells are better; redder cells are worse.</span></div>
         <table id="versions-table"></table>
+    </section>
+
+    <section class="section panel">
+        <div class="section-title">
+            <h2>Biggest Upsets</h2>
+            <span class="note">Largest model win probabilities where the favourite lost. Click a row to open HLTV.</span>
+        </div>
+        <table id="upsets-table"></table>
     </section>
 
     <div class="footer">Median odds are represented by the latest snapshot currently stored for each match. Rows with no bookmaker prices are shown as no odds.</div>
@@ -400,6 +409,30 @@ function renderVersions() {
     ], rows);
 }
 
+function renderUpsets() {
+    const rows = (report.biggest_upsets || []).map(u => `
+        <tr class="clickable upset-row" data-url="${esc(u.match_url)}">
+            <td>${esc([u.match_date, u.match_time].filter(Boolean).join(" "))}</td>
+            <td class="teams">
+                <a href="${esc(u.match_url)}" style="color:inherit" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">${esc(u.favourite)} vs ${esc(u.underdog)}</a>
+                <div class="muted">${esc(u.format || "")} - ${esc(u.version_id || "no version")}</div>
+            </td>
+            <td>${esc(u.underdog)} beat ${esc(u.favourite)}</td>
+            <td class="num bad">${fmtPct(u.favourite_prob)}</td>
+            <td class="num">${fmtPct(u.underdog_prob)}</td>
+            <td class="num">${u.favourite_odds === null || u.favourite_odds === undefined || u.underdog_odds === null || u.underdog_odds === undefined ? noOdds : `${fmtOdds(u.favourite_odds)} / ${fmtOdds(u.underdog_odds)}`}</td>
+        </tr>
+    `);
+    renderTable("upsets-table", [
+        {label:"Date"}, {label:"Match"}, {label:"Upset"},
+        {label:"Fav prob", cls:"num"}, {label:"Dog prob", cls:"num"},
+        {label:"Median odds F/D", cls:"num"}
+    ], rows.length ? rows : [`<tr><td colspan="6" class="soft">No settled favourite losses yet.</td></tr>`]);
+    document.querySelectorAll(".upset-row").forEach(row => {
+        row.addEventListener("click", () => window.open(row.dataset.url, "_blank", "noopener,noreferrer"));
+    });
+}
+
 function initControls() {
     const versionSelect = document.getElementById("version");
     [...new Set(report.matches.map(m => m.version_id).filter(Boolean))].sort().reverse().forEach(v => {
@@ -415,6 +448,7 @@ function initControls() {
 renderCalibration();
 renderEdge();
 renderVersions();
+renderUpsets();
 initControls();
 renderMatches();
 </script>
