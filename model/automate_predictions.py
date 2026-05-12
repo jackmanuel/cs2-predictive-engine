@@ -388,7 +388,7 @@ def main():
         for seq, count in sorted_seqs:
             s_prob = (count / args.iters) * 100
             map_names = [m.strip() for m in seq.split(",")]
-            formatted_names = " â†’ ".join(map_names)
+            formatted_names = " -> ".join(map_names)
 
             map_thumbs = ""
             for mname in map_names:

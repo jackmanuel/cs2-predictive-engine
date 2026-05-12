@@ -5,7 +5,7 @@ from config import DROPOUT_RATE
 
 class MatchPredictor(nn.Module):
     """
-    MVP Binary Classifier for predicting CS2 match winners.
+    Binary classifier for predicting CS2 map winners.
     Input: N tabular features
     Output: Probability Team A wins [0, 1]
     """

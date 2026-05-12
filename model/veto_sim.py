@@ -282,7 +282,7 @@ def main():
         elif start_id == t_b_id:
             start_override = "b"
         else:
-            logger.warning(f"Warning: --start-veto team '{args.start_veto}' matches neither '{t_a_id}' nor '{t_b_id}'. Using 50/50.")
+            logger.warning(f"Warning: --starts-veto team '{args.starts_veto}' matches neither '{t_a_id}' nor '{t_b_id}'. Using 50/50.")
 
     try:
         df = load_data()

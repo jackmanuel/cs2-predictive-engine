@@ -151,7 +151,7 @@ def combine_probs(probs: List[float], bo: int) -> float:
     if bo == 1:
         return probs[0]
     
-    # Determine wins needed to clinche the series
+    # Determine wins needed to clinch the series
     wins_needed = (bo // 2) + 1
     
     # Pad probs if the input list is shorter than the BO format
@@ -356,7 +356,7 @@ def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", t
     
     # 3. Determine veto start and run simulations in batches.
     #    When starts_veto is unspecified (50/50), we split iterations into two
-    #    batches — one where team A starts the veto, one where team B starts.
+    #    batches: one where team A starts the veto, one where team B starts.
     #    This ensures picker_diff is correctly assigned for every veto path.
     veto_start = None
     if starts_veto:

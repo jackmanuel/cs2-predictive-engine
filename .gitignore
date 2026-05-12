@@ -27,24 +27,14 @@ build/
 .DS_Store
 Thumbs.db
 
-# Debug / Example data
-*.html
+# Debug / generated local artifacts
+*.log
 debug_scraper.py
 hltv_match_example.json
+betting_ledger.py
 scratch/
 reports/
-*.txt
-*.md
-*.html
-*.csv
+commit.txt
 
-# Game Assets
+# Assets
 static/maps/
-
-# Exemptions
-!model/templates/
-!model/templates/*.html
-!evaluation/templates/
-!evaluation/templates/*.html
-!docs/
-!docs/*.md

@@ -1,215 +1,274 @@
 # CS2 Predictive Engine
 
-A high-performance Python framework for Counter-Strike 2 match prediction. This engine combines **Monte Carlo Veto Simulations** with a **PyTorch Neural Network** to calculate precise series win probabilities.
+CS2 Predictive Engine is an experimental Counter-Strike 2 match prediction project. It combines HLTV match scraping, temporal feature engineering, a PyTorch map winner model, Monte Carlo map-veto simulation, and standalone HTML reports for upcoming-match predictions and model performance tracking.
 
----
+This repository is portfolio-oriented and still evolving. The current workflow is script-driven: it generates two main standalone reports instead of running as a cohesive web application.
 
-## Key Features
+## Model Performance
 
-- **Native HLTV Ingestion:** High-fidelity scraping of round histories, player metrics, and map vetoes using Selenium.
-- **Monte Carlo Veto Simulator:** Simulates thousands of veto paths to model map pool variance and "permaban" bluffing.
-- **Neural Map Predictor:** A PyTorch-based binary classifier trained on temporal features (rolling win rates, streaks, H2H).
-- **Automated Match Dashboard:** Scrapes upcoming HLTV matches and generates premium HTML reports with integrated betting odds and map visuals.
-- **Shadow Ledger Performance Report:** SQLite-backed paper-trading system with an interactive HTML report for calibration bins, match browsing, model version comparison, odds, and paper-trading returns.
-- **Model Version Registry:** Every training run is archived with its weights, features, hyperparameters, and architecture hash for full reproducibility.
-- **Zero Future Leakage:** Temporal feature engineering ensures models are only trained on data available *at the time of the match*.
+On the current shadow-ledger evaluation set, the model favourite matched the eventual winner in 66.1% of settled evaluation-eligible matches, with a 0.2181 Brier score and 0.6272 log loss.
 
----
+These results come from training on a local dataset covering roughly 7 months of historical CS2 results, approximately 6,000 matches, and 13,000+ maps. The shadow-ledger report evaluates the latest prediction snapshot per match and excludes low-sample teams, roster anomalies, forfeits, and participant changes from the headline evaluation set.
+
+## Current State
+
+- **Prediction report:** `model/automate_predictions.py` scrapes upcoming HLTV matches, predicts series win probabilities, estimates map-veto paths, gathers market odds when available, records shadow-ledger snapshots, and writes a standalone HTML report under `reports/`.
+- **Model performance report:** `evaluation/shadow_ledger.py report` summarizes settled predictions, calibration, odds snapshots, model versions, and paper-trading style edge analysis in a standalone HTML report.
+- **Training pipeline:** `pipeline.py` cleans scraped match data, rebuilds temporal features, trains the winner model, saves the scaler/checkpoint, and registers a model version.
+- **Manual predictions:** `model.predict_series` predicts a matchup from inferred veto paths. `model.predict` can score a known map list from the command line when the veto or expected map pool is already known.
+- **Settlement-risk adjustment:** `model.train_forfeit` trains a separate forfeit/default model used for optional Polymarket-style fair probability adjustment.
+
+Generated data, checkpoints, reports, local map images, and environment files are intentionally ignored. A fresh clone contains the code and templates, but not the local scraped corpus or trained model artefacts.
+
+## Legal And Data Disclaimer
+
+This is an independent personal project and is not affiliated with, endorsed by, or sponsored by HLTV.org. The ingestion layer is built around scraping publicly available HLTV pages for personal analysis. Anyone using or extending this project is responsible for reviewing HLTV's terms, robots guidance, and any applicable laws before collecting data.
+
+The repository does not redistribute scraped HLTV data, betting odds snapshots, generated reports, checkpoints, or copyrighted map images. For any serious or production use, prefer an official, licensed, or otherwise permitted data source.
+
+## Features
+
+- HLTV ingestion for match metadata, map results, veto notes, player stats, ranks, and betting analytics pages.
+- Temporal feature engineering with rolling form, strength-of-schedule, head-to-head, map comfort, pick context, LAN history, and roster anomaly exclusions.
+- PyTorch binary map classifier with mirrored training rows to reduce team-order bias.
+- Monte Carlo veto simulator with map pool, pick/ban, permaban, and veto-starter heuristics.
+- Series probability aggregation over likely veto paths.
+- SQLite-backed shadow ledger for prediction snapshots, model versions, odds history, calibration, and settled-result analysis.
+- Walk-forward feature experiment runner for comparing feature variants across fixed future windows.
+- Separate forfeit/default settlement-risk model for optional market-specific adjustment.
 
 ## Architecture
 
-1.  **Ingestion Layer:** `hltv_client.py` handles complex interactions with HLTV, bypassing protections to build a canonical match database.
-2.  **Processing Layer:** `clean.py` normalizes raw data; `features.py` computes temporal differentials with configurable rolling windows.
-3.  **Simulation Layer:** `veto_sim.py` models team banning/picking behaviour using historical bias and Laplace smoothing.
-4.  **Model Layer:** `net.py` (Architecture) + `predict.py` (Inference) use mirrored data samples to eliminate positional bias.
-5.  **Reporting Layer:** `automate_predictions.py` orchestrates end-to-end flow from live scraping to HTML dashboard generation.
-6.  **Evaluation Layer:** `shadow_ledger.py` (SQLite calibration tracker and HTML performance report) + `backtest.py` (held-out test evaluation).
+The production winner model is a tabular neural network trained on 17 temporal map-level features:
 
----
+```text
+17 input features -> Linear(64) -> BatchNorm -> ReLU -> Dropout
+                  -> Linear(32) -> BatchNorm -> ReLU -> Dropout
+                  -> Linear(1) -> Sigmoid
+```
 
-## Setup & Installation
+The feature set is defined in `processing/features.py` and currently includes rank differential, 90/30/7-day form, team streaks, picker context, 30-day head-to-head counts, map win rate, map comfort, dominance/resilience, average rank tier, strength-of-schedule, and LAN-rate differential.
 
-1. **Environment Setup:**
-   ```bash
-   # Create and activate venv
-   python -m venv venv
-   .\venv\Scripts\activate  # Windows
-   source venv/bin/activate # Linux/macOS
+Series predictions are built in two stages. First, `model/veto_sim.py` simulates likely BO1/BO3/BO5 map sequences using recent team map tendencies. Then `model/predict.py` scores each map with the neural network and combines the map probabilities into a series probability.
 
-   # Install dependencies
-   pip install -r requirements.txt
-   ```
+## Repository Layout
 
-2. **Asset Setup:**
-   To enable map visuals in reports, place map PNGs in `static/maps/` (e.g., `de_dust2.png`). These are ignored by git for copyright safety.
+| Path | Purpose |
+| :--- | :--- |
+| `ingestion/` | Selenium and BeautifulSoup HLTV scraping clients and match-history ingestion. |
+| `processing/` | Raw match cleaning, exclusion rules, temporal feature engineering, and forfeit/default features. |
+| `model/` | Winner model training, inference, veto simulation, report generation, and forfeit/default model training. |
+| `evaluation/` | Backtests, metrics, feature experiments, forfeit analysis, and the shadow-ledger report. |
+| `docs/` | Longer-form methodology notes. |
+| `model/templates/` | HTML fragments for the prediction report. |
+| `evaluation/templates/` | HTML template for the model performance report. |
+| `static/maps/` | Optional local map images, ignored by git. |
+| `data/` | Local scraped data, checkpoints, model registry, and SQLite ledger, ignored by git. |
+| `reports/` | Generated HTML, CSV, JSON, and Markdown outputs, ignored by git. |
 
----
+## Setup
+
+### Prerequisites
+
+- Python 3.10 or newer.
+- Google Chrome installed locally for Selenium-based scraping.
+- A fresh virtual environment is recommended.
+
+### Installation
+
+```bash
+python -m venv venv
+.\venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+On Linux/macOS, activate with:
+
+```bash
+source venv/bin/activate
+```
+
+Optional map images can be placed in `static/maps/` using filenames such as `de_mirage.png`, `de_nuke.png`, and `de_inferno.png`. These images are ignored by git.
 
 ## Usage
 
-### 1. Unified Pipeline (Training)
-Run the full pipeline to ingest, clean, engineer features, and train the model. Each run registers a new model version and archives the weights:
+### 1. Scrape Recent Results
+
+Scrape recent finished matches into the canonical local corpus at `data/raw/hltv_matches.json`. The repository does not include match data, so this step is required before training from a fresh clone.
+
+Model quality depends heavily on data volume. A tiny scrape is enough to test that the pipeline runs, but predictions will be poor until the corpus contains enough maps for meaningful team form, map pool, head-to-head, and veto-history features.
+
+```bash
+python -m ingestion.fetch_hltv_matches --pages 3
+```
+
+Limit the scrape to a fixed number of new matches:
+
+```bash
+python -m ingestion.fetch_hltv_matches --matches 20
+```
+
+### 2. Build Or Refresh The Training Artefacts
+
+Run the full pipeline after local match data exists. It writes cleaned maps, engineered features, model checkpoints, a scaler, `data/training_state.json`, and a model-version registry entry.
+
 ```bash
 python pipeline.py
 ```
 
-### 2. Daily Update
-Run the lightweight update workflow without retraining. By default, this runs in a loop about every two hours, with random jitter added between passes. Each pass scrapes the first page of recent HLTV results, checks whether the current model is at least 500 cleaned maps behind the canonical scrape, generates the prediction report, and refreshes the shadow ledger:
+### 3. Daily Update Loop
+
+Run the lightweight update workflow without retraining. Each pass scrapes recent results, prints a model freshness warning if the current checkpoint is far behind the cleaned corpus, generates a prediction report, and refreshes the shadow ledger.
+
 ```bash
 python update.py --no-open
 ```
 
-The freshness check reuses the same cleaning exclusions as training, so forfeits/defaults and other excluded map rows are not counted as model lag. If the warning triggers, it only prints to the console; `update.py` never retrains the model.
-
 Useful options:
+
 ```bash
-# Run a single update pass and exit
 python update.py --run-once
-
-# Scrape more recent-results pages before predicting
 python update.py --pages 3
-
-# Limit scraping to a fixed number of new matches
 python update.py --matches 20
-
-# Generate predictions for a specific HLTV event
 python update.py --event-id 8242
-
-# Adjust the loop timing
 python update.py --interval-hours 2 --jitter-minutes 45 --no-open
 ```
 
-### 3. Live Match Automation (The Dashboard)
-Scrape upcoming matches and generate a premium HTML dashboard. This also automatically records shadow bets for model calibration:
-```bash
-# Predict matches for a specific HLTV Event
-python model/automate_predictions.py --event-id 8242
+`update.py` does not retrain the model. Retraining is still a manual `pipeline.py` step.
 
-# Predict all upcoming matches
-python model/automate_predictions.py
+### 4. Prediction Report
+
+Generate the standalone upcoming-match prediction report:
+
+```bash
+python -m model.automate_predictions --event-id 8242
 ```
 
-### 4. Manual Series Prediction
-Predict a specific hypothetical or scheduled matchup:
+Predict all upcoming matches from the main HLTV matches page:
+
+```bash
+python -m model.automate_predictions
+```
+
+Common options:
+
+```bash
+python -m model.automate_predictions --no-open
+python -m model.automate_predictions --output reports/predictions_report.html
+python -m model.automate_predictions --html-file path/to/saved_hltv_matches.html
+```
+
+### 5. Manual Series Prediction
+
+Predict a matchup using inferred veto paths:
+
 ```bash
 python -m model.predict_series "Vitality" "G2" --format bo3
 ```
 
-### 5. Shadow Ledger (Model Performance Statistics)
-The shadow ledger automatically records every prediction from the dashboard. It stores the latest model probability, median market odds when available, edge calculations, model version, and eventual match result.
+Force the veto starter when known:
 
-Generate the interactive **Model Performance Statistics** report:
 ```bash
-# Resolve pending match results via HLTV
-python -m evaluation.shadow_ledger refresh
-
-# Generate the interactive HTML report
-python -m evaluation.shadow_ledger report
-
-# Choose a report output path
-python -m evaluation.shadow_ledger report --output reports/shadow_ledger_report.html
-
-# Print the legacy command-line summary
-python -m evaluation.shadow_ledger report --text
-
-# Show all tracked matches with latest predictions
-python -m evaluation.shadow_ledger list
-
-# Show model version history
-python -m evaluation.shadow_ledger versions
-
-# Show full odds history for a specific match
-python -m evaluation.shadow_ledger odds <hltv_match_url>
+python -m model.predict_series "Vitality" "G2" --format bo3 --starts-veto "Vitality"
 ```
 
-The HTML report includes:
+Apply the optional settlement-risk adjustment:
 
-- **Top-level performance cards:** valid matches, settled/pending counts, model favourite accuracy, bookmaker favourite accuracy, Brier score, log loss, calibration error, and actionable edge bets.
-- **Calibration bins:** compares assigned team win probabilities with actual win rates, so bins like `40-45%` show whether teams assigned that likelihood are winning at roughly that rate.
-- **Edge strategy breakdowns:** flat and confidence-weighted paper-trading ROI by edge bucket, plus favourite/underdog splits and p-values.
-- **Compact match browser:** searchable table of actual match results with model odds, median market odds, result, edge, book count, and snapshot count.
-- **Model version history:** model versions with Brier/log loss comparison, training maps, feature counts, and matches predicted.
-
-The report template lives at `evaluation/templates/shadow_ledger_report.html`; `shadow_ledger.py` prepares the data and injects it into the template.
-
-### 6. Feature Experiment Runner
-Run walk-forward feature ablations before promoting feature changes into the production model:
-```bash
-# Default promising suite: 8 variants x 4 weekly folds x 5 seeds
-python -m evaluation.feature_experiments
-
-# Inspect the planned folds and variants without training
-python -m evaluation.feature_experiments --dry-run
-
-# Fast smoke run while iterating
-python -m evaluation.feature_experiments --folds 1 --seeds 1 --epochs 10 --patience 3
-
-# Broader suite with additional exploratory ablations
-python -m evaluation.feature_experiments --preset full
-```
-
-The default suite compares the current feature set against variants that remove `lan_rate_diff`, remove `dominance_diff`/`resilience_diff`, remove those features together, and test shorter/longer H2H windows around the production 30-day H2H counts. Results are written to timestamped CSVs under `reports/`; use `--run-name` or explicit output paths when you want stable names.
-
-See `docs/model_evaluation.md` for the evaluation methodology, metric definitions, and current feature hypotheses.
-
-### 7. Polymarket Settlement Forfeit/Default Model
-Train the separate settlement-risk adjustment model. This does not retrain or replace the winner model:
-```bash
-python -m model.train_forfeit
-```
-
-Outputs:
-
-- `data/checkpoints/forfeit_model.joblib` calibrated logistic regression bundle
-- `data/processed/forfeit_features.parquet` leakage-safe match-level features
-- `data/forfeit_training_state.json` current training-state snapshot
-- `reports/forfeit_model_evaluation.md` future-held-out evaluation report
-- `reports/forfeit_model_metrics.json` machine-readable metrics
-
-Manual series predictions can print the final Polymarket fair probabilities with:
 ```bash
 python -m model.predict_series "Vitality" "G2" --format bo3 --polymarket-adjust --event "IEM Cologne 2026" --lan
 ```
 
-### 8. Betting Ledger (Real Bets)
-Track real bets with model probability and edge:
+### 6. Known Map Veto Prediction
+
+When the map veto or expected map sequence is already known, score the provided maps directly:
+
 ```bash
-# Record a bet
-python betting_ledger.py add --url <hltv_url> --bookmaker "Bet365" --odds 2.10 --bet "G2" --amount 10 --model-prob 0.62
-
-# Resolve pending results
-python betting_ledger.py refresh
-
-# View ledger
-python betting_ledger.py list
+python -m model.predict "Vitality" "G2" --maps "Mirage,Nuke,Inferno"
 ```
 
----
+Set the picker context for map-level probabilities:
+
+```bash
+python -m model.predict "Vitality" "G2" --maps "Mirage,Nuke,Inferno" --picker team_a
+```
+
+This path is currently command-line only and is not surfaced in the HTML prediction report.
+
+### 7. Shadow Ledger And Model Performance Report
+
+The shadow ledger records prediction snapshots from the prediction report, stores model and odds metadata, and resolves match results later.
+
+```bash
+python -m evaluation.shadow_ledger refresh
+python -m evaluation.shadow_ledger report
+```
+
+Other commands:
+
+```bash
+python -m evaluation.shadow_ledger report --output reports/shadow_ledger_report.html
+python -m evaluation.shadow_ledger report --text
+python -m evaluation.shadow_ledger list
+python -m evaluation.shadow_ledger versions
+python -m evaluation.shadow_ledger odds <hltv_match_url>
+```
+
+The HTML report includes performance cards, calibration bins, edge strategy breakdowns, a match browser, odds history fields, and model version history.
+
+### 8. Feature Experiments
+
+Run walk-forward feature ablations before promoting feature changes into the production feature set:
+
+```bash
+python -m evaluation.feature_experiments
+```
+
+Useful variants:
+
+```bash
+python -m evaluation.feature_experiments --dry-run
+python -m evaluation.feature_experiments --folds 1 --seeds 1 --epochs 10 --patience 3
+python -m evaluation.feature_experiments --preset full --fold-days 14 --folds 4
+```
+
+See `docs/model_evaluation.md` for the evaluation methodology, metric definitions, and current feature hypotheses.
+
+### 9. Forfeit/Default Settlement-Risk Adjustment
+
+The winner model estimates the sporting result of a match. The optional forfeit/default adjustment uses a second machine-learning model to estimate the probability that a match has settlement-affecting default risk.
+
+This is useful for Polymarket-style markets where some forfeits resolve both teams at 50%. When enabled, the final fair probabilities are blended toward 50/50 by the estimated forfeit/default probability.
+
+```bash
+python -m model.train_forfeit
+```
 
 ## Configuration
 
-All tuning parameters are centralised in `config.py`:
+Core tuning parameters live in `config.py`.
 
 | Constant | Default | Purpose |
 | :--- | :--- | :--- |
-| `FORM_WINDOW_DAYS` | 30 | Rolling window for win rate, dominance, resilience, SoS |
-| `FORM_WINDOW_DAYS_SHORT` | 7 | Short-term momentum window |
-| `MAP_WINDOW_DAYS` | 90 | Map-specific win rate window (wider for sample size) |
-| `H2H_WINDOW_DAYS` | 30 | Recent head-to-head map count window |
-| `VETO_WINDOW_DAYS` | 90 | Veto simulation historical stats window |
-| `MC_ITERATIONS` | 10,000 | Monte Carlo veto simulation iterations |
-| `MC_THRESHOLD` | 0.90 | Cumulative probability cutoff for veto path selection |
-| `WIN_STREAK_CAP` | 5 | Maximum win streak value |
+| `FORM_WINDOW_DAYS_LONG` | 90 | Long-term form and strength-of-schedule window. |
+| `FORM_WINDOW_DAYS` | 30 | General win rate, dominance, resilience, strength-of-schedule, comfort, and LAN history window. |
+| `FORM_WINDOW_DAYS_SHORT` | 7 | Short-term momentum window. |
+| `MAP_WINDOW_DAYS` | 90 | Map-specific win-rate window. |
+| `H2H_WINDOW_DAYS` | 30 | Recent head-to-head map count window. |
+| `VETO_WINDOW_DAYS` | 90 | Veto simulation historical stats window. |
+| `MC_ITERATIONS` | 10,000 | Default Monte Carlo veto simulation iterations. |
+| `MC_THRESHOLD` | 0.90 | Cumulative probability cutoff for selected veto paths. |
+| `TRAIN_RATIO` | 0.70 | Temporal training split ratio. |
+| `VAL_RATIO` | 0.15 | Temporal validation split ratio. |
 
----
+## Future Improvements
 
-## Technical Components
+- Unify the current standalone prediction report and model performance report into a single web dashboard.
+- Add a refresh control that scrapes new matches, generates predictions, updates the shadow ledger, and refreshes the report without command-line scripts.
+- Add a training control that runs the cleaning, feature engineering, retraining, checkpoint registration, and evaluation pipeline from the dashboard.
+- Surface known-veto prediction in the dashboard, since the model already supports command-line map-list predictions.
+- Improve project cohesion so ingestion, training, prediction, and evaluation feel like one product rather than separate scripts.
+- Add packaging, tests, and clearer sample-data fixtures so contributors can validate changes without a private local scrape.
 
-| Component | Description |
-| :--- | :--- |
-| **Ingestion** | Selenium + BeautifulSoup4 (undetected-chromedriver) |
-| **Model** | PyTorch Neural Network (Binary Classifier, 64→32→1) |
-| **Veto** | Monte Carlo Simulation (configurable iterations) |
-| **Features** | Temporal rolling windows, mirroring, rank differentials, SoS |
-| **Data Storage** | Parquet (training data), SQLite (shadow ledger + model registry) |
-| **Versioning** | Automatic weight archival with architecture hash tracking |
+## Licence
+
+This project is licensed under the MIT License. See `LICENSE` for details.

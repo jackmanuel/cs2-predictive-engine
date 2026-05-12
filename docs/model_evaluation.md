@@ -5,6 +5,10 @@ promoting them into the production training pipeline. The goal is to compare
 feature sets on the same future match windows, rather than judging each training
 run by its own moving holdout split.
 
+Generated CSVs and HTML/Markdown reports are local artefacts under `reports/`
+and are not committed to the repository. The tracked source of truth is the
+evaluation process itself.
+
 ## Experiment Runner
 
 Run the feature experiment harness with:
@@ -143,6 +147,19 @@ These notes are working hypotheses, not permanent conclusions.
   feature because the model does not currently receive `is_lan` as an input.
 - `dominance_diff` and `resilience_diff` may be noisy because they are raw
   round-margin summaries and are not opponent-adjusted.
+
+## Related Reports
+
+The project currently has two separate report surfaces:
+
+- `model.automate_predictions` writes the upcoming-match prediction report as a
+  standalone HTML file.
+- `evaluation.shadow_ledger report` writes the model performance and calibration
+  report as a standalone HTML file.
+
+The reports share the same model/version data, but they are not yet a unified
+dashboard. Retraining also remains a manual pipeline step rather than an action
+inside either report.
 
 ## Promotion Rule
 
