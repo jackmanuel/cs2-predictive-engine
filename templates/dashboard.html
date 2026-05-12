@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CS2 Predictive Engine Dashboard</title>
+    <link rel="stylesheet" href="/static/dashboard/dashboard.css">
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div>
+                <div class="eyebrow">Local Dashboard</div>
+                <h1>CS2 Predictive Engine</h1>
+            </div>
+            <nav class="tabs" aria-label="Dashboard sections">
+                <button class="tab active" data-tab="predictions" type="button">Predictions</button>
+                <button class="tab" data-tab="performance" type="button">Performance</button>
+                <button class="tab" data-tab="model" type="button">Model</button>
+            </nav>
+            <div class="server-note">
+                <span>Serving local reports only.</span>
+                <strong id="server-clock">--</strong>
+            </div>
+        </aside>
+
+        <main class="main">
+            <section class="topbar">
+                <div>
+                    <div class="section-label" id="section-label">Upcoming Match Prediction Report</div>
+                    <div class="subtle" id="section-subtitle">Latest file: __PREDICTION_REPORT_LABEL__</div>
+                </div>
+                <div class="actions">
+                    <button class="icon-button" id="refresh-frame" type="button" title="Refresh current tab" aria-label="Refresh current tab">Refresh</button>
+                    <a class="icon-button" id="open-frame" href="/reports/latest-predictions" target="_blank" rel="noreferrer">Open</a>
+                </div>
+            </section>
+
+            <section class="panel tab-panel active" id="predictions-panel">
+                <iframe id="predictions-frame" title="Upcoming match prediction report" src="/reports/latest-predictions"></iframe>
+            </section>
+
+            <section class="panel tab-panel" id="performance-panel">
+                <iframe id="performance-frame" title="Model performance report" src="/reports/performance"></iframe>
+            </section>
+
+            <section class="model-grid tab-panel" id="model-panel">
+                <div class="panel info-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Model Information</h2>
+                            <p>Training state loaded from <code>data/training_state.json</code>.</p>
+                        </div>
+                        <button class="icon-button" id="refresh-model" type="button">Refresh</button>
+                    </div>
+                    <div class="stat-grid" id="model-stats"></div>
+                    <div class="split-grid">
+                        <div>
+                            <h3>Formats</h3>
+                            <div class="list" id="format-list"></div>
+                        </div>
+                        <div>
+                            <h3>Top Maps</h3>
+                            <div class="list" id="map-list"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel retrain-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Retrain</h2>
+                            <p>Runs <code>pipeline.py</code> in this project directory.</p>
+                        </div>
+                        <button class="primary-button" id="retrain-button" type="button">Retrain</button>
+                    </div>
+                    <div class="progress-wrap">
+                        <div class="progress-meta">
+                            <span id="retrain-status">Idle</span>
+                            <strong id="retrain-progress-label">0%</strong>
+                        </div>
+                        <div class="progress-track" aria-label="Retraining progress">
+                            <div class="progress-fill" id="retrain-progress"></div>
+                        </div>
+                    </div>
+                    <pre class="log" id="retrain-log" aria-live="polite">No retraining run started.</pre>
+                </div>
+
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const tabs = [...document.querySelectorAll(".tab")];
+        const panels = {
+            predictions: document.getElementById("predictions-panel"),
+            performance: document.getElementById("performance-panel"),
+            model: document.getElementById("model-panel"),
+        };
+        const labels = {
+            predictions: ["Upcoming Match Prediction Report", "Latest file: __PREDICTION_REPORT_LABEL__", "/reports/latest-predictions"],
+            performance: ["Model Performance Report", "Shadow ledger calibration and betting performance.", "/reports/performance"],
+            model: ["Model Details And Retraining", "Training metadata and live pipeline output.", null],
+        };
+        const sectionLabel = document.getElementById("section-label");
+        const sectionSubtitle = document.getElementById("section-subtitle");
+        const openFrame = document.getElementById("open-frame");
+        let activeTab = "predictions";
+
+        function setTab(name) {
+            activeTab = name;
+            tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.tab === name));
+            Object.entries(panels).forEach(([key, panel]) => panel.classList.toggle("active", key === name));
+            sectionLabel.textContent = labels[name][0];
+            sectionSubtitle.textContent = labels[name][1];
+            if (labels[name][2]) {
+                openFrame.href = labels[name][2];
+                openFrame.removeAttribute("aria-disabled");
+                openFrame.classList.remove("disabled");
+            } else {
+                openFrame.href = "#";
+                openFrame.setAttribute("aria-disabled", "true");
+                openFrame.classList.add("disabled");
+            }
+        }
+
+        tabs.forEach(tab => tab.addEventListener("click", () => setTab(tab.dataset.tab)));
+
+        document.getElementById("refresh-frame").addEventListener("click", () => {
+            if (activeTab === "predictions") {
+                document.getElementById("predictions-frame").src = "/reports/latest-predictions?ts=" + Date.now();
+            } else if (activeTab === "performance") {
+                document.getElementById("performance-frame").src = "/reports/performance?ts=" + Date.now();
+            } else {
+                loadModelInfo();
+            }
+        });
+
+        document.getElementById("refresh-model").addEventListener("click", loadModelInfo);
+
+        function fmtNumber(value) {
+            return value === null || value === undefined ? "n/a" : Number(value).toLocaleString();
+        }
+
+        function fmtBytes(bytes) {
+            if (bytes === null || bytes === undefined) return "n/a";
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+        }
+
+        function stat(label, value, note = "") {
+            return `<div class="stat"><span>${label}</span><strong>${value}</strong><small>${note || "&nbsp;"}</small></div>`;
+        }
+
+        function listRows(items) {
+            const entries = Object.entries(items || {});
+            if (!entries.length) return `<div class="empty">No data found.</div>`;
+            return entries.map(([name, value]) => `<div class="list-row"><span>${name}</span><strong>${fmtNumber(value)}</strong></div>`).join("");
+        }
+
+        async function loadModelInfo() {
+            const response = await fetch("/api/model-info");
+            const data = await response.json();
+            const state = data.training_state || {};
+            const range = state.date_range || {};
+            document.getElementById("model-stats").innerHTML = [
+                stat("Train date", state.training_date || "n/a"),
+                stat("Date range", range.start ? `${range.start.slice(0, 10)} to ${range.end.slice(0, 10)}` : "n/a"),
+                stat("Teams", fmtNumber(state.num_teams)),
+                stat("Matches", fmtNumber(state.total_matches)),
+                stat("Maps", fmtNumber(state.total_maps)),
+                stat("Rounds", fmtNumber(state.total_rounds), `${state.avg_rounds_per_map ?? "n/a"} per map`),
+            ].join("");
+            document.getElementById("format-list").innerHTML = listRows(state.formats);
+            document.getElementById("map-list").innerHTML = listRows(state.top_maps);
+        }
+
+        const retrainButton = document.getElementById("retrain-button");
+        const retrainStatus = document.getElementById("retrain-status");
+        const retrainProgress = document.getElementById("retrain-progress");
+        const retrainProgressLabel = document.getElementById("retrain-progress-label");
+        const retrainLog = document.getElementById("retrain-log");
+        let eventSource;
+
+        function setRetrainState(snapshot) {
+            const progress = snapshot.progress || 0;
+            retrainStatus.textContent = snapshot.status || "idle";
+            retrainProgress.style.width = `${progress}%`;
+            retrainProgressLabel.textContent = `${progress}%`;
+            retrainButton.disabled = snapshot.status === "running";
+            if (snapshot.tail && snapshot.tail.length) {
+                retrainLog.textContent = snapshot.tail.join("\n");
+                retrainLog.scrollTop = retrainLog.scrollHeight;
+            }
+            if (snapshot.status === "completed") {
+                loadModelInfo();
+                document.getElementById("performance-frame").src = "/reports/performance?ts=" + Date.now();
+            }
+        }
+
+        function connectRetrainEvents() {
+            if (eventSource) eventSource.close();
+            eventSource = new EventSource("/api/retrain/events");
+            eventSource.addEventListener("status", event => setRetrainState(JSON.parse(event.data)));
+            eventSource.addEventListener("line", event => {
+                const payload = JSON.parse(event.data);
+                if (retrainLog.textContent === "No retraining run started.") retrainLog.textContent = "";
+                retrainLog.textContent += `${payload.line}\n`;
+                retrainLog.scrollTop = retrainLog.scrollHeight;
+                retrainProgress.style.width = `${payload.progress}%`;
+                retrainProgressLabel.textContent = `${payload.progress}%`;
+            });
+        }
+
+        retrainButton.addEventListener("click", async () => {
+            retrainLog.textContent = "Starting pipeline.py...\n";
+            const response = await fetch("/api/retrain", { method: "POST" });
+            const snapshot = await response.json();
+            setRetrainState(snapshot);
+        });
+
+        function tickClock() {
+            document.getElementById("server-clock").textContent = new Date().toLocaleString();
+        }
+
+        setInterval(tickClock, 1000);
+        tickClock();
+        loadModelInfo();
+        connectRetrainEvents();
+    </script>
+</body>
+</html>

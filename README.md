@@ -92,6 +92,16 @@ Optional map images can be placed in `static/maps/` using filenames such as `de_
 
 ## Usage
 
+### 0. Local Dashboard
+
+Run the local dashboard to view the latest prediction report, model performance report, model training metadata, and retraining controls in one place:
+
+```bash
+python dashboard_server.py
+```
+
+Then open `http://127.0.0.1:8765/`. The Retrain button runs `pipeline.py` with live log output and progress updates. If you use a virtual environment, start the dashboard from that environment so report generation and retraining use the installed project dependencies.
+
 ### 1. Scrape Recent Results
 
 Scrape recent finished matches into the canonical local corpus at `data/raw/hltv_matches.json`. The repository does not include match data, so this step is required before training from a fresh clone.
