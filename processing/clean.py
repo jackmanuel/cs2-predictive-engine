@@ -97,6 +97,25 @@ def parse_rank(rank_str: str) -> int:
     except:
         return DEFAULT_TEAM_RANK
 
+def parse_world_rank_with_vrs_fallback(r_data: dict) -> int:
+    """Uses HLTV world rank when present, otherwise falls back to VRS rank."""
+    if not r_data:
+        return DEFAULT_TEAM_RANK
+
+    raw_world_rank = r_data.get("world_rank")
+    if is_rank_missing(raw_world_rank):
+        return parse_rank(r_data.get("vrs_before_rank"))
+
+    world_rank = parse_rank(raw_world_rank)
+    if world_rank != DEFAULT_TEAM_RANK:
+        return world_rank
+
+    return DEFAULT_TEAM_RANK
+
+def is_rank_missing(rank_str: str) -> bool:
+    """Returns true only when the rank field is absent or blank, not explicitly unranked."""
+    return rank_str is None or str(rank_str).strip() == ""
+
 def normalize_format(fmt: str) -> str:
     """Normalizes format strings like 'bo3' or 'best_of_3' or 'def'."""
     fmt = str(fmt).lower().strip()
@@ -316,16 +335,24 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
     r_a_vrs = DEFAULT_TEAM_RANK
     r_b_world = DEFAULT_TEAM_RANK
     r_b_vrs = DEFAULT_TEAM_RANK
+    r_a_world_missing = True
+    r_a_vrs_missing = True
+    r_b_world_missing = True
+    r_b_vrs_missing = True
 
     if ranks:
         for name, r_data in ranks.items():
             n = normalize_name(name)
             if n == team_a_id:
-                r_a_world = parse_rank(r_data.get("world_rank"))
+                r_a_world = parse_world_rank_with_vrs_fallback(r_data)
                 r_a_vrs = parse_rank(r_data.get("vrs_before_rank"))
+                r_a_world_missing = is_rank_missing(r_data.get("world_rank"))
+                r_a_vrs_missing = is_rank_missing(r_data.get("vrs_before_rank"))
             elif n == team_b_id:
-                r_b_world = parse_rank(r_data.get("world_rank"))
+                r_b_world = parse_world_rank_with_vrs_fallback(r_data)
                 r_b_vrs = parse_rank(r_data.get("vrs_before_rank"))
+                r_b_world_missing = is_rank_missing(r_data.get("world_rank"))
+                r_b_vrs_missing = is_rank_missing(r_data.get("vrs_before_rank"))
 
     picker_name = m_data.get("picker")
     is_team_a_picker = False
@@ -354,6 +381,10 @@ def process_hltv_map_data(m_data, team_a_name, team_b_name, team_a_id, team_b_id
         "team_a_vrs_rank": r_a_vrs,
         "team_b_world_rank": r_b_world,
         "team_b_vrs_rank": r_b_vrs,
+        "team_a_world_rank_missing": r_a_world_missing,
+        "team_a_vrs_rank_missing": r_a_vrs_missing,
+        "team_b_world_rank_missing": r_b_world_missing,
+        "team_b_vrs_rank_missing": r_b_vrs_missing,
         "match_format": match_format,
         "is_forfeit": map_name.lower() in ["default", "forfeit"],
         "is_lan": is_lan
@@ -482,8 +513,48 @@ def build_clean_maps(raw_maps: pd.DataFrame = None) -> pd.DataFrame:
         df = df[df["match_format"] != "def"]
 
         df = df.reset_index(drop=True)
+        df = repair_default_ranks(df)
 
     return df
+
+
+def repair_default_ranks(df: pd.DataFrame) -> pd.DataFrame:
+    """Carry forward known team ranks only when a scrape is missing rank fields."""
+    rank_columns = [
+        ("team_a_id", "team_a_world_rank", "team_a_world_rank_missing"),
+        ("team_b_id", "team_b_world_rank", "team_b_world_rank_missing"),
+        ("team_a_id", "team_a_vrs_rank", "team_a_vrs_rank_missing"),
+        ("team_b_id", "team_b_vrs_rank", "team_b_vrs_rank_missing"),
+    ]
+    repaired = df.copy()
+    total_repaired = 0
+
+    for team_col, rank_col, missing_col in rank_columns:
+        if team_col not in repaired.columns or rank_col not in repaired.columns:
+            continue
+
+        last_known_rank = {}
+        for idx, row in repaired.sort_values(["date", "match_id"]).iterrows():
+            team_id = row[team_col]
+            rank = row[rank_col]
+
+            if pd.isna(rank):
+                rank = DEFAULT_TEAM_RANK
+
+            rank = int(rank)
+            rank_was_missing = bool(row.get(missing_col, False))
+            if rank == DEFAULT_TEAM_RANK and rank_was_missing:
+                previous_rank = last_known_rank.get(team_id)
+                if previous_rank is not None:
+                    repaired.at[idx, rank_col] = previous_rank
+                    total_repaired += 1
+            elif rank != DEFAULT_TEAM_RANK:
+                last_known_rank[team_id] = rank
+
+    if total_repaired:
+        logger.info(f"Repaired {total_repaired} transient default rank values using prior known ranks.")
+
+    return repaired
 
 
 def clean_data():

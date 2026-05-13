@@ -111,8 +111,12 @@ def load_latest_state():
         team_map_histories[t_a][map_name].append((date, 1 if label == 1 else 0))
         team_map_histories[t_b][map_name].append((date, 1 if label == 0 else 0))
         
-        team_latest_ranks[t_a] = {"world": row["team_a_world_rank"]}
-        team_latest_ranks[t_b] = {"world": row["team_b_world_rank"]}
+        rank_a_current = row["team_a_world_rank"]
+        rank_b_current = row["team_b_world_rank"]
+        if rank_a_current != DEFAULT_TEAM_RANK or t_a not in team_latest_ranks:
+            team_latest_ranks[t_a] = {"world": rank_a_current}
+        if rank_b_current != DEFAULT_TEAM_RANK or t_b not in team_latest_ranks:
+            team_latest_ranks[t_b] = {"world": rank_b_current}
         
         # Track Picks for Comfort
         m_id = row["match_id"]
