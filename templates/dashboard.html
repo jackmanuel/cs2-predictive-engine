@@ -16,6 +16,7 @@
             <nav class="tabs" aria-label="Dashboard sections">
                 <button class="tab active" data-tab="predictions" type="button">Predictions</button>
                 <button class="tab" data-tab="performance" type="button">Performance</button>
+                <button class="tab" data-tab="playground" type="button">Playground</button>
                 <button class="tab" data-tab="model" type="button">Model</button>
             </nav>
             <div class="server-note">
@@ -38,6 +39,91 @@
 
             <section class="panel tab-panel active" id="predictions-panel">
                 <iframe id="predictions-frame" title="Upcoming match prediction report" src="/reports/latest-predictions"></iframe>
+            </section>
+
+            <section class="playground-grid tab-panel" id="playground-panel">
+                <form class="panel playground-form" id="playground-form">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Prediction Playground</h2>
+                            <p>Manual matchup inputs.</p>
+                        </div>
+                        <button class="primary-button" id="playground-run" type="submit">Run</button>
+                    </div>
+
+                    <div class="form-grid">
+                        <label>
+                            <span>Team A</span>
+                            <input id="playground-team-a" name="team_a" list="team-options" autocomplete="off" required>
+                        </label>
+                        <label>
+                            <span>Team B</span>
+                            <input id="playground-team-b" name="team_b" list="team-options" autocomplete="off" required>
+                        </label>
+                        <label>
+                            <span>Format</span>
+                            <select id="playground-format" name="format">
+                                <option value="bo1">BO1</option>
+                                <option value="bo3" selected>BO3</option>
+                                <option value="bo5">BO5</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Picks first</span>
+                            <select id="playground-pick-first" name="pick_first">
+                                <option value="random">50/50</option>
+                                <option value="team_a">Team A</option>
+                                <option value="team_b">Team B</option>
+                            </select>
+                        </label>
+                        <label class="single-map-field">
+                            <span>Single map</span>
+                            <select id="playground-single-map" name="single_map">
+                                <option value="">None</option>
+                            </select>
+                        </label>
+                        <label class="single-map-field">
+                            <span>Map picker</span>
+                            <select id="playground-single-picker" name="single_picker">
+                                <option value="neutral">Neutral</option>
+                                <option value="team_a">Team A</option>
+                                <option value="team_b">Team B</option>
+                            </select>
+                        </label>
+                        <label class="wide series-field">
+                            <span>Series maps</span>
+                            <textarea id="playground-maps" name="maps" rows="3" spellcheck="false"></textarea>
+                        </label>
+                        <label>
+                            <span>Iterations</span>
+                            <input id="playground-iters" name="iters" type="number" min="100" max="25000" step="100" value="">
+                        </label>
+                        <label>
+                            <span>Threshold</span>
+                            <input id="playground-threshold" name="threshold" type="number" min="10" max="100" step="1" value="90">
+                        </label>
+                        <label>
+                            <span>Event</span>
+                            <input id="playground-event" name="event" value="Manual prediction">
+                        </label>
+                        <label class="checkbox-field">
+                            <input id="playground-lan" name="is_lan" type="checkbox">
+                            <span>LAN</span>
+                        </label>
+                    </div>
+                    <datalist id="team-options"></datalist>
+                </form>
+
+                <div class="playground-results">
+                    <div class="panel result-panel" id="playground-summary">
+                        <div class="empty">Run a matchup to populate the playground.</div>
+                    </div>
+                    <div class="panel result-panel" id="playground-map"></div>
+                    <div class="panel result-panel" id="playground-series"></div>
+                    <div class="panel result-panel" id="playground-forfeit"></div>
+                    <div class="panel result-panel wide-panel" id="playground-veto"></div>
+                    <div class="panel result-panel wide-panel" id="playground-stats"></div>
+                </div>
             </section>
 
             <section class="panel tab-panel" id="performance-panel">
@@ -94,11 +180,13 @@
         const tabs = [...document.querySelectorAll(".tab")];
         const panels = {
             predictions: document.getElementById("predictions-panel"),
+            playground: document.getElementById("playground-panel"),
             performance: document.getElementById("performance-panel"),
             model: document.getElementById("model-panel"),
         };
         const labels = {
             predictions: ["Upcoming Match Prediction Report", "Latest file: __PREDICTION_REPORT_LABEL__", "/reports/latest-predictions"],
+            playground: ["Prediction Playground", "Granular map, series, veto, forfeit, and team-stat calculations.", null],
             performance: ["Model Performance Report", "Shadow ledger calibration and betting performance.", "/reports/performance"],
             model: ["Model Details And Retraining", "Training metadata and live pipeline output.", null],
         };
@@ -131,6 +219,8 @@
                 document.getElementById("predictions-frame").src = "/reports/latest-predictions?ts=" + Date.now();
             } else if (activeTab === "performance") {
                 refreshPerformanceReport();
+            } else if (activeTab === "playground") {
+                loadPlaygroundOptions(true);
             } else {
                 loadModelInfo();
             }
@@ -182,6 +272,314 @@
             const data = await response.json();
             document.getElementById("performance-frame").src = `${data.report_url}?ts=${Date.now()}`;
         }
+
+        let playgroundOptionsLoaded = false;
+
+        function escapeText(value) {
+            return String(value ?? "")
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;");
+        }
+
+        function pct(value) {
+            if (value === null || value === undefined) return "n/a";
+            return `${(Number(value) * 100).toFixed(1)}%`;
+        }
+
+        function rankText(profile) {
+            if (!profile || profile.world_rank === null || profile.world_rank === undefined) return "Unranked";
+            return `#${fmtNumber(profile.world_rank)}`;
+        }
+
+        function metric(label, value, note = "") {
+            return `<div class="metric-row"><span>${escapeText(label)}</span><strong>${escapeText(value)}</strong><small>${escapeText(note)}</small></div>`;
+        }
+
+        async function loadPlaygroundOptions(force = false) {
+            if (playgroundOptionsLoaded && !force) return;
+            const response = await fetch("/api/playground/options");
+            const data = await response.json();
+            if (!response.ok) return;
+            const teamOptions = document.getElementById("team-options");
+            teamOptions.innerHTML = (data.teams || []).map(team => {
+                const rank = team.rank && team.rank < 500 ? ` #${team.rank}` : "";
+                return `<option value="${escapeText(team.name)}" label="${escapeText(team.id + rank)}"></option>`;
+            }).join("");
+
+            const singleMap = document.getElementById("playground-single-map");
+            const current = singleMap.value;
+            singleMap.innerHTML = `<option value="">None</option>` + (data.maps || []).map(map => (
+                `<option value="${escapeText(map)}">${escapeText(map)}</option>`
+            )).join("");
+            singleMap.value = current;
+            if (!document.getElementById("playground-iters").value) {
+                document.getElementById("playground-iters").value = data.defaults?.iterations || 10000;
+            }
+            if (data.defaults?.threshold && document.getElementById("playground-threshold").value === "90") {
+                document.getElementById("playground-threshold").value = Math.round(data.defaults.threshold * 100);
+            }
+            playgroundOptionsLoaded = true;
+            syncPlaygroundFields();
+        }
+
+        function isSeriesFormat() {
+            return document.getElementById("playground-format").value !== "bo1";
+        }
+
+        function syncPlaygroundFields() {
+            const isSeries = isSeriesFormat();
+            document.querySelectorAll(".single-map-field").forEach(field => {
+                field.hidden = isSeries;
+                field.classList.toggle("is-hidden", isSeries);
+            });
+            document.querySelectorAll(".series-field").forEach(field => {
+                field.hidden = !isSeries;
+                field.classList.toggle("is-hidden", !isSeries);
+            });
+            if (isSeries) {
+                document.getElementById("playground-single-map").value = "";
+                document.getElementById("playground-single-picker").value = "neutral";
+            } else {
+                document.getElementById("playground-maps").value = "";
+            }
+        }
+
+        function renderProbabilityBar(label, probability) {
+            const clamped = Math.max(0, Math.min(1, Number(probability || 0)));
+            return `
+                <div class="probability-row">
+                    <div><span>${escapeText(label)}</span><strong>${pct(clamped)}</strong></div>
+                    <div class="probability-track"><div style="width:${clamped * 100}%"></div></div>
+                </div>
+            `;
+        }
+
+        function renderMapPrediction(data) {
+            const target = document.getElementById("playground-map");
+            if (!data.map_prediction) {
+                target.innerHTML = `<h2>Map Win Probability</h2><div class="empty">No single map selected.</div>`;
+                return;
+            }
+            const item = data.map_prediction;
+            target.innerHTML = `
+                <h2>Map Win Probability</h2>
+                <div class="result-title">${escapeText(item.map)}</div>
+                ${renderProbabilityBar(data.teams.team_a, item.team_a_probability)}
+                ${renderProbabilityBar(data.teams.team_b, item.team_b_probability)}
+            `;
+        }
+
+        function renderSeries(data) {
+            const series = data.series_prediction;
+            const pickerLabel = {
+                team_a: data.teams.team_a,
+                team_b: data.teams.team_b,
+                neutral: "Neutral",
+            };
+            const mapRows = (series.maps || []).map(item => `
+                <div class="list-row">
+                    <span>${escapeText(item.map)}</span>
+                    <strong>${pct(item.team_a_probability)} / ${pct(item.team_b_probability)} · ${escapeText(pickerLabel[item.picker] || "Neutral")}</strong>
+                </div>
+            `).join("");
+            const seqRows = (series.map_sequences || []).slice(0, 5).map(item => `
+                <div class="list-row">
+                    <span>${escapeText(item.maps.join(", "))}</span>
+                    <strong>${pct(item.probability)}</strong>
+                </div>
+            `).join("");
+            document.getElementById("playground-series").innerHTML = `
+                <h2>Series Win Prediction</h2>
+                ${renderProbabilityBar(data.teams.team_a, series.team_a_probability)}
+                ${renderProbabilityBar(data.teams.team_b, series.team_b_probability)}
+                <div class="mini-list">${mapRows || seqRows || `<div class="empty">No map sequence details.</div>`}</div>
+            `;
+        }
+
+        function renderForfeit(data) {
+            const target = document.getElementById("playground-forfeit");
+            const forfeit = data.forfeit || {};
+            if (!forfeit.available) {
+                target.innerHTML = `<h2>Forfeit Probability</h2><div class="empty">${escapeText(forfeit.error || "Forfeit model unavailable.")}</div>`;
+                return;
+            }
+            target.innerHTML = `
+                <h2>Forfeit Probability</h2>
+                ${metric("Settlement risk", pct(forfeit.probability))}
+                ${metric(`${data.teams.team_a} fair`, pct(forfeit.fair_team_a))}
+                ${metric(`${data.teams.team_b} fair`, pct(forfeit.fair_team_b))}
+            `;
+        }
+
+        function renderVeto(data) {
+            const vetoRows = (data.veto.top_vetoes || []).map((item, index) => `
+                <div class="veto-row">
+                    <strong>${index + 1}. ${pct(item.probability)}</strong>
+                    <span>${item.actions.map(action => `${escapeText(action.team)} ${escapeText(action.action)} ${escapeText(action.map)}`).join(" · ")}</span>
+                </div>
+            `).join("");
+            const mapRows = (data.veto.map_appearance || []).map(item => `
+                <div class="list-row"><span>${escapeText(item.map)}</span><strong>${pct(item.probability)}</strong></div>
+            `).join("");
+            document.getElementById("playground-veto").innerHTML = `
+                <div class="split-grid no-margin">
+                    <div>
+                        <h2>Most Likely Vetoes</h2>
+                        <div class="veto-list">${vetoRows || `<div class="empty">No veto paths returned.</div>`}</div>
+                    </div>
+                    <div>
+                        <h2>Map Appearance</h2>
+                        <div class="mini-list">${mapRows}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function winRateStyle(value) {
+            if (value === null || value === undefined) return "";
+            const clamped = Math.max(0, Math.min(1, Number(value)));
+            const hue = Math.round(8 + (clamped * 132));
+            return `style="--rate-bg: hsla(${hue}, 62%, 38%, .28); --rate-border: hsla(${hue}, 62%, 48%, .62);"`;
+        }
+
+        function mapCell(item) {
+            if (!item || !item.matches) return `<div class="map-rate empty-rate">0 maps</div>`;
+            return `<div class="map-rate" ${winRateStyle(item.win_rate)}><strong>${pct(item.win_rate)}</strong><span>${item.wins}/${item.matches}</span></div>`;
+        }
+
+        function renderTeamStats(data) {
+            const teamA = data.team_stats.team_a;
+            const teamB = data.team_stats.team_b;
+            const byMapA = Object.fromEntries((teamA.map_stats || []).map(item => [item.map, item]));
+            const byMapB = Object.fromEntries((teamB.map_stats || []).map(item => [item.map, item]));
+            const mapOrder = (teamA.map_stats || []).map(item => item.map);
+            const mapRows = mapOrder.map(map => `
+                <div class="map-compare-row">
+                    <div>${mapCell(byMapA[map])}</div>
+                    <strong>${escapeText(map)}</strong>
+                    <div>${mapCell(byMapB[map])}</div>
+                </div>
+            `).join("");
+            document.getElementById("playground-stats").innerHTML = `
+                <h2>Team Stats Summary</h2>
+                <div class="team-compare">
+                    <div>
+                        <h3>${escapeText(teamA.name)}</h3>
+                        <div class="metric-grid">
+                            ${metric("World rank", rankText(teamA))}
+                            ${metric("30d win rate", teamA.recent["30d"].matches ? pct(teamA.recent["30d"].win_rate) : "n/a", `${teamA.recent["30d"].wins}/${teamA.recent["30d"].matches} maps`)}
+                            ${metric("90d win rate", teamA.recent["90d"].matches ? pct(teamA.recent["90d"].win_rate) : "n/a", `${teamA.recent["90d"].wins}/${teamA.recent["90d"].matches} maps`)}
+                            ${metric("H2H 30d", teamA.head_to_head["30d"]?.maps ? `${teamA.head_to_head["30d"].wins}/${teamA.head_to_head["30d"].maps}` : "0/0")}
+                        </div>
+                    </div>
+                    <div>
+                        <h3>${escapeText(teamB.name)}</h3>
+                        <div class="metric-grid">
+                            ${metric("World rank", rankText(teamB))}
+                            ${metric("30d win rate", teamB.recent["30d"].matches ? pct(teamB.recent["30d"].win_rate) : "n/a", `${teamB.recent["30d"].wins}/${teamB.recent["30d"].matches} maps`)}
+                            ${metric("90d win rate", teamB.recent["90d"].matches ? pct(teamB.recent["90d"].win_rate) : "n/a", `${teamB.recent["90d"].wins}/${teamB.recent["90d"].matches} maps`)}
+                            ${metric("H2H 30d", teamB.head_to_head["30d"]?.maps ? `${teamB.head_to_head["30d"].wins}/${teamB.head_to_head["30d"].maps}` : "0/0")}
+                        </div>
+                    </div>
+                </div>
+                <div class="map-compare">
+                    <div class="map-compare-head"><span>${escapeText(teamA.name)}</span><span>Map</span><span>${escapeText(teamB.name)}</span></div>
+                    ${mapRows}
+                </div>
+            `;
+        }
+
+        function renderTeamCard(profile) {
+            const recent30 = profile.recent["30d"];
+            const recent90 = profile.recent["90d"];
+            const h2h30 = profile.head_to_head["30d"] || {};
+            const topMaps = [...(profile.map_stats || [])]
+                .sort((a, b) => (b.matches - a.matches) || ((b.win_rate || 0) - (a.win_rate || 0)))
+                .slice(0, 7)
+                .map(item => `
+                    <div class="list-row">
+                        <span>${escapeText(item.map)}</span>
+                        <strong>${item.matches ? `${pct(item.win_rate)} (${item.wins}/${item.matches})` : "0 maps"}</strong>
+                    </div>
+                `).join("");
+            return `
+                <div>
+                    <h2>${escapeText(profile.name)}</h2>
+                    <div class="metric-grid">
+                        ${metric("World rank", rankText(profile))}
+                        ${metric("30d win rate", recent30.matches ? pct(recent30.win_rate) : "n/a", `${recent30.wins}/${recent30.matches} maps`)}
+                        ${metric("90d win rate", recent90.matches ? pct(recent90.win_rate) : "n/a", `${recent90.wins}/${recent90.matches} maps`)}
+                        ${metric("Win streak", profile.win_streak)}
+                        ${metric("H2H 30d", h2h30.maps ? `${h2h30.wins}/${h2h30.maps}` : "0/0")}
+                        ${metric("Avg opp rank 90d", `#${fmtNumber(Math.round(profile.average_opponent_rank_90d))}`)}
+                    </div>
+                    <h3>Map Win Rates</h3>
+                    <div class="mini-list">${topMaps}</div>
+                </div>
+            `;
+        }
+
+        function renderPlayground(data) {
+            document.getElementById("playground-summary").innerHTML = `
+                <h2>${escapeText(data.teams.team_a)} vs ${escapeText(data.teams.team_b)}</h2>
+                <div class="metric-grid">
+                    ${metric("Format", data.settings.format.toUpperCase())}
+                    ${metric("Picks first", data.settings.pick_first)}
+                    ${metric("Iterations", fmtNumber(data.settings.iterations))}
+                    ${metric("Path source", data.settings.sequence_source)}
+                </div>
+            `;
+            renderMapPrediction(data);
+            renderSeries(data);
+            renderForfeit(data);
+            renderVeto(data);
+            renderTeamStats(data);
+        }
+
+        document.getElementById("playground-form").addEventListener("submit", async event => {
+            event.preventDefault();
+            const button = document.getElementById("playground-run");
+            button.disabled = true;
+            document.getElementById("playground-summary").innerHTML = `<div class="empty">Calculating...</div>`;
+            const body = {
+                team_a: document.getElementById("playground-team-a").value,
+                team_b: document.getElementById("playground-team-b").value,
+                format: document.getElementById("playground-format").value,
+                pick_first: document.getElementById("playground-pick-first").value,
+                single_map: isSeriesFormat() ? "" : document.getElementById("playground-single-map").value,
+                single_picker: isSeriesFormat() ? "neutral" : document.getElementById("playground-single-picker").value,
+                maps: isSeriesFormat() ? document.getElementById("playground-maps").value : "",
+                iters: document.getElementById("playground-iters").value,
+                threshold: document.getElementById("playground-threshold").value,
+                event: document.getElementById("playground-event").value,
+                is_lan: document.getElementById("playground-lan").checked,
+            };
+            try {
+                const response = await fetch("/api/playground/predict", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                const raw = await response.text();
+                let data;
+                try {
+                    data = JSON.parse(raw);
+                } catch {
+                    data = { error: "Prediction endpoint returned an unexpected response." };
+                }
+                if (!response.ok) {
+                    document.getElementById("playground-summary").innerHTML = `<div class="empty">${escapeText(data.error || "Prediction failed.")}</div>`;
+                    return;
+                }
+                renderPlayground(data);
+            } finally {
+                button.disabled = false;
+            }
+        });
+
+        document.getElementById("playground-format").addEventListener("change", syncPlaygroundFields);
 
         const retrainButton = document.getElementById("retrain-button");
         const retrainStatus = document.getElementById("retrain-status");
@@ -241,6 +639,7 @@
         setInterval(tickClock, 1000);
         tickClock();
         loadModelInfo();
+        loadPlaygroundOptions();
         connectRetrainEvents();
     </script>
 </body>
