@@ -21,9 +21,11 @@ from typing import Iterable
 try:
     from config import HLTV_MATCHES_FILE
     from model.veto_sim import MAP_POOL
+    from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
 except ImportError:  # pragma: no cover - keeps the module runnable from odd cwd setups.
     HLTV_MATCHES_FILE = Path("data/raw/hltv_matches.json")
     MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass"]
+    from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
 
 
 ACTION_RE = re.compile(
@@ -111,6 +113,38 @@ PRESET_MODELS = [
     ModelSpec("uniform", {}),
     ModelSpec("current_like", {"current_like": 1.0}),
     ModelSpec(
+        "grid_best",
+        {
+            "slot": 0.60,
+            "eventual": 0.25,
+            "team_ban": 0.15,
+        },
+    ),
+    ModelSpec(
+        "grid_best_locked",
+        {
+            "slot": 0.60,
+            "eventual": 0.25,
+            "team_ban": 0.15,
+            "_lock_probability": 0.90,
+            "_lock_min_sample": 10,
+            "_lock_min_rate": 0.75,
+        },
+    ),
+    ModelSpec(
+        "grid_best_shared_lock",
+        {
+            "slot": 0.60,
+            "eventual": 0.25,
+            "team_ban": 0.15,
+            "_lock_probability": 0.90,
+            "_lock_min_sample": 10,
+            "_lock_min_rate": 0.75,
+            "_shared_lock_min_rate": 0.75,
+            "_shared_lock_min_sample": 10,
+        },
+    ),
+    ModelSpec(
         "ban_history_balanced",
         {
             "slot": 0.45,
@@ -144,23 +178,6 @@ PRESET_MODELS = [
         },
     ),
 ]
-
-
-def normalize_name(name: str | None) -> str:
-    return str(name or "").strip().upper()
-
-
-def normalize_format(raw_format: str | None) -> str:
-    fmt = str(raw_format or "").strip().lower()
-    if "bo1" in fmt or "best of 1" in fmt:
-        return "bo1"
-    if "bo3" in fmt or "best of 3" in fmt:
-        return "bo3"
-    if "bo5" in fmt or "best of 5" in fmt:
-        return "bo5"
-    if fmt in {"mrg", "anc", "inf", "nuke", "anb", "d2", "ovp", "vtg", "trn", "cbl", "cch"}:
-        return "bo1"
-    return fmt or "unknown"
 
 
 def parse_date(raw_date: object) -> datetime | None:
@@ -233,7 +250,7 @@ def match_id_from_record(record: dict) -> str:
 
 
 def parse_veto_match(record: dict, eras: tuple[MapPoolEra, ...]) -> MatchVeto | None:
-    if has_invalid_veto_note(record):
+    if get_invalid_veto_exclusion_reason(record):
         return None
 
     date = parse_date(record.get("date"))
@@ -347,25 +364,6 @@ def parse_veto_match(record: dict, eras: tuple[MapPoolEra, ...]) -> MatchVeto | 
     )
 
 
-def has_invalid_veto_note(record: dict) -> bool:
-    haystack = match_text_haystack(record)
-    if "randomized" in haystack:
-        return True
-    return "failed to show up" in haystack and "veto process" in haystack
-
-
-def match_text_haystack(record: dict) -> str:
-    text_parts = [
-        record.get("event", ""),
-        record.get("format", ""),
-        " ".join(str(line) for line in record.get("match_info", [])),
-        " ".join(str(line) for line in record.get("hltv_vetoes", [])),
-    ]
-    for map_data in record.get("hltv_maps", []):
-        text_parts.extend([map_data.get("map_name", ""), map_data.get("picker", "")])
-    return " ".join(str(part) for part in text_parts if part).lower()
-
-
 def map_winner(record: dict, map_data: dict) -> str | None:
     score1 = parse_score(map_data.get("team1_score"))
     score2 = parse_score(map_data.get("team2_score"))
@@ -440,6 +438,8 @@ class VetoHistory:
 
         signals: dict[str, dict[str, float]] = {}
         slot_total = sum(self.team_slot_counts[(era, team, fmt, slot, map_name)] for map_name in pool)
+        first_slot_total = sum(self.team_slot_counts[(era, team, fmt, 1, map_name)] for map_name in pool)
+        opponent_first_slot_total = sum(self.team_slot_counts[(era, opponent, fmt, 1, map_name)] for map_name in pool)
         eventual_total = sum(self.team_eventual_counts[(era, team, fmt, map_name)] for map_name in pool)
         team_ban_total = sum(self.team_ban_counts[(era, team, map_name)] for map_name in pool)
         global_slot_total = sum(self.global_slot_counts[(era, fmt, slot, map_name)] for map_name in pool)
@@ -486,6 +486,18 @@ class VetoHistory:
                 "own_loss": 1.0 - own_win_rate,
                 "own_play_rate": own_play_rate,
                 "own_pick_rate": own_pick_rate,
+                "raw_first_slot_rate": (
+                    self.team_slot_counts[(era, team, fmt, 1, map_name)] / first_slot_total
+                    if first_slot_total
+                    else 0.0
+                ),
+                "raw_first_slot_sample": float(first_slot_total),
+                "opponent_raw_first_slot_rate": (
+                    self.team_slot_counts[(era, opponent, fmt, 1, map_name)] / opponent_first_slot_total
+                    if opponent_first_slot_total
+                    else 0.0
+                ),
+                "opponent_raw_first_slot_sample": float(opponent_first_slot_total),
             }
 
         return FeatureRow(
@@ -624,11 +636,53 @@ def predict_probabilities(row: FeatureRow, model: ModelSpec) -> dict[str, float]
             }
         )
 
+    scoring_weights = {key: value for key, value in model.weights.items() if not key.startswith("_")}
     scores = {}
     for map_name in row.pool:
         signal = row.signals[map_name]
-        scores[map_name] = sum(weight * signal[key] for key, weight in model.weights.items())
-    return normalize_scores(scores)
+        scores[map_name] = sum(weight * signal[key] for key, weight in scoring_weights.items())
+    probabilities = normalize_scores(scores)
+    return apply_lock_adjustment(row, model, probabilities)
+
+
+def apply_lock_adjustment(row: FeatureRow, model: ModelSpec, probabilities: dict[str, float]) -> dict[str, float]:
+    lock_probability = model.weights.get("_lock_probability")
+    if not lock_probability or row.team_ban_index != 1:
+        return probabilities
+
+    min_sample = model.weights.get("_lock_min_sample", 10)
+    min_rate = model.weights.get("_lock_min_rate", 0.75)
+    lock_candidates = [
+        (
+            map_name,
+            row.signals[map_name]["raw_first_slot_rate"],
+            row.signals[map_name]["raw_first_slot_sample"],
+        )
+        for map_name in row.pool
+    ]
+    locked_map, locked_rate, locked_sample = max(lock_candidates, key=lambda item: item[1])
+    if locked_sample < min_sample or locked_rate < min_rate:
+        return probabilities
+
+    shared_min_rate = model.weights.get("_shared_lock_min_rate")
+    shared_min_sample = model.weights.get("_shared_lock_min_sample", min_sample)
+    if shared_min_rate is not None:
+        opponent_rate = row.signals[locked_map]["opponent_raw_first_slot_rate"]
+        opponent_sample = row.signals[locked_map]["opponent_raw_first_slot_sample"]
+        if opponent_sample >= shared_min_sample and opponent_rate >= shared_min_rate:
+            return probabilities
+
+    residual = 1.0 - lock_probability
+    other_total = sum(prob for map_name, prob in probabilities.items() if map_name != locked_map)
+    adjusted = {}
+    for map_name, probability in probabilities.items():
+        if map_name == locked_map:
+            adjusted[map_name] = lock_probability
+        elif other_total > 0:
+            adjusted[map_name] = residual * probability / other_total
+        else:
+            adjusted[map_name] = residual / max(len(probabilities) - 1, 1)
+    return adjusted
 
 
 def score_rows(rows: list[FeatureRow], models: list[ModelSpec]) -> list[dict[str, object]]:

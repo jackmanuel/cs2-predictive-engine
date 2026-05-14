@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 import random
 import json
+import re
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict
@@ -13,12 +15,15 @@ from typing import List, Dict
 # Ensure project root is in path for config and historical data access
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from config import PROCESSED_DIR, DATA_DIR, VETO_WINDOW_DAYS, MC_ITERATIONS
+    from config import PROCESSED_DIR, DATA_DIR, HLTV_MATCHES_FILE, VETO_WINDOW_DAYS, MC_ITERATIONS
 except ImportError:
     PROCESSED_DIR = Path("data/processed")
     DATA_DIR = Path("data")
+    HLTV_MATCHES_FILE = DATA_DIR / "raw" / "hltv_matches.json"
     VETO_WINDOW_DAYS = 90
     MC_ITERATIONS = 10000
+
+from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -28,7 +33,21 @@ MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass
 
 SIMULATIONS = MC_ITERATIONS
 TOP_SEQUENCES_DISPLAY = 5
-PERMABAN_THRESHOLD = 0.05
+BAN_SLOT_WEIGHT = 0.60
+EVENTUAL_BAN_WEIGHT = 0.25
+TEAM_BAN_WEIGHT = 0.15
+LOCKED_FIRST_BAN_MIN_SAMPLE = 10
+LOCKED_FIRST_BAN_RATE = 0.75
+LOCKED_FIRST_BAN_PROBABILITY = 0.90
+SHARED_LOCKED_FIRST_BAN_MIN_SAMPLE = 10
+SHARED_LOCKED_FIRST_BAN_RATE = 0.75
+
+ACTION_RE = re.compile(
+    r"^\s*\d+\.\s*(?P<team>.*?)\s+(?P<action>removed|picked)\s+"
+    r"(?P<map>Mirage|Ancient|Dust2|Nuke|Inferno|Anubis|Overpass)\s*$",
+    re.IGNORECASE,
+)
+_RAW_MATCH_CACHE = {"signature": None, "matches": None}
 
 def load_data():
     """Loads the processed match historical data."""
@@ -37,10 +56,126 @@ def load_data():
         raise FileNotFoundError(f"Clean maps not found at {clean_path}. Please run the data ingestion pipeline first.")
     return pd.read_parquet(clean_path)
 
-def normalize_name(name: str) -> str:
-    """Normalizes a team name to a consistent uppercase format for matching."""
-    if not name: return ""
-    return name.strip().upper()
+def parse_date(raw_date):
+    if raw_date is None:
+        return None
+    text = str(raw_date).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+def canonical_map(raw_map: str) -> str | None:
+    for map_name in MAP_POOL:
+        if map_name.lower() == str(raw_map or "").strip().lower():
+            return map_name
+    return None
+
+def empty_ban_history() -> dict:
+    return {
+        "slot_counts": defaultdict(Counter),
+        "eventual_counts": defaultdict(Counter),
+        "team_ban_counts": Counter(),
+        "slot_totals": Counter(),
+        "eventual_totals": Counter(),
+        "team_ban_total": 0,
+        "series": 0,
+    }
+
+def load_raw_matches(raw_path: Path = HLTV_MATCHES_FILE) -> list:
+    if not raw_path.exists():
+        return []
+
+    try:
+        stat = raw_path.stat()
+        signature = (str(raw_path), stat.st_mtime_ns, stat.st_size)
+    except OSError as exc:
+        logger.warning(f"Warning: Could not stat raw veto history: {exc}")
+        return []
+
+    if _RAW_MATCH_CACHE["signature"] == signature and _RAW_MATCH_CACHE["matches"] is not None:
+        return _RAW_MATCH_CACHE["matches"]
+
+    try:
+        matches = json.loads(raw_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f"Warning: Could not load raw veto history: {exc}")
+        return []
+
+    _RAW_MATCH_CACHE["signature"] = signature
+    _RAW_MATCH_CACHE["matches"] = matches
+    return matches
+
+def load_team_ban_history(team_id: str, cutoff=None, raw_path: Path = HLTV_MATCHES_FILE) -> dict:
+    """Loads explicit HLTV ban history for a team from raw match veto text."""
+    history = empty_ban_history()
+    matches = load_raw_matches(raw_path)
+
+    for match in matches:
+        if get_invalid_veto_exclusion_reason(match):
+            continue
+
+        match_date = parse_date(match.get("date"))
+        if match_date is None or (cutoff is not None and match_date < cutoff):
+            continue
+
+        teams = {normalize_name(match.get("team1")), normalize_name(match.get("team2"))}
+        if team_id not in teams:
+            continue
+
+        match_format = normalize_format(match.get("format"))
+        if match_format not in {"bo1", "bo3", "bo5"}:
+            continue
+
+        team_ban_index = 0
+        eventual_maps = set()
+        for line in match.get("hltv_vetoes", []):
+            parsed = ACTION_RE.match(str(line).strip())
+            if not parsed:
+                continue
+            action_team = normalize_name(parsed.group("team"))
+            if action_team != team_id or parsed.group("action").lower() != "removed":
+                continue
+
+            map_name = canonical_map(parsed.group("map"))
+            if map_name is None:
+                continue
+
+            team_ban_index += 1
+            slot_key = (match_format, team_ban_index)
+            history["slot_counts"][slot_key][map_name] += 1
+            history["slot_totals"][slot_key] += 1
+            history["team_ban_counts"][map_name] += 1
+            history["team_ban_total"] += 1
+            eventual_maps.add(map_name)
+
+        if team_ban_index > 0:
+            history["series"] += 1
+            for map_name in eventual_maps:
+                history["eventual_counts"][match_format][map_name] += 1
+                history["eventual_totals"][match_format] += 1
+
+    return history
+
+def smoothed_probability(count: int, total: int, pool_size: int, alpha: float) -> float:
+    prior = 1.0 / max(pool_size, 1)
+    return (count + prior * alpha) / (total + alpha)
+
+def raw_first_ban_rate(stats: dict, map_name: str, series_format: str) -> tuple[float, int]:
+    slot_key = f"{series_format}:1"
+    total = int(stats.get('metadata', {}).get('ban_slot_totals', {}).get(slot_key, 0))
+    if total <= 0:
+        return 0.0, 0
+    count = int(stats[map_name].get('ban_slot_counts', {}).get(slot_key, 0))
+    return count / total, total
 
 def get_team_stats(team_id: str, df: pd.DataFrame, days: int = VETO_WINDOW_DAYS) -> Dict[str, Dict]:
     """
@@ -52,6 +187,8 @@ def get_team_stats(team_id: str, df: pd.DataFrame, days: int = VETO_WINDOW_DAYS)
     if days:
         cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(days=days)
         df = df[df['date'] >= cutoff]
+    else:
+        cutoff = None
     
     # Filter for all maps involving this team
     team_df = df[(df['team_a_id'] == team_id) | (df['team_b_id'] == team_id)]
@@ -64,6 +201,9 @@ def get_team_stats(team_id: str, df: pd.DataFrame, days: int = VETO_WINDOW_DAYS)
     
     if total_series == 0:
         logger.warning(f"Warning: No historical data found for team '{team_id}'. Using default probabilities.")
+
+    raw_cutoff = cutoff.to_pydatetime() if cutoff is not None else None
+    ban_history = load_team_ban_history(team_id, cutoff=raw_cutoff)
     
     stats = {}
     for m in MAP_POOL:
@@ -92,11 +232,30 @@ def get_team_stats(team_id: str, df: pd.DataFrame, days: int = VETO_WINDOW_DAYS)
             'play_rate': play_rate,
             'loss_rate': 1.0 - win_rate,
             'sample_size': matches_on_map,
-            'picks': picks
+            'picks': picks,
+            'ban_slot_counts': {
+                f"{fmt}:{slot}": int(counts.get(m, 0))
+                for (fmt, slot), counts in ban_history["slot_counts"].items()
+            },
+            'eventual_ban_counts': {
+                fmt: int(counts.get(m, 0))
+                for fmt, counts in ban_history["eventual_counts"].items()
+            },
+            'team_ban_count': int(ban_history["team_ban_counts"].get(m, 0)),
         }
     stats['metadata'] = {
         'total_series': total_series,
-        'pickable_series': pickable_series
+        'pickable_series': pickable_series,
+        'ban_series': int(ban_history["series"]),
+        'ban_slot_totals': {
+            f"{fmt}:{slot}": int(total)
+            for (fmt, slot), total in ban_history["slot_totals"].items()
+        },
+        'eventual_ban_totals': {
+            fmt: int(total)
+            for fmt, total in ban_history["eventual_totals"].items()
+        },
+        'team_ban_total': int(ban_history["team_ban_total"]),
     }
     return stats
 
@@ -104,9 +263,9 @@ def print_team_summary(team_id: str, stats: dict):
     """Prints a formatted table of historical statistics for a team."""
     meta = stats['metadata']
     print(f"\n HISTORICAL STATS: {team_id}")
-    print(f" Total Series: {meta['total_series']} | Pickable (BO3/BO5): {meta['pickable_series']}")
-    print(f"{'Map Name':12} | {'Win Rate':15} | {'Pick Rate':15} | {'Times Played':12}")
-    print("-" * 65)
+    print(f" Total Series: {meta['total_series']} | Pickable (BO3/BO5): {meta['pickable_series']} | Veto Series: {meta.get('ban_series', 0)}")
+    print(f"{'Map Name':12} | {'Win Rate':15} | {'Pick Rate':15} | {'First Bans':15} | {'Times Played':12}")
+    print("-" * 85)
     
     for m in MAP_POOL:
         s = stats[m]
@@ -119,44 +278,72 @@ def print_team_summary(team_id: str, stats: dict):
         pks = s['picks']
         pr = (pks / meta['pickable_series'] * 100) if meta['pickable_series'] > 0 else 0.0
         pr_str = f"{pr:5.1f}% ({pks}/{meta['pickable_series']})"
+        first_bans = sum(count for key, count in s.get('ban_slot_counts', {}).items() if key.endswith(":1"))
+        first_total = sum(total for key, total in meta.get('ban_slot_totals', {}).items() if key.endswith(":1"))
+        first_rate = (first_bans / first_total * 100) if first_total > 0 else 0.0
+        fb_str = f"{first_rate:5.1f}% ({first_bans}/{first_total})"
         
-        print(f"{m:12} | {wr_str:15} | {pr_str:15} | {s['sample_size']:^12}")
-    print("-" * 65)
+        print(f"{m:12} | {wr_str:15} | {pr_str:15} | {fb_str:15} | {s['sample_size']:^12}")
+    print("-" * 85)
 
-def get_ban_weight(current_stats, opponent_stats, pool, is_first_ban=False):
+def get_ban_weight(current_stats, opponent_stats, pool, is_first_ban=False, series_format="bo3", team_ban_index=1):
     """
-    Calculates weights for the Ban Phase: opponent_win_rate + own_loss_rate.
-    Applies Permaban Override with Opponent Threat Tiebreaker for maps with low play/pick rates.
+    Calculates ban weights from explicit historical veto behaviour.
+
+    The weights come from the veto backtest's best coarse-grid model:
+    format/slot ban rate, eventual ban rate within that format, and overall
+    team ban rate. BO1 later bans are therefore credited as evidence that a map
+    is a real avoid target even when it was not removed at the first chance.
     """
-    # Identify maps that meet the permaban criteria (< 0.05 play rate and < 0.01 pick rate)
-    pickable = current_stats['metadata']['pickable_series']
-    permabans = []
-    for m in pool:
-        play_rate = current_stats[m]['play_rate']
-        picks = current_stats[m]['picks']
-        raw_pick_rate = picks / pickable if pickable > 0 else 0.0
-        
-        if play_rate < PERMABAN_THRESHOLD and raw_pick_rate < 0.01:
-            permabans.append(m)
-    
-    if is_first_ban and permabans:
-        # Opponent Threat Tiebreaker with Shared Permaban Bluffing
-        weights = []
-        for m in pool:
-            if m in permabans:
-                # Threat Tiebreaker: prioritize banning maps the opponent is statistically proficient at
-                w = max(opponent_stats[m]['win_rate'], 0.01)
-                weights.append(w)
-            else:
-                # Maps not in the permaban list continue to get negligible weight during this override phase
-                weights.append(0.0001)
-        return weights
-    
-    # Standard heuristic: opponent_map_win_rate + own_map_loss_rate
+    meta = current_stats.get('metadata', {})
+    slot_key = f"{series_format}:{team_ban_index}"
+    slot_total = int(meta.get('ban_slot_totals', {}).get(slot_key, 0))
+    eventual_total = int(meta.get('eventual_ban_totals', {}).get(series_format, 0))
+    team_ban_total = int(meta.get('team_ban_total', 0))
+    pool_size = len(pool)
+
     weights = []
     for m in pool:
-        w = opponent_stats[m]['win_rate'] + current_stats[m]['loss_rate']
-        weights.append(max(w, 1e-6)) # Avoid zero weights for random.choices
+        map_stats = current_stats[m]
+        slot_count = int(map_stats.get('ban_slot_counts', {}).get(slot_key, 0))
+        eventual_count = int(map_stats.get('eventual_ban_counts', {}).get(series_format, 0))
+        team_ban_count = int(map_stats.get('team_ban_count', 0))
+        slot_prob = smoothed_probability(slot_count, slot_total, pool_size, alpha=4.0)
+        eventual_prob = smoothed_probability(eventual_count, eventual_total, pool_size, alpha=4.0)
+        team_ban_prob = smoothed_probability(team_ban_count, team_ban_total, pool_size, alpha=7.0)
+        w = (
+            BAN_SLOT_WEIGHT * slot_prob
+            + EVENTUAL_BAN_WEIGHT * eventual_prob
+            + TEAM_BAN_WEIGHT * team_ban_prob
+        )
+        weights.append(max(w, 1e-6))
+
+    if team_ban_index == 1 and slot_total >= LOCKED_FIRST_BAN_MIN_SAMPLE:
+        raw_slot_rates = {
+            m: int(current_stats[m].get('ban_slot_counts', {}).get(slot_key, 0)) / slot_total
+            for m in pool
+        }
+        locked_map, locked_rate = max(raw_slot_rates.items(), key=lambda item: item[1])
+        if locked_rate >= LOCKED_FIRST_BAN_RATE:
+            opponent_rate, opponent_sample = raw_first_ban_rate(opponent_stats, locked_map, series_format)
+            if (
+                opponent_sample >= SHARED_LOCKED_FIRST_BAN_MIN_SAMPLE
+                and opponent_rate >= SHARED_LOCKED_FIRST_BAN_RATE
+            ):
+                return weights
+
+            locked_index = pool.index(locked_map)
+            residual = 1.0 - LOCKED_FIRST_BAN_PROBABILITY
+            other_total = sum(weight for index, weight in enumerate(weights) if index != locked_index)
+            locked_weights = []
+            for index, weight in enumerate(weights):
+                if index == locked_index:
+                    locked_weights.append(LOCKED_FIRST_BAN_PROBABILITY)
+                elif other_total > 0:
+                    locked_weights.append(residual * weight / other_total)
+                else:
+                    locked_weights.append(residual / max(pool_size - 1, 1))
+            return locked_weights
     return weights
 
 def get_pick_weight(current_stats, pool):
@@ -198,15 +385,24 @@ def simulate_veto(stats_a: dict, stats_b: dict, series_format: str = "bo3") -> L
             ("ban", "a", False), ("ban", "b", False)
         ]
 
+    ban_counts = {"a": 0, "b": 0}
     for step in steps:
         move_type = step[0]
         team = step[1]
         
         if move_type == "ban":
-            is_first = step[2]
             current = stats_a if team == "a" else stats_b
             opponent = stats_b if team == "a" else stats_a
-            w = get_ban_weight(current, opponent, pool, is_first_ban=is_first)
+            ban_counts[team] += 1
+            team_ban_index = ban_counts[team]
+            w = get_ban_weight(
+                current,
+                opponent,
+                pool,
+                is_first_ban=team_ban_index == 1,
+                series_format=series_format,
+                team_ban_index=team_ban_index,
+            )
             m = random.choices(pool, weights=w, k=1)[0]
             pool.remove(m)
         else: # pick
@@ -336,7 +532,7 @@ def main():
         prob = (count / args.iters) * 100
         print(f" {i+1}. {prob:5.1f}% | {seq}")
 
-    print(f"\nHeuristics: Ban (Bluffing / Threat / Opp Wr + Own Lr), Pick (Own Wr * Own Pr), Permaban (<{PERMABAN_THRESHOLD*100:.0f}% play & <1% pick)")
+    print(f"\nHeuristics: Ban (explicit veto history: slot {BAN_SLOT_WEIGHT:.0%}, eventual {EVENTUAL_BAN_WEIGHT:.0%}, team {TEAM_BAN_WEIGHT:.0%}; shared-aware locked first ban at {LOCKED_FIRST_BAN_RATE:.0%}+), Pick (Own Wr * Own Pr)")
     print("="*60 + "\n")
 
 if __name__ == "__main__":

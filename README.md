@@ -31,7 +31,7 @@ The repository does not redistribute scraped HLTV data, betting odds snapshots, 
 - HLTV ingestion for match metadata, map results, veto notes, player stats, ranks, and betting analytics pages.
 - Temporal feature engineering with rolling form, strength-of-schedule, head-to-head, map comfort, pick context, LAN history, and roster anomaly exclusions.
 - PyTorch binary map classifier with mirrored training rows to reduce team-order bias.
-- Monte Carlo veto simulator with map pool, pick/ban, permaban, and veto-starter heuristics.
+- Monte Carlo veto simulator with map pool, explicit veto-history ban weights, pick tendencies, and veto-starter heuristics.
 - Series probability aggregation over likely veto paths.
 - SQLite-backed shadow ledger for prediction snapshots, model versions, odds history, calibration, and settled-result analysis.
 - Walk-forward feature experiment runner for comparing feature variants across fixed future windows.

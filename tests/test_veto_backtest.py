@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from evaluation.veto_backtest import (
     DEFAULT_ERAS,
+    FeatureRow,
     ModelSpec,
     VetoHistory,
     normalize_name,
@@ -111,3 +112,69 @@ def test_randomized_veto_note_excludes_match():
     }
 
     assert parse_veto_match(record, DEFAULT_ERAS) is None
+
+
+def test_shared_lock_model_does_not_force_shared_first_ban():
+    row = FeatureRow(
+        actual_map="Mirage",
+        pool=("Anubis", "Mirage", "Nuke"),
+        match_format="bo3",
+        team_ban_index=1,
+        prior_team_bans=20,
+        signals={
+            "Anubis": {
+                "slot": 0.8,
+                "eventual": 0.8,
+                "team_ban": 0.8,
+                "raw_first_slot_rate": 0.8,
+                "raw_first_slot_sample": 20.0,
+                "opponent_raw_first_slot_rate": 0.85,
+                "opponent_raw_first_slot_sample": 20.0,
+            },
+            "Mirage": {
+                "slot": 0.1,
+                "eventual": 0.1,
+                "team_ban": 0.1,
+                "raw_first_slot_rate": 0.1,
+                "raw_first_slot_sample": 20.0,
+                "opponent_raw_first_slot_rate": 0.0,
+                "opponent_raw_first_slot_sample": 20.0,
+            },
+            "Nuke": {
+                "slot": 0.1,
+                "eventual": 0.1,
+                "team_ban": 0.1,
+                "raw_first_slot_rate": 0.1,
+                "raw_first_slot_sample": 20.0,
+                "opponent_raw_first_slot_rate": 0.0,
+                "opponent_raw_first_slot_sample": 20.0,
+            },
+        },
+    )
+    locked = ModelSpec(
+        "locked",
+        {
+            "slot": 0.6,
+            "eventual": 0.25,
+            "team_ban": 0.15,
+            "_lock_probability": 0.9,
+            "_lock_min_sample": 10,
+            "_lock_min_rate": 0.75,
+        },
+    )
+    shared = ModelSpec(
+        "shared",
+        {
+            "slot": 0.6,
+            "eventual": 0.25,
+            "team_ban": 0.15,
+            "_lock_probability": 0.9,
+            "_lock_min_sample": 10,
+            "_lock_min_rate": 0.75,
+            "_shared_lock_min_rate": 0.75,
+            "_shared_lock_min_sample": 10,
+        },
+    )
+
+    assert predict_probabilities(row, locked)["Anubis"] == 0.9
+    assert predict_probabilities(row, shared)["Anubis"] < 0.9
