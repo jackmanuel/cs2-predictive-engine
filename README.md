@@ -243,7 +243,46 @@ python -m evaluation.feature_experiments --preset full --fold-days 14 --folds 4
 
 See `docs/model_evaluation.md` for the evaluation methodology, metric definitions, and current feature hypotheses.
 
-### 9. Forfeit/Default Settlement-Risk Adjustment
+### 9. Veto Ban-Weight Backtest
+
+Evaluate veto ban-weighting approaches against historical HLTV veto actions before changing the production simulator:
+
+```bash
+python -m evaluation.veto_backtest
+```
+
+The backtest replays vetoes chronologically and scores each ban with log loss, top-1 accuracy, top-2 accuracy, and the mean probability assigned to the actual ban. It compares the current heuristic-style baseline against ban-history variants that use format/slot-specific bans, eventual bans in multi-ban formats, team ban history, opponent threat, and low-play avoidance.
+
+Run a coarse parameter search:
+
+```bash
+python -m evaluation.veto_backtest --grid-search --top 20
+```
+
+Export all model and split results:
+
+```bash
+python -m evaluation.veto_backtest --grid-search --output reports/veto_backtest.csv
+```
+
+The script has a map-pool era hook for future active-duty changes. The current local corpus is treated as one era by default, but an era JSON can be supplied later:
+
+```json
+[
+  {
+    "name": "post_next_major",
+    "start": "2026-07-01",
+    "end": null,
+    "maps": ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "NewMap"]
+  }
+]
+```
+
+```bash
+python -m evaluation.veto_backtest --map-pool-eras path/to/map_pool_eras.json
+```
+
+### 10. Forfeit/Default Settlement-Risk Adjustment
 
 The winner model estimates the sporting result of a match. The optional forfeit/default adjustment uses a second machine-learning model to estimate the probability that a match has settlement-affecting default risk.
 
