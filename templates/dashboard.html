@@ -185,7 +185,9 @@
 
         function setRetrainState(snapshot) {
             const progress = snapshot.progress || 0;
-            retrainStatus.textContent = snapshot.status || "idle";
+            retrainStatus.textContent = snapshot.status === "running"
+                ? (snapshot.phase_label || "Running")
+                : (snapshot.status || "idle");
             retrainProgress.style.width = `${progress}%`;
             retrainProgressLabel.textContent = `${progress}%`;
             retrainButton.disabled = snapshot.status === "running";
@@ -210,7 +212,9 @@
                 retrainLog.scrollTop = retrainLog.scrollHeight;
                 retrainProgress.style.width = `${payload.progress}%`;
                 retrainProgressLabel.textContent = `${payload.progress}%`;
+                retrainStatus.textContent = payload.phase_label || "Running";
             });
+            eventSource.addEventListener("heartbeat", event => setRetrainState(JSON.parse(event.data)));
         }
 
         retrainButton.addEventListener("click", async () => {

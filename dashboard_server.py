@@ -23,6 +23,20 @@ PERFORMANCE_REPORT_PATH = REPORTS_DIR / "dashboard_shadow_ledger_report.html"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+# Conservative phase ranges based on one local timing run. The values are only
+# used to keep dashboard progress moving between sparse pipeline log lines.
+PHASE_ESTIMATES = {
+    "starting": {"label": "Starting pipeline", "start": 0, "end": 2, "seconds": 3},
+    "cleaning": {"label": "Cleaning raw data", "start": 2, "end": 4, "seconds": 5},
+    "features": {"label": "Calculating features", "start": 4, "end": 8, "seconds": 12},
+    "training_setup": {"label": "Preparing training data", "start": 8, "end": 12, "seconds": 8},
+    "training": {"label": "Training model", "start": 12, "end": 96, "seconds": 260},
+    "finalizing": {"label": "Finalizing artifacts", "start": 96, "end": 99, "seconds": 8},
+    "completed": {"label": "Completed", "start": 100, "end": 100, "seconds": 1},
+    "failed": {"label": "Failed", "start": 100, "end": 100, "seconds": 1},
+    "idle": {"label": "Idle", "start": 0, "end": 0, "seconds": 1},
+}
+
 
 class RetrainJob:
     def __init__(self):
@@ -36,17 +50,45 @@ class RetrainJob:
         self.returncode = None
         self.lines = []
         self.subscribers = []
+        self.phase = "idle"
+        self.phase_started_at = None
+        self.phase_started_monotonic = None
 
     def snapshot(self):
         with self.lock:
             return {
                 "status": self.status,
-                "progress": self.progress,
+                "progress": self.estimated_progress_locked(),
+                "phase": self.phase,
+                "phase_label": PHASE_ESTIMATES.get(self.phase, PHASE_ESTIMATES["idle"])["label"],
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
                 "returncode": self.returncode,
                 "tail": self.lines[-80:],
             }
+
+    def estimated_progress_locked(self):
+        if self.status != "running":
+            return self.progress
+
+        estimate = PHASE_ESTIMATES.get(self.phase, PHASE_ESTIMATES["starting"])
+        if not self.phase_started_monotonic:
+            return max(self.progress, estimate["start"])
+
+        elapsed = max(0, time.monotonic() - self.phase_started_monotonic)
+        phase_fraction = min(elapsed / estimate["seconds"], 0.98)
+        phase_progress = estimate["start"] + ((estimate["end"] - estimate["start"]) * phase_fraction)
+        return int(max(self.progress, min(estimate["end"], phase_progress)))
+
+    def set_phase_locked(self, phase):
+        if phase == self.phase:
+            return
+
+        self.phase = phase
+        self.phase_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.phase_started_monotonic = time.monotonic()
+        estimate = PHASE_ESTIMATES.get(phase, PHASE_ESTIMATES["starting"])
+        self.progress = max(self.progress, estimate["start"])
 
     def subscribe(self):
         subscriber = queue.Queue()
@@ -74,10 +116,16 @@ class RetrainJob:
         with self.lock:
             self.lines.append(clean_line)
             self.lines = self.lines[-400:]
-            self.progress = max(self.progress, infer_progress(clean_line))
-            progress = self.progress
+            phase = infer_phase(clean_line)
+            if phase:
+                self.set_phase_locked(phase)
+            floor = infer_progress_floor(clean_line)
+            if floor is not None:
+                self.progress = max(self.progress, floor)
+            progress = self.estimated_progress_locked()
+            phase_label = PHASE_ESTIMATES.get(self.phase, PHASE_ESTIMATES["idle"])["label"]
 
-        self.publish("line", {"line": clean_line, "progress": progress})
+        self.publish("line", {"line": clean_line, "progress": progress, "phase": self.phase, "phase_label": phase_label})
 
     def start(self):
         with self.lock:
@@ -90,6 +138,9 @@ class RetrainJob:
             self.finished_at = None
             self.returncode = None
             self.lines = []
+            self.phase = "starting"
+            self.phase_started_at = self.started_at
+            self.phase_started_monotonic = time.monotonic()
 
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
@@ -122,6 +173,7 @@ class RetrainJob:
             self.returncode = returncode
             self.status = "completed" if returncode == 0 else "failed"
             self.progress = 100
+            self.phase = "completed" if returncode == 0 else "failed"
             self.finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         self.publish("status", self.snapshot())
@@ -130,25 +182,46 @@ class RetrainJob:
 retrain_job = RetrainJob()
 
 
-def infer_progress(line):
+def infer_phase(line):
     lowered = line.lower()
     if "phase 1" in lowered or "cleaning" in lowered:
-        return 12
-    if "scrubbing" in lowered or "clean_maps.parquet" in lowered:
-        return 28
+        return "cleaning"
     if "phase 2" in lowered or "feature engineering" in lowered:
-        return 42
-    if "calculating temporal" in lowered or "features.parquet" in lowered:
-        return 60
+        return "features"
+    if "applying data mirroring" in lowered or "split sizes" in lowered or "scaler saved" in lowered:
+        return "training_setup"
+    if "starting ensemble training" in lowered or "training seed" in lowered or "epoch" in lowered:
+        return "training"
+    if "ensemble test averages" in lowered or "best model globally" in lowered:
+        return "finalizing"
     if "phase 3" in lowered or "training" in lowered:
-        return 72
-    if "optimizing" in lowered or "best_mvp_model.pt" in lowered or "scaler.pkl" in lowered:
-        return 88
+        return "training_setup"
+    return None
+
+
+def infer_progress_floor(line):
+    lowered = line.lower()
+    if "clean_maps.parquet" in lowered:
+        return 4
+    if "features.parquet" in lowered or "reduced features saved" in lowered:
+        return 8
+    if "scaler.pkl" in lowered or "scaler saved" in lowered:
+        return 12
+    if "training seed 2" in lowered:
+        return 29
+    if "training seed 3" in lowered:
+        return 46
+    if "training seed 4" in lowered:
+        return 62
+    if "training seed 5" in lowered:
+        return 79
+    if "best_mvp_model.pt" in lowered or "best model globally" in lowered:
+        return 97
     if "completed successfully" in lowered:
         return 100
     if "pipeline failed" in lowered:
         return 100
-    return retrain_job.progress
+    return None
 
 
 def read_json(path):
@@ -369,10 +442,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             while True:
                 try:
-                    message = subscriber.get(timeout=20)
+                    message = subscriber.get(timeout=2)
                     self.write_event(message["event"], message["payload"])
                 except queue.Empty:
-                    self.write_event("heartbeat", {"time": time.time()})
+                    self.write_event("heartbeat", retrain_job.snapshot())
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
