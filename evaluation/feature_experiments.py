@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
 
 from config import (
     BATCH_SIZE,
+    DEFAULT_TEAM_RANK,
     DROPOUT_RATE,
     EARLY_STOPPING_PATIENCE,
     EPOCHS,
@@ -45,9 +46,41 @@ from processing.features import MODEL_FEATURES, TARGET_COL
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_FEATURES_PATH = PROCESSED_DIR / "features.parquet"
+DEFAULT_CLEAN_MAPS_PATH = PROCESSED_DIR / "clean_maps.parquet"
 DEFAULT_REPORT_DIR = PROJECT_ROOT / "reports"
 
 H2H_METADATA_COLUMNS = ["date", "match_id", "team_a_id", "team_b_id", TARGET_COL]
+RANK_MERGE_KEYS = ["match_id", "map_name", "date", "team_a_id", "team_b_id"]
+RANK_SOURCE_COLUMNS = [
+    "team_a_world_rank",
+    "team_a_vrs_rank",
+    "team_b_world_rank",
+    "team_b_vrs_rank",
+    "team_a_world_rank_missing",
+    "team_a_vrs_rank_missing",
+    "team_b_world_rank_missing",
+    "team_b_vrs_rank_missing",
+]
+RANK_STRATEGY_SPECS = {
+    "world_only_default_500": ("world_only", 500),
+    "vrs_only_default_500": ("vrs_only", 500),
+    "world_vrs_fallback_default_300": ("world_vrs_fallback", 300),
+    "world_vrs_fallback_default_750": ("world_vrs_fallback", 750),
+    "world_vrs_fallback_default_1000": ("world_vrs_fallback", 1000),
+    "avg_available_default_500": ("avg_available", 500),
+    "avg_available_default_750": ("avg_available", 750),
+    "log_avg_available_default_500": ("log_avg_available", 500),
+    "best_available_default_500": ("best_available", 500),
+    "weighted_world_vrs_default_500": ("weighted_world_vrs", 500),
+}
+RANK_STRATEGY_COLUMNS = {
+    column
+    for strategy_name in RANK_STRATEGY_SPECS
+    for column in (
+        f"rank_{strategy_name}_diff",
+        f"avg_log_rank_{strategy_name}",
+    )
+}
 
 
 @dataclass(frozen=True)
@@ -81,9 +114,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--preset",
-        choices=["promising", "full", "sample_depth"],
+        choices=["promising", "full", "sample_depth", "ranking"],
         default="promising",
         help="Variant set to evaluate. Default: promising.",
+    )
+    parser.add_argument(
+        "--clean-maps-path",
+        default=str(DEFAULT_CLEAN_MAPS_PATH),
+        help=(
+            "Clean map parquet used to enrich rank-source experiments when raw rank "
+            "columns are not present in the feature parquet."
+        ),
     )
     parser.add_argument(
         "--variants",
@@ -216,6 +257,16 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
     def without_h2h(base_features: Iterable[str] = baseline) -> tuple[str, ...]:
         return tuple(feature for feature in base_features if not feature.startswith("h2h_"))
 
+    def with_rank_strategy(strategy_name: str) -> tuple[str, ...]:
+        return tuple(
+            f"rank_{strategy_name}_diff"
+            if feature == "rank_diff"
+            else f"avg_log_rank_{strategy_name}"
+            if feature == "avg_log_rank"
+            else feature
+            for feature in baseline
+        )
+
     no_lan_dom_res = without("lan_rate_diff", "dominance_diff", "resilience_diff")
 
     variants = [
@@ -340,6 +391,56 @@ def build_variant_catalog() -> dict[str, FeatureVariant]:
             ),
             "Add raw and log-scaled 30-day sample-depth signals.",
         ),
+        FeatureVariant(
+            "rank_world_only_default_500",
+            with_rank_strategy("world_only_default_500"),
+            "Use pure HLTV world rank only; missing and unranked teams become rank 500.",
+        ),
+        FeatureVariant(
+            "rank_vrs_only_default_500",
+            with_rank_strategy("vrs_only_default_500"),
+            "Use pure VRS before-rank only; missing and unranked teams become rank 500.",
+        ),
+        FeatureVariant(
+            "rank_avg_available_default_500",
+            with_rank_strategy("avg_available_default_500"),
+            "Average available world and VRS ranks; use rank 500 only when neither source is available.",
+        ),
+        FeatureVariant(
+            "rank_log_avg_available_default_500",
+            with_rank_strategy("log_avg_available_default_500"),
+            "Geometric-average available world and VRS ranks before taking log-rank features.",
+        ),
+        FeatureVariant(
+            "rank_best_available_default_500",
+            with_rank_strategy("best_available_default_500"),
+            "Use the better available rank from either system, with rank 500 for missing/unranked teams.",
+        ),
+        FeatureVariant(
+            "rank_weighted_world_vrs_default_500",
+            with_rank_strategy("weighted_world_vrs_default_500"),
+            "Blend world and VRS ranks with a 65/35 world-rank preference when both are available.",
+        ),
+        FeatureVariant(
+            "rank_world_vrs_fallback_default_300",
+            with_rank_strategy("world_vrs_fallback_default_300"),
+            "Use world rank then VRS fallback, but treat missing/unranked teams as rank 300.",
+        ),
+        FeatureVariant(
+            "rank_world_vrs_fallback_default_750",
+            with_rank_strategy("world_vrs_fallback_default_750"),
+            "Use world rank then VRS fallback, but treat missing/unranked teams as rank 750.",
+        ),
+        FeatureVariant(
+            "rank_world_vrs_fallback_default_1000",
+            with_rank_strategy("world_vrs_fallback_default_1000"),
+            "Use world rank then VRS fallback, but treat missing/unranked teams as rank 1000.",
+        ),
+        FeatureVariant(
+            "rank_avg_available_default_750",
+            with_rank_strategy("avg_available_default_750"),
+            "Average available world and VRS ranks, with a softer rank-750 default for unknown teams.",
+        ),
     ]
     return {variant.name: variant for variant in variants}
 
@@ -364,10 +465,25 @@ def preset_names(preset: str) -> list[str]:
         "sample_depth_log_full",
         "sample_depth_all_counts",
     ]
+    ranking = [
+        "baseline_all",
+        "rank_world_only_default_500",
+        "rank_vrs_only_default_500",
+        "rank_avg_available_default_500",
+        "rank_log_avg_available_default_500",
+        "rank_best_available_default_500",
+        "rank_weighted_world_vrs_default_500",
+        "rank_world_vrs_fallback_default_300",
+        "rank_world_vrs_fallback_default_750",
+        "rank_world_vrs_fallback_default_1000",
+        "rank_avg_available_default_750",
+    ]
     if preset == "promising":
         return promising
     if preset == "sample_depth":
         return sample_depth
+    if preset == "ranking":
+        return ranking
     return [
         *promising,
         "no_7d_form",
@@ -375,6 +491,7 @@ def preset_names(preset: str) -> list[str]:
         "single_sos_30d",
         "no_h2h",
         *[name for name in sample_depth if name != "baseline_all"],
+        *[name for name in ranking if name != "baseline_all"],
     ]
 
 
@@ -453,7 +570,141 @@ def add_sample_depth_features(df: pd.DataFrame) -> pd.DataFrame:
     return enriched
 
 
-def ensure_variant_columns(df: pd.DataFrame, variants: Iterable[FeatureVariant]) -> pd.DataFrame:
+def load_rank_source_frame(clean_maps_path: Path) -> pd.DataFrame:
+    if not clean_maps_path.exists():
+        raise FileNotFoundError(
+            "Rank-source experiments require clean map data, but the parquet was not found: "
+            f"{clean_maps_path}"
+        )
+
+    rank_df = pd.read_parquet(clean_maps_path)
+    required = RANK_MERGE_KEYS + RANK_SOURCE_COLUMNS
+    missing = [column for column in required if column not in rank_df.columns]
+    if missing:
+        raise RuntimeError(f"Clean map parquet is missing rank-source columns: {missing}")
+
+    rank_df = rank_df.loc[:, required].copy()
+    rank_df["date"] = pd.to_datetime(rank_df["date"], utc=True)
+    return rank_df.drop_duplicates(RANK_MERGE_KEYS)
+
+
+def ensure_rank_source_columns(df: pd.DataFrame, clean_maps_path: Path) -> pd.DataFrame:
+    if all(column in df.columns for column in RANK_SOURCE_COLUMNS):
+        return df
+
+    missing_keys = [column for column in RANK_MERGE_KEYS if column not in df.columns]
+    if missing_keys:
+        raise RuntimeError(
+            "Rank-source experiments require feature metadata columns missing from the frame: "
+            f"{missing_keys}"
+        )
+
+    rank_df = load_rank_source_frame(clean_maps_path)
+    enriched = df.copy()
+    enriched["date"] = pd.to_datetime(enriched["date"], utc=True)
+    enriched = enriched.drop(
+        columns=[column for column in RANK_SOURCE_COLUMNS if column in enriched.columns]
+    )
+    return enriched.merge(rank_df, on=RANK_MERGE_KEYS, how="left", validate="many_to_one")
+
+
+def rank_source_values(
+    df: pd.DataFrame,
+    team_prefix: str,
+    source: str,
+) -> tuple[pd.Series, pd.Series]:
+    rank_col = f"{team_prefix}_{source}_rank"
+    missing_col = f"{team_prefix}_{source}_rank_missing"
+
+    values = pd.to_numeric(df[rank_col], errors="coerce")
+    missing = df[missing_col].fillna(True).astype(bool)
+    available = values.notna() & ~missing & (values != DEFAULT_TEAM_RANK)
+    values = values.clip(lower=1)
+    return values, available
+
+
+def combine_rank_sources(
+    world_values: pd.Series,
+    world_available: pd.Series,
+    vrs_values: pd.Series,
+    vrs_available: pd.Series,
+    strategy: str,
+    default_rank: int,
+) -> np.ndarray:
+    default_values = np.full(len(world_values), float(default_rank), dtype=np.float32)
+    world = world_values.to_numpy(dtype=np.float32, na_value=float(default_rank))
+    vrs = vrs_values.to_numpy(dtype=np.float32, na_value=float(default_rank))
+    world_mask = world_available.to_numpy(dtype=bool)
+    vrs_mask = vrs_available.to_numpy(dtype=bool)
+    both_mask = world_mask & vrs_mask
+    either_mask = world_mask | vrs_mask
+
+    if strategy == "world_only":
+        combined = np.where(world_mask, world, default_values)
+    elif strategy == "vrs_only":
+        combined = np.where(vrs_mask, vrs, default_values)
+    elif strategy == "world_vrs_fallback":
+        combined = np.where(world_mask, world, np.where(vrs_mask, vrs, default_values))
+    elif strategy == "avg_available":
+        single = np.where(world_mask, world, vrs)
+        averaged = (world + vrs) / 2
+        combined = np.where(both_mask, averaged, np.where(either_mask, single, default_values))
+    elif strategy == "log_avg_available":
+        single = np.where(world_mask, world, vrs)
+        log_averaged = np.exp((np.log(world) + np.log(vrs)) / 2)
+        combined = np.where(both_mask, log_averaged, np.where(either_mask, single, default_values))
+    elif strategy == "best_available":
+        single = np.where(world_mask, world, vrs)
+        best = np.minimum(world, vrs)
+        combined = np.where(both_mask, best, np.where(either_mask, single, default_values))
+    elif strategy == "weighted_world_vrs":
+        single = np.where(world_mask, world, vrs)
+        weighted = (0.65 * world) + (0.35 * vrs)
+        combined = np.where(both_mask, weighted, np.where(either_mask, single, default_values))
+    else:
+        raise ValueError(f"Unknown rank strategy: {strategy}")
+
+    return np.maximum(combined.astype(np.float32), 1.0)
+
+
+def add_rank_strategy_features(df: pd.DataFrame, clean_maps_path: Path) -> pd.DataFrame:
+    enriched = ensure_rank_source_columns(df, clean_maps_path).copy()
+
+    a_world, a_world_available = rank_source_values(enriched, "team_a", "world")
+    a_vrs, a_vrs_available = rank_source_values(enriched, "team_a", "vrs")
+    b_world, b_world_available = rank_source_values(enriched, "team_b", "world")
+    b_vrs, b_vrs_available = rank_source_values(enriched, "team_b", "vrs")
+
+    for strategy_name, (strategy, default_rank) in RANK_STRATEGY_SPECS.items():
+        rank_a = combine_rank_sources(
+            a_world,
+            a_world_available,
+            a_vrs,
+            a_vrs_available,
+            strategy,
+            default_rank,
+        )
+        rank_b = combine_rank_sources(
+            b_world,
+            b_world_available,
+            b_vrs,
+            b_vrs_available,
+            strategy,
+            default_rank,
+        )
+        log_a = np.log(rank_a)
+        log_b = np.log(rank_b)
+        enriched[f"rank_{strategy_name}_diff"] = log_b - log_a
+        enriched[f"avg_log_rank_{strategy_name}"] = (log_a + log_b) / 2
+
+    return enriched
+
+
+def ensure_variant_columns(
+    df: pd.DataFrame,
+    variants: Iterable[FeatureVariant],
+    clean_maps_path: Path,
+) -> pd.DataFrame:
     enriched = df
     required = {feature for variant in variants for feature in variant.features}
     if any(
@@ -468,6 +719,9 @@ def ensure_variant_columns(df: pd.DataFrame, variants: Iterable[FeatureVariant])
         }
     ):
         enriched = add_sample_depth_features(enriched)
+
+    if any(feature in RANK_STRATEGY_COLUMNS for feature in required):
+        enriched = add_rank_strategy_features(enriched, clean_maps_path)
 
     for variant in variants:
         if variant.h2h_window_days is not None:
@@ -945,7 +1199,7 @@ def main() -> int:
 
     variants = select_variants(args)
     feature_df = load_feature_frame(Path(args.features_path))
-    feature_df = ensure_variant_columns(feature_df, variants)
+    feature_df = ensure_variant_columns(feature_df, variants, Path(args.clean_maps_path))
     folds = build_temporal_folds(
         feature_df,
         folds=args.folds,
