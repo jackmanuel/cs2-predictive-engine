@@ -267,7 +267,11 @@ def latest_prediction_report():
     return candidates[0] if candidates else None
 
 
-def ensure_performance_report():
+def existing_performance_report():
+    return PERFORMANCE_REPORT_PATH if PERFORMANCE_REPORT_PATH.exists() else None
+
+
+def generate_performance_report():
     REPORTS_DIR.mkdir(exist_ok=True)
     try:
         from evaluation.shadow_ledger import show_report
@@ -302,6 +306,12 @@ def escape_html(value):
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "CS2Dashboard/1.0"
 
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+
     def log_message(self, fmt, *args):
         print(f"{self.address_string()} - {fmt % args}")
 
@@ -324,7 +334,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 self.send_html_message("No prediction report found", "Run model.automate_predictions to create one.")
         elif path == "/reports/performance":
-            self.serve_file(ensure_performance_report())
+            report = existing_performance_report()
+            if report:
+                self.serve_file(report)
+            else:
+                self.send_html_message(
+                    "No performance report found",
+                    "Click Refresh on the Performance tab to generate one.",
+                )
         elif path.startswith("/static/"):
             self.serve_static(path)
         elif path.startswith("/reports/"):
@@ -341,7 +358,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.ACCEPTED if started else HTTPStatus.CONFLICT
             self.send_json(retrain_job.snapshot(), status=status)
         elif path == "/api/performance-refresh":
-            self.serve_file(ensure_performance_report())
+            report = generate_performance_report()
+            self.send_json({"report_url": f"/reports/{report.name}"})
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 

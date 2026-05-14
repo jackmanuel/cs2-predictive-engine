@@ -130,7 +130,7 @@
             if (activeTab === "predictions") {
                 document.getElementById("predictions-frame").src = "/reports/latest-predictions?ts=" + Date.now();
             } else if (activeTab === "performance") {
-                document.getElementById("performance-frame").src = "/reports/performance?ts=" + Date.now();
+                refreshPerformanceReport();
             } else {
                 loadModelInfo();
             }
@@ -176,15 +176,25 @@
             document.getElementById("map-list").innerHTML = listRows(state.top_maps);
         }
 
+        async function refreshPerformanceReport() {
+            const response = await fetch("/api/performance-refresh", { method: "POST" });
+            if (!response.ok) return;
+            const data = await response.json();
+            document.getElementById("performance-frame").src = `${data.report_url}?ts=${Date.now()}`;
+        }
+
         const retrainButton = document.getElementById("retrain-button");
         const retrainStatus = document.getElementById("retrain-status");
         const retrainProgress = document.getElementById("retrain-progress");
         const retrainProgressLabel = document.getElementById("retrain-progress-label");
         const retrainLog = document.getElementById("retrain-log");
         let eventSource;
+        let lastRetrainStatus = "idle";
 
         function setRetrainState(snapshot) {
             const progress = snapshot.progress || 0;
+            const previousStatus = lastRetrainStatus;
+            lastRetrainStatus = snapshot.status || "idle";
             retrainStatus.textContent = snapshot.status === "running"
                 ? (snapshot.phase_label || "Running")
                 : (snapshot.status || "idle");
@@ -195,7 +205,7 @@
                 retrainLog.textContent = snapshot.tail.join("\n");
                 retrainLog.scrollTop = retrainLog.scrollHeight;
             }
-            if (snapshot.status === "completed") {
+            if (snapshot.status === "completed" && previousStatus !== "completed") {
                 loadModelInfo();
                 document.getElementById("performance-frame").src = "/reports/performance?ts=" + Date.now();
             }
