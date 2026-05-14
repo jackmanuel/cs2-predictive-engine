@@ -411,8 +411,7 @@ def main():
         low_sample_class = "low-sample-match" if item['valid_for_eval'] == 0 else ""
         roster_class = "roster-anomaly-match" if item.get("roster_status") != "standard" else ""
         no_odds_class = "no-odds-match" if item['o1'] is None or item['o2'] is None else ""
-        forfeit_class = "forfeit-warning-match" if item.get("forfeit_fair1") is not None else ""
-        match_classes = f"{low_sample_class} {roster_class} {no_odds_class} {forfeit_class}".strip()
+        match_classes = f"{low_sample_class} {roster_class} {no_odds_class}".strip()
         roster_warning_html = ""
         if item.get("roster_status") != "standard":
             warning_text = escape(str(item.get("roster_warning") or item.get("roster_status")))
