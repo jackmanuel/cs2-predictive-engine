@@ -6,6 +6,7 @@ import torch
 import joblib
 import pandas as pd
 import numpy as np
+from itertools import product
 from datetime import datetime, timezone
 from typing import List, Tuple
 
@@ -179,6 +180,48 @@ def combine_probs(probs: List[float], bo: int) -> float:
         
     # Series win probability is the sum of winning 'wins_needed' or more maps
     return sum(dp[wins_needed:])
+
+
+def scoreline_order(bo: int) -> List[str]:
+    wins_needed = (bo // 2) + 1
+    return (
+        [f"{wins_needed}-{losses}" for losses in range(wins_needed)]
+        + [f"{wins}-{wins_needed}" for wins in range(wins_needed - 1, -1, -1)]
+    )
+
+
+def scoreline_probabilities(probs: List[float], bo: int) -> dict:
+    """
+    Calculates exact match score probabilities from ordered map win probabilities.
+    Scores are from Team A's perspective, e.g. 2-1 means Team A wins a Bo3.
+    """
+    if bo < 1:
+        return {}
+
+    wins_needed = (bo // 2) + 1
+    full_probs = (probs + [0.5] * bo)[:bo]
+    score_probs = {score: 0.0 for score in scoreline_order(bo)}
+
+    for outcomes in product([0, 1], repeat=bo):
+        sequence_probability = 1.0
+        for index, outcome in enumerate(outcomes):
+            map_prob = full_probs[index]
+            sequence_probability *= map_prob if outcome else 1 - map_prob
+
+        wins = 0
+        losses = 0
+
+        for outcome in outcomes:
+            if outcome:
+                wins += 1
+            else:
+                losses += 1
+
+            if wins == wins_needed or losses == wins_needed:
+                score_probs[f"{wins}-{losses}"] += sequence_probability
+                break
+
+    return score_probs
 
 class PredictorContext:
     """
@@ -403,6 +446,7 @@ def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", t
     
     # 4. Calculate expected win probability using Law of Total Probability
     expected_win_prob = 0.0
+    score_probs = {score: 0.0 for score in scoreline_order(bo)}
     
     for seq_dict, batch_iters, starter in batches:
         batch_weight = batch_iters / iters
@@ -427,12 +471,16 @@ def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", t
             
             # Conditional series win probability: P(Win | Path)
             p_win_given_path = combine_probs(map_probs, bo)
+            score_probs_given_path = scoreline_probabilities(map_probs, bo)
             
             # Law of Total Probability contribution, weighted by batch share
             expected_win_prob += p_win_given_path * path_prob_norm * batch_weight
+            for score, probability in score_probs_given_path.items():
+                score_probs[score] += probability * path_prob_norm * batch_weight
         
     return {
         "expected_win_prob": expected_win_prob,
+        "score_probabilities": score_probs,
         "sequence_counts": sequence_counts,
         "team_a_id": t_a_id,
         "team_b_id": t_b_id,

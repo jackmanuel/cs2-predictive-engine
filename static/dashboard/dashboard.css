@@ -376,8 +376,8 @@ textarea {
     grid-column: 1 / -1;
 }
 
-#playground-summary,
 #playground-series,
+#playground-score,
 #playground-map-breakdown,
 #playground-forfeit {
     min-height: 0;
@@ -469,6 +469,59 @@ textarea {
 
 .map-probability-card .matchup-track {
     height: 8px;
+}
+
+.scoreline-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.scoreline-row {
+    min-height: 58px;
+    background: #111820;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 8px 10px;
+    display: grid;
+    gap: 6px;
+}
+
+.scoreline-row-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.scoreline-row-head strong {
+    font-size: 18px;
+}
+
+.scoreline-row-head span,
+.scoreline-row small {
+    color: var(--muted);
+}
+
+.scoreline-track {
+    height: 7px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .06);
+}
+
+.scoreline-fill {
+    height: 100%;
+    min-width: 2px;
+    border-radius: 999px;
+}
+
+.scoreline-row.team-a .scoreline-fill {
+    background: #7fb6a0;
+}
+
+.scoreline-row.team-b .scoreline-fill {
+    background: #c7b85d;
 }
 
 .mini-list,

@@ -118,12 +118,12 @@
                 </form>
 
                 <div class="playground-results">
-                    <div class="panel result-panel" id="playground-summary">
+                    <div class="panel result-panel" id="playground-series">
                         <div class="empty">Run a matchup to populate the playground.</div>
                     </div>
-                    <div class="panel result-panel" id="playground-series"></div>
-                    <div class="panel result-panel" id="playground-map-breakdown"></div>
+                    <div class="panel result-panel" id="playground-score"></div>
                     <div class="panel result-panel" id="playground-forfeit"></div>
+                    <div class="panel result-panel" id="playground-map-breakdown"></div>
                     <div class="panel result-panel wide-panel" id="playground-veto"></div>
                     <div class="panel result-panel wide-panel" id="playground-stats"></div>
                 </div>
@@ -380,6 +380,33 @@
             `;
         }
 
+        function renderScorelines(data) {
+            const target = document.getElementById("playground-score");
+            const series = data.series_prediction || {};
+            const rows = (series.scorelines || []).map(item => {
+                const winner = item.winner === "team_a" ? data.teams.team_a : data.teams.team_b;
+                const winnerClass = item.winner === "team_a" ? "team-a" : "team-b";
+                const width = Math.max(0, Math.min(100, Number(item.probability || 0) * 100));
+                return `
+                    <div class="scoreline-row ${winnerClass}">
+                        <div class="scoreline-row-head">
+                            <strong>${escapeText(item.score)}</strong>
+                            <span>${pct(item.probability)}</span>
+                        </div>
+                        <div class="scoreline-track" aria-label="${escapeText(item.score)} ${pct(item.probability)}">
+                            <div class="scoreline-fill" style="width:${width}%"></div>
+                        </div>
+                        <small>${escapeText(winner)} wins</small>
+                    </div>
+                `;
+            }).join("");
+
+            target.innerHTML = `
+                <h2>Series Score Likelihood</h2>
+                <div class="scoreline-list">${rows || `<div class="empty">No scoreline data returned.</div>`}</div>
+            `;
+        }
+
         function renderMapBreakdown(data) {
             const target = document.getElementById("playground-map-breakdown");
             const series = data.series_prediction;
@@ -553,16 +580,8 @@
         }
 
         function renderPlayground(data) {
-            document.getElementById("playground-summary").innerHTML = `
-                <h2>${escapeText(data.teams.team_a)} vs ${escapeText(data.teams.team_b)}</h2>
-                <div class="metric-grid">
-                    ${metric("Format", data.settings.format.toUpperCase())}
-                    ${metric("Picks first", data.settings.pick_first)}
-                    ${metric("Iterations", fmtNumber(data.settings.iterations))}
-                    ${metric("Path source", data.settings.sequence_source)}
-                </div>
-            `;
             renderSeries(data);
+            renderScorelines(data);
             renderMapBreakdown(data);
             renderForfeit(data);
             renderVeto(data);
@@ -573,7 +592,10 @@
             event.preventDefault();
             const button = document.getElementById("playground-run");
             button.disabled = true;
-            document.getElementById("playground-summary").innerHTML = `<div class="empty">Calculating...</div>`;
+            document.getElementById("playground-series").innerHTML = `<div class="empty">Calculating...</div>`;
+            ["playground-score", "playground-forfeit", "playground-map-breakdown", "playground-veto", "playground-stats"].forEach(id => {
+                document.getElementById(id).innerHTML = "";
+            });
             const body = {
                 team_a: document.getElementById("playground-team-a").value,
                 team_b: document.getElementById("playground-team-b").value,
@@ -601,7 +623,7 @@
                     data = { error: "Prediction endpoint returned an unexpected response." };
                 }
                 if (!response.ok) {
-                    document.getElementById("playground-summary").innerHTML = `<div class="empty">${escapeText(data.error || "Prediction failed.")}</div>`;
+                    document.getElementById("playground-series").innerHTML = `<div class="empty">${escapeText(data.error || "Prediction failed.")}</div>`;
                     return;
                 }
                 renderPlayground(data);

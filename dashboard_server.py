@@ -637,6 +637,7 @@ def playground_prediction_payload(request):
         combine_probs,
         get_win_probabilities,
         normalize_name,
+        scoreline_probabilities,
     )
 
     team_a_raw = str(request.get("team_a", "")).strip()
@@ -699,6 +700,7 @@ def playground_prediction_payload(request):
     series_map_details = []
     if series_format == "bo1" and single_map and map_prediction:
         series_prob = map_prediction["team_a_probability"]
+        score_probabilities = scoreline_probabilities([series_prob], bo)
         starter_label = "50/50" if pick_first is None else team_a_raw if pick_first == "a" else team_b_raw
         sequence_source = "provided"
         map_sequences = [{"maps": [single_map], "probability": 1.0, "count": None}]
@@ -714,11 +716,18 @@ def playground_prediction_payload(request):
         if pick_first in {"a", "b"}:
             map_probs = get_win_probabilities(ctx, team_a_id, team_b_id, maps, veto_starter=pick_first)
             series_prob = combine_probs(map_probs, bo)
+            score_probabilities = scoreline_probabilities(map_probs, bo)
             starter_label = team_a_raw if pick_first == "a" else team_b_raw
         else:
             map_probs_a = get_win_probabilities(ctx, team_a_id, team_b_id, maps, veto_starter="a")
             map_probs_b = get_win_probabilities(ctx, team_a_id, team_b_id, maps, veto_starter="b")
             series_prob = (combine_probs(map_probs_a, bo) + combine_probs(map_probs_b, bo)) / 2
+            score_probs_a = scoreline_probabilities(map_probs_a, bo)
+            score_probs_b = scoreline_probabilities(map_probs_b, bo)
+            score_probabilities = {
+                score: (score_probs_a.get(score, 0) + score_probs_b.get(score, 0)) / 2
+                for score in score_probs_a.keys()
+            }
             map_probs = [(a + b) / 2 for a, b in zip(map_probs_a, map_probs_b)]
             starter_label = "50/50"
         sequence_source = "provided"
@@ -755,10 +764,22 @@ def playground_prediction_payload(request):
             ctx=ctx,
         )
         series_prob = results["expected_win_prob"]
+        score_probabilities = results.get("score_probabilities", {})
         map_probs = []
         starter_label = team_a_raw if pick_first == "a" else team_b_raw if pick_first == "b" else "50/50"
         sequence_source = "simulated"
         map_sequences = top_map_sequences(results["sequence_counts"], iters)
+
+    scorelines = []
+    for score, probability in score_probabilities.items():
+        team_a_maps, team_b_maps = [int(part) for part in score.split("-", 1)]
+        scorelines.append(
+            {
+                "score": score,
+                "probability": probability,
+                "winner": "team_a" if team_a_maps > team_b_maps else "team_b",
+            }
+        )
 
     forfeit = {"available": False, "error": None}
     try:
@@ -800,6 +821,7 @@ def playground_prediction_payload(request):
             "team_b_probability": 1 - series_prob,
             "maps": series_map_details,
             "map_sequences": map_sequences,
+            "scorelines": scorelines,
         },
         "veto": veto_payload,
         "forfeit": forfeit,
