@@ -90,26 +90,29 @@
                                 <option value="team_b">Team B</option>
                             </select>
                         </label>
-                        <label class="wide series-field">
+                        <label class="series-field">
                             <span>Series maps</span>
-                            <textarea id="playground-maps" name="maps" rows="3" spellcheck="false"></textarea>
-                        </label>
-                        <label>
-                            <span>Iterations</span>
-                            <input id="playground-iters" name="iters" type="number" min="100" max="25000" step="100" value="">
-                        </label>
-                        <label>
-                            <span>Threshold</span>
-                            <input id="playground-threshold" name="threshold" type="number" min="10" max="100" step="1" value="90">
-                        </label>
-                        <label>
-                            <span>Event</span>
-                            <input id="playground-event" name="event" value="Manual prediction">
+                            <textarea id="playground-maps" name="maps" rows="1" spellcheck="false"></textarea>
                         </label>
                         <label class="checkbox-field">
                             <input id="playground-lan" name="is_lan" type="checkbox">
                             <span>LAN</span>
                         </label>
+                        <button class="secondary-button advanced-toggle" id="playground-advanced-toggle" type="button" aria-expanded="false" aria-controls="playground-advanced-fields">Advanced Options</button>
+                        <div class="advanced-fields is-hidden" id="playground-advanced-fields" hidden>
+                            <label>
+                                <span>Iterations</span>
+                                <input id="playground-iters" name="iters" type="number" min="100" max="25000" step="100" value="">
+                            </label>
+                            <label>
+                                <span>Threshold</span>
+                                <input id="playground-threshold" name="threshold" type="number" min="10" max="100" step="1" value="90">
+                            </label>
+                            <label>
+                                <span>Event</span>
+                                <input id="playground-event" name="event" value="Manual prediction">
+                            </label>
+                        </div>
                     </div>
                     <datalist id="team-options"></datalist>
                 </form>
@@ -118,8 +121,8 @@
                     <div class="panel result-panel" id="playground-summary">
                         <div class="empty">Run a matchup to populate the playground.</div>
                     </div>
-                    <div class="panel result-panel" id="playground-map"></div>
                     <div class="panel result-panel" id="playground-series"></div>
+                    <div class="panel result-panel" id="playground-map-breakdown"></div>
                     <div class="panel result-panel" id="playground-forfeit"></div>
                     <div class="panel result-panel wide-panel" id="playground-veto"></div>
                     <div class="panel result-panel wide-panel" id="playground-stats"></div>
@@ -192,6 +195,7 @@
         };
         const sectionLabel = document.getElementById("section-label");
         const sectionSubtitle = document.getElementById("section-subtitle");
+        const topbar = document.querySelector(".topbar");
         const openFrame = document.getElementById("open-frame");
         let activeTab = "predictions";
 
@@ -199,6 +203,8 @@
             activeTab = name;
             tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.tab === name));
             Object.entries(panels).forEach(([key, panel]) => panel.classList.toggle("active", key === name));
+            topbar.hidden = name === "playground";
+            topbar.classList.toggle("is-hidden", name === "playground");
             sectionLabel.textContent = labels[name][0];
             sectionSubtitle.textContent = labels[name][1];
             if (labels[name][2]) {
@@ -304,8 +310,7 @@
             if (!response.ok) return;
             const teamOptions = document.getElementById("team-options");
             teamOptions.innerHTML = (data.teams || []).map(team => {
-                const rank = team.rank && team.rank < 500 ? ` #${team.rank}` : "";
-                return `<option value="${escapeText(team.name)}" label="${escapeText(team.id + rank)}"></option>`;
+                return `<option value="${escapeText(team.name)}"></option>`;
             }).join("");
 
             const singleMap = document.getElementById("playground-single-map");
@@ -346,56 +351,59 @@
             }
         }
 
-        function renderProbabilityBar(label, probability) {
-            const clamped = Math.max(0, Math.min(1, Number(probability || 0)));
+        function renderMatchupProbabilityBar(teamA, teamB, teamAProbability) {
+            const clamped = Math.max(0, Math.min(1, Number(teamAProbability || 0)));
+            const teamBProbability = 1 - clamped;
             return `
-                <div class="probability-row">
-                    <div><span>${escapeText(label)}</span><strong>${pct(clamped)}</strong></div>
-                    <div class="probability-track"><div style="width:${clamped * 100}%"></div></div>
+                <div class="matchup-probability">
+                    <div class="matchup-teams">
+                        <span>${escapeText(teamA)}</span>
+                        <span>${escapeText(teamB)}</span>
+                    </div>
+                    <div class="matchup-track" aria-label="${escapeText(teamA)} ${pct(clamped)}; ${escapeText(teamB)} ${pct(teamBProbability)}">
+                        <div class="matchup-fill matchup-fill-a" style="width:${clamped * 100}%"></div>
+                        <div class="matchup-fill matchup-fill-b" style="width:${teamBProbability * 100}%"></div>
+                    </div>
+                    <div class="matchup-values">
+                        <strong>${pct(clamped)}</strong>
+                        <strong>${pct(teamBProbability)}</strong>
+                    </div>
                 </div>
-            `;
-        }
-
-        function renderMapPrediction(data) {
-            const target = document.getElementById("playground-map");
-            if (!data.map_prediction) {
-                target.innerHTML = `<h2>Map Win Probability</h2><div class="empty">No single map selected.</div>`;
-                return;
-            }
-            const item = data.map_prediction;
-            target.innerHTML = `
-                <h2>Map Win Probability</h2>
-                <div class="result-title">${escapeText(item.map)}</div>
-                ${renderProbabilityBar(data.teams.team_a, item.team_a_probability)}
-                ${renderProbabilityBar(data.teams.team_b, item.team_b_probability)}
             `;
         }
 
         function renderSeries(data) {
             const series = data.series_prediction;
+            document.getElementById("playground-series").innerHTML = `
+                <h2>Series Win Prediction</h2>
+                ${renderMatchupProbabilityBar(data.teams.team_a, data.teams.team_b, series.team_a_probability)}
+            `;
+        }
+
+        function renderMapBreakdown(data) {
+            const target = document.getElementById("playground-map-breakdown");
+            const series = data.series_prediction;
             const pickerLabel = {
                 team_a: data.teams.team_a,
                 team_b: data.teams.team_b,
-                neutral: "Neutral",
+                neutral: "Neutral map picker",
             };
-            const mapRows = (series.maps || []).map(item => `
-                <div class="list-row">
-                    <span>${escapeText(item.map)}</span>
-                    <strong>${pct(item.team_a_probability)} / ${pct(item.team_b_probability)} · ${escapeText(pickerLabel[item.picker] || "Neutral")}</strong>
+            const mapIsSeries = data.settings?.format === "bo1" && data.settings?.sequence_source === "provided";
+            const mapRows = mapIsSeries ? "" : (series.maps || []).map(item => `
+                <div class="map-probability-card">
+                    <div class="map-probability-head">
+                        <strong>${escapeText(item.map)}</strong>
+                        <span>${escapeText(pickerLabel[item.picker] || "Neutral map picker")}</span>
+                    </div>
+                    ${renderMatchupProbabilityBar(data.teams.team_a, data.teams.team_b, item.team_a_probability)}
                 </div>
             `).join("");
-            const seqRows = (series.map_sequences || []).slice(0, 5).map(item => `
-                <div class="list-row">
-                    <span>${escapeText(item.maps.join(", "))}</span>
-                    <strong>${pct(item.probability)}</strong>
-                </div>
-            `).join("");
-            document.getElementById("playground-series").innerHTML = `
-                <h2>Series Win Prediction</h2>
-                ${renderProbabilityBar(data.teams.team_a, series.team_a_probability)}
-                ${renderProbabilityBar(data.teams.team_b, series.team_b_probability)}
-                <div class="mini-list">${mapRows || seqRows || `<div class="empty">No map sequence details.</div>`}</div>
-            `;
+            target.hidden = !mapRows;
+            target.classList.toggle("is-hidden", !mapRows);
+            target.innerHTML = mapRows ? `
+                <h2>Map Win Probabilities</h2>
+                <div class="map-probability-list">${mapRows}</div>
+            ` : "";
         }
 
         function renderForfeit(data) {
@@ -414,20 +422,43 @@
         }
 
         function renderVeto(data) {
-            const vetoRows = (data.veto.top_vetoes || []).map((item, index) => `
-                <div class="veto-row">
-                    <strong>${index + 1}. ${pct(item.probability)}</strong>
-                    <span>${item.actions.map(action => `${escapeText(action.team)} ${escapeText(action.action)} ${escapeText(action.map)}`).join(" · ")}</span>
+            const target = document.getElementById("playground-veto");
+            const vetoIsOverridden = data.settings?.sequence_source === "provided";
+            target.hidden = vetoIsOverridden;
+            target.classList.toggle("is-hidden", vetoIsOverridden);
+            if (vetoIsOverridden) {
+                target.innerHTML = "";
+                return;
+            }
+            const vetoRows = (data.veto.top_vetoes || []).slice(0, 4).map((item, index) => `
+                <div class="veto-card">
+                    <div class="veto-card-head">
+                        <strong>${index + 1}</strong>
+                        <span>${pct(item.probability)}</span>
+                    </div>
+                    <div class="veto-actions">
+                        ${item.actions.map(action => `<span>${escapeText(action.team)} ${escapeText(action.action)} ${escapeText(action.map)}</span>`).join("")}
+                    </div>
                 </div>
             `).join("");
             const mapRows = (data.veto.map_appearance || []).map(item => `
                 <div class="list-row"><span>${escapeText(item.map)}</span><strong>${pct(item.probability)}</strong></div>
             `).join("");
-            document.getElementById("playground-veto").innerHTML = `
-                <div class="split-grid no-margin">
-                    <div>
+            const seqRows = (data.series_prediction?.map_sequences || []).slice(0, 7).map(item => `
+                <div class="list-row">
+                    <span>${escapeText(item.maps.join(", "))}</span>
+                    <strong>${pct(item.probability)}</strong>
+                </div>
+            `).join("");
+            target.innerHTML = `
+                <div class="veto-layout">
+                    <div class="veto-paths">
                         <h2>Most Likely Vetoes</h2>
-                        <div class="veto-list">${vetoRows || `<div class="empty">No veto paths returned.</div>`}</div>
+                        <div class="veto-card-grid">${vetoRows || `<div class="empty">No veto paths returned.</div>`}</div>
+                    </div>
+                    <div class="veto-sequences">
+                        <h2>Most Likely Map Combinations</h2>
+                        <div class="mini-list">${seqRows || `<div class="empty">No map combinations returned.</div>`}</div>
                     </div>
                     <div>
                         <h2>Map Appearance</h2>
@@ -531,8 +562,8 @@
                     ${metric("Path source", data.settings.sequence_source)}
                 </div>
             `;
-            renderMapPrediction(data);
             renderSeries(data);
+            renderMapBreakdown(data);
             renderForfeit(data);
             renderVeto(data);
             renderTeamStats(data);
@@ -580,6 +611,15 @@
         });
 
         document.getElementById("playground-format").addEventListener("change", syncPlaygroundFields);
+        document.getElementById("playground-advanced-toggle").addEventListener("click", () => {
+            const fields = document.getElementById("playground-advanced-fields");
+            const button = document.getElementById("playground-advanced-toggle");
+            const isOpen = fields.hidden;
+            fields.hidden = !isOpen;
+            fields.classList.toggle("is-hidden", !isOpen);
+            button.setAttribute("aria-expanded", String(isOpen));
+            button.textContent = isOpen ? "Hide Advanced Options" : "Advanced Options";
+        });
 
         const retrainButton = document.getElementById("retrain-button");
         const retrainStatus = document.getElementById("retrain-status");

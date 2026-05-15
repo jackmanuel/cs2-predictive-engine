@@ -88,7 +88,8 @@ code {
 
 .tab,
 .icon-button,
-.primary-button {
+.primary-button,
+.secondary-button {
     border: 1px solid var(--line);
     color: var(--text);
     background: var(--panel-2);
@@ -122,6 +123,10 @@ code {
 .primary-button:disabled {
     cursor: not-allowed;
     opacity: .55;
+}
+
+.secondary-button {
+    font-weight: 750;
 }
 
 .disabled {
@@ -331,6 +336,23 @@ textarea {
     min-height: 78px;
 }
 
+.series-field textarea {
+    min-height: 38px;
+    resize: none;
+}
+
+.advanced-toggle {
+    align-self: end;
+}
+
+.advanced-fields {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    padding-top: 2px;
+}
+
 .checkbox-field {
     display: flex;
     align-items: center;
@@ -355,8 +377,8 @@ textarea {
 }
 
 #playground-summary,
-#playground-map,
 #playground-series,
+#playground-map-breakdown,
 #playground-forfeit {
     min-height: 0;
 }
@@ -371,34 +393,82 @@ textarea {
     margin-bottom: 8px;
 }
 
-.probability-row {
+.matchup-probability {
     display: grid;
     gap: 7px;
     margin-top: 12px;
 }
 
-.probability-row > div:first-child {
+.matchup-teams,
+.matchup-values {
     display: flex;
     justify-content: space-between;
     gap: 12px;
 }
 
-.probability-row span,
+.matchup-teams span,
 .metric-row span,
 .metric-row small {
     color: var(--muted);
 }
 
-.probability-track {
+.matchup-track {
     height: 10px;
     overflow: hidden;
-    background: #273139;
     border-radius: 999px;
+    display: flex;
+    gap: 2px;
 }
 
-.probability-track div {
+.matchup-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    min-width: 2px;
+}
+
+.matchup-fill-a {
+    background: #7fb6a0;
+}
+
+.matchup-fill-b {
+    background: #c7b85d;
+}
+
+.map-probability-list {
+    display: grid;
+    gap: 9px;
+    margin-top: 10px;
+}
+
+.map-probability-card {
+    background: #111820;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 10px;
+    display: grid;
+    gap: 2px;
+}
+
+.map-probability-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 2px;
+}
+
+.map-probability-head span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 750;
+    text-align: right;
+}
+
+.map-probability-card .matchup-probability {
+    margin-top: 8px;
+}
+
+.map-probability-card .matchup-track {
+    height: 8px;
 }
 
 .mini-list,
@@ -439,6 +509,66 @@ textarea {
 .veto-row span {
     color: var(--muted);
     line-height: 1.4;
+}
+
+.veto-layout {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.veto-paths {
+    min-width: 0;
+}
+
+.veto-card-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.veto-card {
+    background: #111820;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 10px;
+    display: grid;
+    gap: 9px;
+    min-height: 132px;
+}
+
+.veto-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.veto-card-head strong {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: rgba(101, 209, 180, .12);
+    color: #d9fff5;
+}
+
+.veto-card-head span,
+.veto-actions {
+    color: var(--muted);
+}
+
+.veto-actions {
+    display: grid;
+    gap: 5px;
+    line-height: 1.35;
+}
+
+.veto-actions span {
+    overflow-wrap: anywhere;
 }
 
 .no-margin {
@@ -571,6 +701,9 @@ textarea {
     .playground-grid.active,
     .playground-results,
     .form-grid,
+    .advanced-fields,
+    .veto-layout,
+    .veto-card-grid,
     .stat-grid,
     .split-grid,
     .metric-grid,

@@ -381,7 +381,7 @@ def playground_options_payload():
     return {"teams": teams, "maps": maps, "defaults": {"iterations": MC_ITERATIONS, "threshold": MC_THRESHOLD}}
 
 
-def normalise_map_names(raw_maps):
+def normalize_map_names(raw_maps):
     from model.veto_sim import MAP_POOL
 
     if isinstance(raw_maps, str):
@@ -655,16 +655,18 @@ def playground_prediction_payload(request):
     team_b_id = normalize_name(team_b_raw)
     pick_first = parse_team_choice(request.get("pick_first"), team_a_id, team_b_id)
 
-    maps, unknown_maps = normalise_map_names(request.get("maps", ""))
+    maps, unknown_maps = normalize_map_names(request.get("maps", ""))
     if series_format == "bo1":
         maps = []
     if unknown_maps:
         return {"error": f"Unknown map name: {', '.join(unknown_maps)}."}, HTTPStatus.BAD_REQUEST
+    if maps and len(maps) < bo:
+        return {"error": f"Not enough maps provided. {series_format.upper()} requires {bo} maps."}, HTTPStatus.BAD_REQUEST
     if len(maps) > bo:
         return {"error": f"{series_format.upper()} accepts at most {bo} maps."}, HTTPStatus.BAD_REQUEST
 
     single_map = str(request.get("single_map", "")).strip()
-    single_maps, unknown_single = normalise_map_names(single_map)
+    single_maps, unknown_single = normalize_map_names(single_map)
     if unknown_single:
         return {"error": f"Unknown map name: {', '.join(unknown_single)}."}, HTTPStatus.BAD_REQUEST
     single_map = single_maps[0] if single_maps and series_format == "bo1" else None
