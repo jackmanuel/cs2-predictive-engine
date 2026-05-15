@@ -923,6 +923,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "--toggle-bg: #334155;": "--toggle-bg: #1b2430;",
             "background: #0f172a;": "background: #111820;",
             "background: #0f172a; ": "background: #111820; ",
+            "<title>CS2 Series Predictions</title>": "<title>Upcoming Match Report</title>",
+            "<h1>CS2 Predictor Pro</h1>": "<h1>Upcoming Match Report</h1>",
+            """h1 { 
+            font-weight: 800; 
+            font-size: 2rem; 
+            background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary)); 
+            -webkit-background-clip: text; 
+            background-clip: text;
+            -webkit-text-fill-color: transparent; 
+        }""": """h1 { 
+            font-weight: 800; 
+            font-size: 2rem; 
+            color: var(--text-main);
+        }""",
         }
         for old, new in replacements.items():
             html = html.replace(old, new)
