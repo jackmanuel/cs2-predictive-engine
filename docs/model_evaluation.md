@@ -132,7 +132,15 @@ loss deltas mean a variant improved on the current feature set.
 These notes are working hypotheses, not permanent conclusions.
 
 - `rank_diff` is the core team-strength proxy and should be treated as a
-  baseline feature.
+  baseline feature. A ranking-source experiment compared the production
+  `world_rank` with VRS fallback against pure world rank, pure VRS rank,
+  averaged world/VRS ranks, weighted blends, and different unknown-rank
+  defaults. The confirmation run found that averaging
+  available world/VRS ranks with an unknown default of 750 was the strongest
+  experimental variant, but the simpler production-compatible choice of keeping
+  world rank with VRS fallback and changing the default from 500 to 750 also
+  improved Brier score and log loss versus `baseline_all`.
+- Unknown or unranked teams now default to rank 750.
 - `win_rate_90d_diff`, `win_rate_30d_diff`, and `win_rate_7d_diff` measure form
   at different horizons. The 7-day feature may be noisy, but it uses smoothed
   win rates rather than a zero baseline.

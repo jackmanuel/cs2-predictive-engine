@@ -24,7 +24,7 @@ for d in [RAW_DIR, PROCESSED_DIR, CHECKPOINT_DIR]:
 
 # --- Feature Engineering ---
 MIN_MATCHES_THRESHOLD = 1   # Only include teams with at least this many matches
-DEFAULT_TEAM_RANK = 500     # Fallback for unranked or new teams
+DEFAULT_TEAM_RANK = 750     # Fallback for unranked or new teams
 
 # Rolling window periods (days) for temporal features
 FORM_WINDOW_DAYS_LONG = 90  # Long-term macro form
