@@ -28,7 +28,7 @@ from processing.clean import get_invalid_veto_exclusion_reason, normalize_format
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-# Standard Active Duty Pool for CS2 (January 2024 onwards)
+# Standard Active Duty Pool for CS2 (January 2026 onwards)
 MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass"]
 
 SIMULATIONS = MC_ITERATIONS

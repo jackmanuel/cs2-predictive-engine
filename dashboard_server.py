@@ -679,8 +679,26 @@ def read_json(path):
         return json.load(handle)
 
 
+def normalize_training_state(state):
+    if not isinstance(state, dict):
+        return {}
+
+    normalized = dict(state)
+    map_counts = normalized.get("map_popularity") or normalized.get("top_maps")
+    if isinstance(map_counts, dict):
+        from model.veto_sim import MAP_POOL
+
+        active_map_counts = {
+            map_name: int(map_counts.get(map_name, 0))
+            for map_name in sorted(MAP_POOL, key=lambda name: map_counts.get(name, 0), reverse=True)
+        }
+        normalized["map_popularity"] = active_map_counts
+
+    return normalized
+
+
 def model_info_payload():
-    state = read_json(TRAINING_STATE_PATH) or {}
+    state = normalize_training_state(read_json(TRAINING_STATE_PATH))
     checkpoints = {
         "model_checkpoint": file_meta(PROJECT_ROOT / "data" / "checkpoints" / "best_mvp_model.pt"),
         "scaler": file_meta(PROJECT_ROOT / "data" / "checkpoints" / "scaler.pkl"),

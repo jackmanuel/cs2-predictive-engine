@@ -209,7 +209,7 @@
                             <div class="list" id="format-list"></div>
                         </div>
                         <div>
-                            <h3>Top Maps</h3>
+                            <h3>Map Popularity</h3>
                             <div class="list" id="map-list"></div>
                         </div>
                     </div>
@@ -334,7 +334,7 @@
                 stat("Rounds", fmtNumber(state.total_rounds), `${state.avg_rounds_per_map ?? "n/a"} per map`),
             ].join("");
             document.getElementById("format-list").innerHTML = listRows(state.formats);
-            document.getElementById("map-list").innerHTML = listRows(state.top_maps);
+            document.getElementById("map-list").innerHTML = listRows(state.map_popularity || state.top_maps);
         }
 
         async function refreshPerformanceReport() {

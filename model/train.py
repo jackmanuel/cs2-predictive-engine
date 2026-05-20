@@ -20,6 +20,7 @@ from config import (DATA_DIR, PROCESSED_DIR, CHECKPOINT_DIR, BATCH_SIZE, EPOCHS,
 from processing.features import mirror_data, MODEL_FEATURES
 from model.dataset import MatchDataset
 from model.net import MatchPredictor
+from model.veto_sim import MAP_POOL
 from evaluation.shadow_ledger import register_model_version
 from evaluation.metrics import compute_metrics
 
@@ -43,7 +44,11 @@ def save_training_state(df: pd.DataFrame):
         # Additional stats
         total_rounds = (df["score_a"] + df["score_b"]).sum()
         avg_rounds = float(total_rounds / num_maps) if num_maps > 0 else 0
-        top_maps = df["map_name"].value_counts().head(5).to_dict()
+        map_counts = df["map_name"].value_counts()
+        map_popularity = {
+            map_name: int(map_counts.get(map_name, 0))
+            for map_name in sorted(MAP_POOL, key=lambda name: map_counts.get(name, 0), reverse=True)
+        }
         
         state = {
             "training_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -53,7 +58,7 @@ def save_training_state(df: pd.DataFrame):
             "total_rounds": int(total_rounds),
             "avg_rounds_per_map": round(avg_rounds, 2),
             "formats": match_formats,
-            "top_maps": top_maps,
+            "map_popularity": map_popularity,
             "date_range": {
                 "start": str(df["date"].min()),
                 "end": str(df["date"].max())
