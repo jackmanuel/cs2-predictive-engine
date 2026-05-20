@@ -158,16 +158,20 @@ These notes are working hypotheses, not permanent conclusions.
 
 ## Related Reports
 
-The project currently has two separate report surfaces:
+The project currently has two standalone report artefacts:
 
 - `model.automate_predictions` writes the upcoming-match prediction report as a
   standalone HTML file.
 - `evaluation.shadow_ledger report` writes the model performance and calibration
   report as a standalone HTML file.
 
-The reports share the same model/version data, but they are not yet a unified
-dashboard. Retraining also remains a manual pipeline step rather than an action
-inside either report.
+`dashboard_server.py` provides a local dashboard around those artefacts. It
+serves the latest reports, exposes a manual prediction playground, can run the
+`update.py` scraper workflow once or in its jittered loop, and can launch the
+full `pipeline.py` retrain job. The scraper dashboard tracks separate
+completion times for recent-results scraping, upcoming-match/odds scraping, and
+shadow-ledger refreshes because those stages can finish at meaningfully
+different times.
 
 ## Promotion Rule
 

@@ -24,9 +24,22 @@ MODEL_CHECKPOINT_PATH = PROJECT_ROOT / "data" / "checkpoints" / "best_mvp_model.
 SCALER_PATH = PROJECT_ROOT / "data" / "checkpoints" / "scaler.pkl"
 FORFEIT_MODEL_PATH = PROJECT_ROOT / "data" / "checkpoints" / "forfeit_model.joblib"
 CLEAN_MAPS_PATH = PROJECT_ROOT / "data" / "processed" / "clean_maps.parquet"
+SCRAPER_STATE_PATH = PROJECT_ROOT / "data" / "scraper_state.json"
+VENV_PYTHON_PATH = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+PROJECT_PYTHON = str(VENV_PYTHON_PATH if VENV_PYTHON_PATH.exists() else Path(sys.executable))
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+SCRAPER_ITEM_RE = re.compile(r"\[(\d+)/(\d+)\]\s+(Scraping match|Predicting|Skipping):\s*(.+)")
+SCRAPER_RESOLVED_RE = re.compile(r"Resolved (\d+)/(\d+) past matches")
+SCRAPER_NEXT_RUN_RE = re.compile(r"Next update scheduled for (.+?) after")
+
+DEFAULT_SCRAPER_SETTINGS = {
+    "interval_hours": 2.0,
+    "jitter_minutes": 30.0,
+    "pages": 1,
+    "count": None,
+}
 
 # Conservative phase ranges based on one local timing run. The values are only
 # used to keep dashboard progress moving between sparse pipeline log lines.
@@ -40,6 +53,20 @@ PHASE_ESTIMATES = {
     "completed": {"label": "Completed", "start": 100, "end": 100, "seconds": 1},
     "failed": {"label": "Failed", "start": 100, "end": 100, "seconds": 1},
     "idle": {"label": "Idle", "start": 0, "end": 0, "seconds": 1},
+}
+
+SCRAPER_PHASE_ESTIMATES = {
+    "idle": {"label": "Idle", "start": 0, "end": 0, "seconds": 1},
+    "starting": {"label": "Starting update pipeline", "start": 0, "end": 3, "seconds": 2},
+    "completed_matches": {"label": "Scraping completed matches", "start": 3, "end": 38, "seconds": 90},
+    "model_freshness": {"label": "Checking model freshness", "start": 38, "end": 42, "seconds": 4},
+    "upcoming_matches": {"label": "Scraping upcoming matches and odds", "start": 42, "end": 82, "seconds": 120},
+    "ledger": {"label": "Refreshing shadow ledger", "start": 82, "end": 98, "seconds": 35},
+    "waiting": {"label": "Waiting for next loop pass", "start": 100, "end": 100, "seconds": 1},
+    "completed": {"label": "Completed", "start": 100, "end": 100, "seconds": 1},
+    "stopping": {"label": "Stopping", "start": 100, "end": 100, "seconds": 1},
+    "stopped": {"label": "Stopped", "start": 100, "end": 100, "seconds": 1},
+    "failed": {"label": "Failed", "start": 100, "end": 100, "seconds": 1},
 }
 
 
@@ -150,7 +177,7 @@ class RetrainJob:
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             self.process = subprocess.Popen(
-                [sys.executable, "-u", "pipeline.py"],
+                [PROJECT_PYTHON, "-u", "pipeline.py"],
                 cwd=PROJECT_ROOT,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -184,7 +211,298 @@ class RetrainJob:
         self.publish("status", self.snapshot())
 
 
+def default_scraper_counts():
+    return {
+        "completed_matches": {"current": 0, "total": None, "label": "Completed matches"},
+        "upcoming_matches": {"current": 0, "total": None, "label": "Upcoming matches"},
+        "ledger": {"current": 0, "total": None, "label": "Ledger matches"},
+    }
+
+
+def load_scraper_state():
+    state = {}
+    if SCRAPER_STATE_PATH.exists():
+        try:
+            with SCRAPER_STATE_PATH.open("r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            state = {}
+    settings = DEFAULT_SCRAPER_SETTINGS | (state.get("settings") or {})
+    last_times = {
+        "completed_matches": None,
+        "upcoming_matches": None,
+        "ledger": None,
+    }
+    last_times.update(state.get("last_times") or {})
+    return {"settings": settings, "last_times": last_times}
+
+
+def write_scraper_state(settings, last_times):
+    SCRAPER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SCRAPER_STATE_PATH.write_text(
+        json.dumps({"settings": settings, "last_times": last_times}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def parse_optional_positive_int(value, default=None, minimum=1, maximum=200):
+    if value in ("", None):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def parse_non_negative_float(value, default, maximum):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(maximum, parsed))
+
+
+class ScraperJob:
+    def __init__(self):
+        persisted = load_scraper_state()
+        self.lock = threading.Lock()
+        self.process = None
+        self.thread = None
+        self.status = "idle"
+        self.mode = "once"
+        self.progress = 0
+        self.started_at = None
+        self.finished_at = None
+        self.returncode = None
+        self.lines = []
+        self.subscribers = []
+        self.phase = "idle"
+        self.phase_started_at = None
+        self.phase_started_monotonic = None
+        self.current_detail = "No scraper run started."
+        self.next_run_at = None
+        self.settings = persisted["settings"]
+        self.last_times = persisted["last_times"]
+        self.counts = default_scraper_counts()
+
+    def snapshot(self):
+        with self.lock:
+            return self.snapshot_locked()
+
+    def snapshot_locked(self):
+        return {
+            "status": self.status,
+            "mode": self.mode,
+            "progress": self.estimated_progress_locked(),
+            "phase": self.phase,
+            "phase_label": SCRAPER_PHASE_ESTIMATES.get(self.phase, SCRAPER_PHASE_ESTIMATES["idle"])["label"],
+            "detail": self.current_detail,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "returncode": self.returncode,
+            "next_run_at": self.next_run_at,
+            "settings": self.settings,
+            "last_times": self.last_times,
+            "counts": self.counts,
+            "tail": self.lines[-120:],
+        }
+
+    def estimated_progress_locked(self):
+        if self.status != "running":
+            return self.progress
+        estimate = SCRAPER_PHASE_ESTIMATES.get(self.phase, SCRAPER_PHASE_ESTIMATES["starting"])
+        if not self.phase_started_monotonic or estimate["start"] == estimate["end"]:
+            return max(self.progress, estimate["start"])
+        elapsed = max(0, time.monotonic() - self.phase_started_monotonic)
+        phase_fraction = min(elapsed / estimate["seconds"], 0.92)
+        phase_progress = estimate["start"] + ((estimate["end"] - estimate["start"]) * phase_fraction)
+        return int(max(self.progress, min(estimate["end"], phase_progress)))
+
+    def subscribe(self):
+        subscriber = queue.Queue()
+        with self.lock:
+            self.subscribers.append(subscriber)
+        return subscriber
+
+    def unsubscribe(self, subscriber):
+        with self.lock:
+            if subscriber in self.subscribers:
+                self.subscribers.remove(subscriber)
+
+    def publish(self, event, payload):
+        message = {"event": event, "payload": payload}
+        with self.lock:
+            subscribers = list(self.subscribers)
+        for subscriber in subscribers:
+            subscriber.put(message)
+
+    def coerce_settings(self, request):
+        settings = dict(self.settings)
+        settings["interval_hours"] = parse_non_negative_float(
+            request.get("interval_hours"), DEFAULT_SCRAPER_SETTINGS["interval_hours"], 24
+        )
+        settings["jitter_minutes"] = parse_non_negative_float(
+            request.get("jitter_minutes"), DEFAULT_SCRAPER_SETTINGS["jitter_minutes"], 240
+        )
+        settings["pages"] = parse_positive_int(
+            request.get("pages"), DEFAULT_SCRAPER_SETTINGS["pages"], minimum=1, maximum=20
+        )
+        settings["count"] = parse_optional_positive_int(request.get("count"), default=None, maximum=200)
+        return settings
+
+    def start(self, mode, settings):
+        with self.lock:
+            if self.status in {"running", "stopping"}:
+                return False
+
+            self.status = "running"
+            self.mode = mode
+            self.progress = 1
+            self.started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.finished_at = None
+            self.returncode = None
+            self.lines = []
+            self.phase = "starting"
+            self.phase_started_at = self.started_at
+            self.phase_started_monotonic = time.monotonic()
+            self.current_detail = "Starting update.py."
+            self.next_run_at = None
+            self.settings = settings
+            self.counts = default_scraper_counts()
+            write_scraper_state(self.settings, self.last_times)
+
+            command = [PROJECT_PYTHON, "-u", "update.py", "--pages", str(settings["pages"]), "--no-open"]
+            if settings.get("count") is not None:
+                command.extend(["--matches", str(settings["count"])])
+            if mode == "once":
+                command.append("--run-once")
+            else:
+                command.extend(
+                    [
+                        "--interval-hours",
+                        str(settings["interval_hours"]),
+                        "--jitter-minutes",
+                        str(settings["jitter_minutes"]),
+                    ]
+                )
+
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            self.process = subprocess.Popen(
+                command,
+                cwd=PROJECT_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+            self.thread = threading.Thread(target=self._reader, daemon=True)
+            self.thread.start()
+
+        self.publish("status", self.snapshot())
+        return True
+
+    def stop(self):
+        with self.lock:
+            if self.status != "running" or self.process is None:
+                return False
+            self.status = "stopping"
+            self.phase = "stopping"
+            self.current_detail = "Stopping scraper loop."
+            process = self.process
+
+        process.terminate()
+        self.publish("status", self.snapshot())
+        return True
+
+    def set_phase_locked(self, phase, detail=None):
+        if phase != self.phase:
+            self.mark_phase_completed_locked(self.phase)
+            self.phase = phase
+            self.phase_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.phase_started_monotonic = time.monotonic()
+            estimate = SCRAPER_PHASE_ESTIMATES.get(phase, SCRAPER_PHASE_ESTIMATES["starting"])
+            if phase == "completed_matches":
+                self.counts = default_scraper_counts()
+                self.next_run_at = None
+                self.progress = estimate["start"]
+            elif phase == "waiting":
+                self.progress = 100
+            else:
+                self.progress = max(self.progress, estimate["start"])
+        if detail:
+            self.current_detail = detail
+
+    def mark_phase_completed_locked(self, phase):
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if phase == "completed_matches":
+            self.last_times["completed_matches"] = now
+        elif phase == "upcoming_matches":
+            self.last_times["upcoming_matches"] = now
+        elif phase == "ledger":
+            self.last_times["ledger"] = now
+        else:
+            return
+        write_scraper_state(self.settings, self.last_times)
+
+    def update_count_locked(self, key, current=None, total=None):
+        item = self.counts[key]
+        if total is not None:
+            item["total"] = total
+        if current is not None:
+            item["current"] = current
+        estimate = SCRAPER_PHASE_ESTIMATES.get(key)
+        if estimate and item["total"]:
+            ratio = max(0, min(1, item["current"] / item["total"]))
+            self.progress = max(self.progress, int(estimate["start"] + ((estimate["end"] - estimate["start"]) * ratio)))
+
+    def append_line(self, line):
+        clean_line = ANSI_RE.sub("", line).strip()
+        if not clean_line:
+            return
+
+        with self.lock:
+            self.lines.append(clean_line)
+            self.lines = self.lines[-500:]
+            infer_scraper_progress(self, clean_line)
+            snapshot = self.snapshot_locked()
+
+        self.publish("line", {"line": clean_line, "snapshot": snapshot})
+
+    def _reader(self):
+        process = self.process
+        try:
+            for line in process.stdout:
+                self.append_line(line)
+            returncode = process.wait()
+        except Exception as exc:
+            self.append_line(f"Dashboard server error while reading update output: {exc}")
+            returncode = 1
+
+        with self.lock:
+            self.returncode = returncode
+            self.finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if self.status == "stopping":
+                self.status = "stopped"
+                self.phase = "stopped"
+                self.current_detail = "Scraper loop stopped."
+            else:
+                self.status = "completed" if returncode == 0 else "failed"
+                self.phase = "completed" if returncode == 0 else "failed"
+                self.current_detail = "Update pipeline completed." if returncode == 0 else "Update pipeline failed."
+                if returncode == 0:
+                    self.mark_phase_completed_locked(self.phase if self.phase == "ledger" else "ledger")
+            self.progress = 100
+            self.process = None
+            snapshot = self.snapshot_locked()
+
+        self.publish("status", snapshot)
+
+
 retrain_job = RetrainJob()
+scraper_job = ScraperJob()
 playground_lock = threading.Lock()
 playground_predictor_cache = {"signature": None, "ctx": None}
 playground_forfeit_cache = {"signature": None, "ctx": None}
@@ -230,6 +548,128 @@ def infer_progress_floor(line):
     if "pipeline failed" in lowered:
         return 100
     return None
+
+
+def infer_scraper_progress(job, line):
+    lowered = line.lower()
+
+    if "=== scraping recent matches ===" in lowered:
+        job.set_phase_locked("completed_matches", "Scanning HLTV result pages for completed matches.")
+        return
+
+    if "=== model freshness ===" in lowered:
+        job.set_phase_locked("model_freshness", "Checking how far the model is behind the raw match data.")
+        return
+
+    if "=== running predictions with report ===" in lowered:
+        job.set_phase_locked("upcoming_matches", "Fetching upcoming matches and bookmaker odds.")
+        return
+
+    if "=== refreshing shadow ledger ===" in lowered:
+        job.set_phase_locked("ledger", "Resolving completed shadow ledger matches.")
+        return
+
+    if "loaded " in lowered and "already scraped matches" in lowered:
+        job.current_detail = line
+        return
+
+    match = re.search(r"Found (\d+) total new matches", line)
+    if match:
+        total = int(match.group(1))
+        job.update_count_locked("completed_matches", current=0, total=total)
+        job.current_detail = f"Found {total} completed matches to scrape."
+        return
+
+    match = re.search(r"Preparing to scrape details for (\d+) matches", line)
+    if match:
+        total = int(match.group(1))
+        job.update_count_locked("completed_matches", current=0, total=total)
+        job.current_detail = f"Found {total} completed matches to scrape."
+        return
+
+    if "no new matches found to scrape" in lowered:
+        job.update_count_locked("completed_matches", current=0, total=0)
+        job.current_detail = "No new completed matches found."
+        return
+
+    item = SCRAPER_ITEM_RE.search(line)
+    if item:
+        current = int(item.group(1))
+        total = int(item.group(2))
+        action = item.group(3).lower()
+        subject = item.group(4)
+        if "scraping match" in action:
+            job.set_phase_locked("completed_matches")
+            job.update_count_locked("completed_matches", current=current, total=total)
+            job.current_detail = f"Scraping completed match {current}/{total}: {subject}"
+        else:
+            job.set_phase_locked("upcoming_matches")
+            job.update_count_locked("upcoming_matches", current=current, total=total)
+            verb = "Skipping" if action == "skipping" else "Predicting"
+            job.current_detail = f"{verb} upcoming match {current}/{total}: {subject}"
+        return
+
+    if "batch complete" in lowered:
+        total = job.counts["completed_matches"]["total"]
+        if total is not None:
+            job.update_count_locked("completed_matches", current=total, total=total)
+        job.current_detail = "Completed match scrape finished."
+        return
+
+    match = re.search(r"Found (\d+) matches\. Starting predictions", line)
+    if match:
+        total = int(match.group(1))
+        job.update_count_locked("upcoming_matches", current=0, total=total)
+        job.current_detail = f"Predicting {total} upcoming matches."
+        return
+
+    if "no matches found to predict" in lowered:
+        job.update_count_locked("upcoming_matches", current=0, total=0)
+        job.current_detail = "No upcoming matches found to predict."
+        return
+
+    if "automation complete" in lowered:
+        total = job.counts["upcoming_matches"]["total"]
+        if total is not None:
+            job.update_count_locked("upcoming_matches", current=total, total=total)
+        job.current_detail = "Upcoming match scrape and predictions finished."
+        return
+
+    match = re.search(r"Resolving (\d+) past matches", line)
+    if match:
+        total = int(match.group(1))
+        job.update_count_locked("ledger", current=0, total=total)
+        job.current_detail = f"Updating ledger for {total} completed matches."
+        return
+
+    if "no matches ready to resolve" in lowered or "no pending shadow bets" in lowered:
+        job.update_count_locked("ledger", current=0, total=0)
+        job.current_detail = "No ledger matches ready to refresh."
+        return
+
+    if "resolved from canonical data" in lowered or "resolved from hltv" in lowered:
+        current = job.counts["ledger"]["current"] + 1
+        total = job.counts["ledger"]["total"]
+        job.update_count_locked("ledger", current=current, total=total)
+        if total:
+            job.current_detail = f"Updating ledger match {current}/{total}."
+        else:
+            job.current_detail = f"Updating ledger match {current}."
+        return
+
+    match = SCRAPER_RESOLVED_RE.search(line)
+    if match:
+        current = int(match.group(1))
+        total = int(match.group(2))
+        job.update_count_locked("ledger", current=current, total=total)
+        job.current_detail = f"Ledger refresh finished: {current}/{total} matches resolved."
+        return
+
+    match = SCRAPER_NEXT_RUN_RE.search(line)
+    if match:
+        job.next_run_at = match.group(1).strip()
+        job.set_phase_locked("waiting", f"Next loop pass scheduled for {job.next_run_at}.")
+        return
 
 
 def read_json(path):
@@ -871,6 +1311,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(retrain_job.snapshot())
         elif path == "/api/retrain/events":
             self.serve_retrain_events()
+        elif path == "/api/scraper/status":
+            self.send_json(scraper_job.snapshot())
+        elif path == "/api/scraper/events":
+            self.serve_scraper_events()
         elif path == "/reports/latest-predictions":
             report = latest_prediction_report()
             if report:
@@ -901,6 +1345,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             started = retrain_job.start()
             status = HTTPStatus.ACCEPTED if started else HTTPStatus.CONFLICT
             self.send_json(retrain_job.snapshot(), status=status)
+        elif path in {"/api/scraper/run-once", "/api/scraper/start-loop"}:
+            payload = self.read_request_json()
+            settings = scraper_job.coerce_settings(payload)
+            mode = "loop" if path.endswith("start-loop") else "once"
+            started = scraper_job.start(mode, settings)
+            status = HTTPStatus.ACCEPTED if started else HTTPStatus.CONFLICT
+            self.send_json(scraper_job.snapshot(), status=status)
+        elif path == "/api/scraper/stop":
+            stopped = scraper_job.stop()
+            status = HTTPStatus.ACCEPTED if stopped else HTTPStatus.CONFLICT
+            self.send_json(scraper_job.snapshot(), status=status)
         elif path == "/api/performance-refresh":
             report = generate_performance_report()
             self.send_json({"report_url": f"/reports/{report.name}"})
@@ -1040,6 +1495,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
         finally:
             retrain_job.unsubscribe(subscriber)
+
+    def serve_scraper_events(self):
+        subscriber = scraper_job.subscribe()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        self.write_event("status", scraper_job.snapshot())
+
+        try:
+            while True:
+                try:
+                    message = subscriber.get(timeout=2)
+                    self.write_event(message["event"], message["payload"])
+                except queue.Empty:
+                    self.write_event("heartbeat", scraper_job.snapshot())
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            scraper_job.unsubscribe(subscriber)
 
     def write_event(self, event, payload):
         data = json.dumps(payload, ensure_ascii=False)

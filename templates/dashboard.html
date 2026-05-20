@@ -17,6 +17,7 @@
                 <button class="tab active" data-tab="predictions" type="button">Predictions</button>
                 <button class="tab" data-tab="performance" type="button">Performance</button>
                 <button class="tab" data-tab="playground" type="button">Playground</button>
+                <button class="tab" data-tab="scraper" type="button">Scraper</button>
                 <button class="tab" data-tab="model" type="button">Model</button>
             </nav>
             <div class="server-note">
@@ -39,6 +40,65 @@
 
             <section class="panel tab-panel active" id="predictions-panel">
                 <iframe id="predictions-frame" title="Upcoming match prediction report" src="/reports/latest-predictions"></iframe>
+            </section>
+
+            <section class="scraper-grid tab-panel" id="scraper-panel">
+                <div class="panel scraper-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Scraper Pipeline</h2>
+                            <p>Runs <code>update.py</code> for completed results, upcoming odds, and ledger refreshes.</p>
+                        </div>
+                        <div class="button-row">
+                            <button class="primary-button" id="scraper-run-once" type="button">Run Once</button>
+                            <button class="secondary-button" id="scraper-start-loop" type="button">Start Loop</button>
+                            <button class="danger-button" id="scraper-stop" type="button" disabled>Stop</button>
+                        </div>
+                    </div>
+
+                    <div class="form-grid scraper-settings">
+                        <label>
+                            <span>Loop interval hours</span>
+                            <input id="scraper-interval" type="number" min="0" max="24" step="0.25">
+                        </label>
+                        <label>
+                            <span>Jitter minutes</span>
+                            <input id="scraper-jitter" type="number" min="0" max="240" step="1">
+                        </label>
+                        <label>
+                            <span>Result pages</span>
+                            <input id="scraper-pages" type="number" min="1" max="20" step="1">
+                        </label>
+                        <label>
+                            <span>Match cap</span>
+                            <input id="scraper-count" type="number" min="1" max="200" step="1" placeholder="No cap">
+                        </label>
+                    </div>
+
+                    <div class="progress-wrap scraper-progress">
+                        <div class="progress-meta">
+                            <span id="scraper-status">Idle</span>
+                            <strong id="scraper-progress-label">0%</strong>
+                        </div>
+                        <div class="progress-track" aria-label="Scraper progress">
+                            <div class="progress-fill" id="scraper-progress"></div>
+                        </div>
+                        <div class="stage-detail" id="scraper-detail">No scraper run started.</div>
+                    </div>
+
+                    <div class="stat-grid scraper-stat-grid" id="scraper-stats"></div>
+                </div>
+
+                <div class="panel scraper-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Current Pass</h2>
+                            <p>Stage counters from the latest update output.</p>
+                        </div>
+                    </div>
+                    <div class="metric-grid" id="scraper-counts"></div>
+                    <pre class="log scraper-log" id="scraper-log" aria-live="polite">No scraper run started.</pre>
+                </div>
             </section>
 
             <section class="playground-grid tab-panel" id="playground-panel">
@@ -183,12 +243,14 @@
         const tabs = [...document.querySelectorAll(".tab")];
         const panels = {
             predictions: document.getElementById("predictions-panel"),
+            scraper: document.getElementById("scraper-panel"),
             playground: document.getElementById("playground-panel"),
             performance: document.getElementById("performance-panel"),
             model: document.getElementById("model-panel"),
         };
         const labels = {
             predictions: ["Upcoming Match Prediction Report", "Latest file: __PREDICTION_REPORT_LABEL__", "/reports/latest-predictions"],
+            scraper: ["Scraper Pipeline", "Run update.py once or in its randomized loop.", null],
             playground: ["Prediction Playground", "Granular map, series, veto, forfeit, and team-stat calculations.", null],
             performance: ["Model Performance Report", "Shadow ledger calibration and betting performance.", "/reports/performance"],
             model: ["Model Details And Retraining", "Training metadata and live pipeline output.", null],
@@ -203,8 +265,9 @@
             activeTab = name;
             tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.tab === name));
             Object.entries(panels).forEach(([key, panel]) => panel.classList.toggle("active", key === name));
-            topbar.hidden = name === "playground";
-            topbar.classList.toggle("is-hidden", name === "playground");
+            const hideTopbar = ["playground", "scraper", "model"].includes(name);
+            topbar.hidden = hideTopbar;
+            topbar.classList.toggle("is-hidden", hideTopbar);
             sectionLabel.textContent = labels[name][0];
             sectionSubtitle.textContent = labels[name][1];
             if (labels[name][2]) {
@@ -227,6 +290,8 @@
                 refreshPerformanceReport();
             } else if (activeTab === "playground") {
                 loadPlaygroundOptions(true);
+            } else if (activeTab === "scraper") {
+                loadScraperStatus();
             } else {
                 loadModelInfo();
             }
@@ -643,6 +708,130 @@
             button.textContent = isOpen ? "Hide Advanced Options" : "Advanced Options";
         });
 
+        const scraperRunOnce = document.getElementById("scraper-run-once");
+        const scraperStartLoop = document.getElementById("scraper-start-loop");
+        const scraperStop = document.getElementById("scraper-stop");
+        const scraperStatus = document.getElementById("scraper-status");
+        const scraperProgress = document.getElementById("scraper-progress");
+        const scraperProgressLabel = document.getElementById("scraper-progress-label");
+        const scraperDetail = document.getElementById("scraper-detail");
+        const scraperLog = document.getElementById("scraper-log");
+        let scraperEventSource;
+        let scraperSettingsHydrated = false;
+        let lastScraperStatus = "idle";
+
+        function fmtTime(value) {
+            return value || "n/a";
+        }
+
+        function scraperPayload() {
+            return {
+                interval_hours: document.getElementById("scraper-interval").value,
+                jitter_minutes: document.getElementById("scraper-jitter").value,
+                pages: document.getElementById("scraper-pages").value,
+                count: document.getElementById("scraper-count").value,
+            };
+        }
+
+        function hydrateScraperSettings(settings) {
+            if (scraperSettingsHydrated || !settings) return;
+            document.getElementById("scraper-interval").value = settings.interval_hours ?? 2;
+            document.getElementById("scraper-jitter").value = settings.jitter_minutes ?? 30;
+            document.getElementById("scraper-pages").value = settings.pages ?? 1;
+            document.getElementById("scraper-count").value = settings.count ?? "";
+            scraperSettingsHydrated = true;
+        }
+
+        function countMetric(item) {
+            if (!item) return "n/a";
+            if (item.total === null || item.total === undefined) return `${fmtNumber(item.current || 0)} / n/a`;
+            return `${fmtNumber(item.current || 0)} / ${fmtNumber(item.total)}`;
+        }
+
+        function setScraperState(snapshot) {
+            const progress = snapshot.progress || 0;
+            const previousStatus = lastScraperStatus;
+            lastScraperStatus = snapshot.status || "idle";
+            hydrateScraperSettings(snapshot.settings);
+            scraperStatus.textContent = snapshot.status === "running"
+                ? `${snapshot.phase_label || "Running"} (${snapshot.mode || "once"})`
+                : (snapshot.status || "idle");
+            scraperProgress.style.width = `${progress}%`;
+            scraperProgressLabel.textContent = `${progress}%`;
+            scraperDetail.textContent = snapshot.detail || "";
+            const isRunning = snapshot.status === "running" || snapshot.status === "stopping";
+            setTabRunning("scraper", isRunning);
+            scraperRunOnce.disabled = isRunning;
+            scraperStartLoop.disabled = isRunning;
+            scraperStop.disabled = !isRunning;
+
+            const times = snapshot.last_times || {};
+            document.getElementById("scraper-stats").innerHTML = [
+                stat("Last completed-match scrape", escapeText(fmtTime(times.completed_matches))),
+                stat("Last upcoming-match scrape", escapeText(fmtTime(times.upcoming_matches))),
+                stat("Ledger refreshed", escapeText(fmtTime(times.ledger))),
+                stat("Next loop pass", escapeText(fmtTime(snapshot.next_run_at))),
+                stat("Started", escapeText(fmtTime(snapshot.started_at))),
+                stat("Finished", escapeText(fmtTime(snapshot.finished_at))),
+            ].join("");
+
+            const counts = snapshot.counts || {};
+            document.getElementById("scraper-counts").innerHTML = [
+                metric("Completed matches", countMetric(counts.completed_matches), "results scrape"),
+                metric("Upcoming matches", countMetric(counts.upcoming_matches), "odds and predictions"),
+                metric("Ledger matches", countMetric(counts.ledger), "settlement refresh"),
+                metric("Mode", snapshot.mode || "once", snapshot.phase_label || ""),
+            ].join("");
+
+            if (snapshot.tail && snapshot.tail.length) {
+                scraperLog.textContent = snapshot.tail.join("\n");
+                scraperLog.scrollTop = scraperLog.scrollHeight;
+            }
+            if (snapshot.status === "completed" && previousStatus !== "completed") {
+                document.getElementById("predictions-frame").src = "/reports/latest-predictions?ts=" + Date.now();
+                document.getElementById("performance-frame").src = "/reports/performance?ts=" + Date.now();
+            }
+        }
+
+        async function loadScraperStatus() {
+            const response = await fetch("/api/scraper/status");
+            if (!response.ok) return;
+            setScraperState(await response.json());
+        }
+
+        async function startScraper(endpoint, startingText) {
+            scraperLog.textContent = `${startingText}\n`;
+            const response = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(scraperPayload()),
+            });
+            const snapshot = await response.json();
+            setScraperState(snapshot);
+        }
+
+        function connectScraperEvents() {
+            if (scraperEventSource) scraperEventSource.close();
+            scraperEventSource = new EventSource("/api/scraper/events");
+            scraperEventSource.addEventListener("status", event => setScraperState(JSON.parse(event.data)));
+            scraperEventSource.addEventListener("line", event => {
+                const payload = JSON.parse(event.data);
+                if (scraperLog.textContent === "No scraper run started.") scraperLog.textContent = "";
+                scraperLog.textContent += `${payload.line}\n`;
+                scraperLog.scrollTop = scraperLog.scrollHeight;
+                setScraperState(payload.snapshot);
+            });
+            scraperEventSource.addEventListener("heartbeat", event => setScraperState(JSON.parse(event.data)));
+        }
+
+        scraperRunOnce.addEventListener("click", () => startScraper("/api/scraper/run-once", "Starting update.py --run-once..."));
+        scraperStartLoop.addEventListener("click", () => startScraper("/api/scraper/start-loop", "Starting update.py loop..."));
+        scraperStop.addEventListener("click", async () => {
+            const response = await fetch("/api/scraper/stop", { method: "POST" });
+            const snapshot = await response.json();
+            setScraperState(snapshot);
+        });
+
         const retrainButton = document.getElementById("retrain-button");
         const retrainStatus = document.getElementById("retrain-status");
         const retrainProgress = document.getElementById("retrain-progress");
@@ -651,10 +840,16 @@
         let eventSource;
         let lastRetrainStatus = "idle";
 
+        function setTabRunning(name, isRunning) {
+            const tab = document.querySelector(`.tab[data-tab="${name}"]`);
+            if (tab) tab.classList.toggle("is-running", isRunning);
+        }
+
         function setRetrainState(snapshot) {
             const progress = snapshot.progress || 0;
             const previousStatus = lastRetrainStatus;
             lastRetrainStatus = snapshot.status || "idle";
+            setTabRunning("model", snapshot.status === "running");
             retrainStatus.textContent = snapshot.status === "running"
                 ? (snapshot.phase_label || "Running")
                 : (snapshot.status || "idle");
@@ -702,6 +897,8 @@
         tickClock();
         loadModelInfo();
         loadPlaygroundOptions();
+        loadScraperStatus();
+        connectScraperEvents();
         connectRetrainEvents();
     </script>
 </body>

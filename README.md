@@ -2,7 +2,7 @@
 
 CS2 Predictive Engine is an experimental Counter-Strike 2 match prediction project. It combines HLTV match scraping, temporal feature engineering, a PyTorch map winner model, Monte Carlo map-veto simulation, and standalone HTML reports for upcoming-match predictions and model performance tracking.
 
-This repository is portfolio-oriented and still evolving. The current workflow is script-driven: it generates two main standalone reports instead of running as a cohesive web application.
+This repository is portfolio-oriented and still evolving. The core reports remain standalone HTML artefacts, with a lightweight local dashboard for viewing reports and running the most common maintenance workflows.
 
 ## Model Performance
 
@@ -14,6 +14,7 @@ These results come from training on a local dataset covering roughly 7 months of
 
 - **Prediction report:** `model/automate_predictions.py` scrapes upcoming HLTV matches, predicts series win probabilities, estimates map-veto paths, gathers market odds when available, records shadow-ledger snapshots, and writes a standalone HTML report under `reports/`.
 - **Model performance report:** `evaluation/shadow_ledger.py report` summarizes settled predictions, calibration, odds snapshots, model versions, and paper-trading style edge analysis in a standalone HTML report.
+- **Local dashboard:** `dashboard_server.py` serves the latest reports, manual prediction playground, scraper/update controls, model metadata, and retraining controls.
 - **Training pipeline:** `pipeline.py` cleans scraped match data, rebuilds temporal features, trains the winner model, saves the scaler/checkpoint, and registers a model version.
 - **Manual predictions:** `model.predict_series` predicts a matchup from inferred veto paths. `model.predict` can score a known map list from the command line when the veto or expected map pool is already known.
 - **Settlement-risk adjustment:** `model.train_forfeit` trains a separate forfeit/default model used for optional Polymarket-style fair probability adjustment.
@@ -94,13 +95,17 @@ Optional map images can be placed in `static/maps/` using filenames such as `de_
 
 ### 0. Local Dashboard
 
-Run the local dashboard to view the latest prediction report, model performance report, model training metadata, and retraining controls in one place:
+Run the local dashboard to view the latest prediction report, model performance report, prediction playground, scraper/update controls, model training metadata, and retraining controls in one place:
 
 ```bash
 python dashboard_server.py
 ```
 
-Then open `http://127.0.0.1:8765/`. The Retrain button runs `pipeline.py` with live log output and progress updates. If you use a virtual environment, start the dashboard from that environment so report generation and retraining use the installed project dependencies.
+Then open `http://127.0.0.1:8765/`.
+
+The Scraper tab runs `update.py` either once or in its jittered loop. It exposes the loop interval, random jitter, result-page count, and optional match cap. While a pass is running, the tab shows stage progress for completed-match scraping, upcoming-match prediction and odds scraping, and shadow-ledger refreshes. It also records separate date/time values for the last completed-match scrape, the last upcoming-match scrape, and the last ledger refresh, since upcoming odds collection can finish much later than the completed-results scrape.
+
+The Model tab includes the Retrain button for `pipeline.py`, with live log output and progress updates. The Scraper and Model sidebar tabs show an animated activity indicator while their background jobs are running. The dashboard prefers `venv\Scripts\python.exe` when it exists so launched jobs use the project dependencies; otherwise it falls back to the Python interpreter that started the dashboard.
 
 ### 1. Scrape Recent Results
 
@@ -128,7 +133,7 @@ python pipeline.py
 
 ### 3. Daily Update Loop
 
-Run the lightweight update workflow without retraining. Each pass scrapes recent results, prints a model freshness warning if the current checkpoint is far behind the cleaned corpus, generates a prediction report, and refreshes the shadow ledger.
+Run the lightweight update workflow without retraining. Each pass scrapes recent results, prints a model freshness warning if the current checkpoint is far behind the cleaned corpus, generates a prediction report with upcoming-match odds when available, and refreshes the shadow ledger.
 
 ```bash
 python update.py --no-open
@@ -145,6 +150,8 @@ python update.py --interval-hours 2 --jitter-minutes 45 --no-open
 ```
 
 `update.py` does not retrain the model. Retraining is still a manual `pipeline.py` step.
+
+The same workflow is available from the dashboard's Scraper tab, including run-once and loop modes.
 
 ### 4. Prediction Report
 
@@ -311,10 +318,6 @@ Core tuning parameters live in `config.py`.
 
 ## Future Improvements
 
-- Unify the current standalone prediction report and model performance report into a single web dashboard.
-- Add a refresh control that scrapes new matches, generates predictions, updates the shadow ledger, and refreshes the report without command-line scripts.
-- Add a training control that runs the cleaning, feature engineering, retraining, checkpoint registration, and evaluation pipeline from the dashboard.
-- Surface known-veto prediction in the dashboard, since the model already supports command-line map-list predictions.
 - Improve project cohesion so ingestion, training, prediction, and evaluation feel like one product rather than separate scripts.
 - Add packaging, tests, and clearer sample-data fixtures so contributors can validate changes without a private local scrape.
 

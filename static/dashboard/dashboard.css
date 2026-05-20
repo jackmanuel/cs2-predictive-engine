@@ -89,7 +89,8 @@ code {
 .tab,
 .icon-button,
 .primary-button,
-.secondary-button {
+.secondary-button,
+.danger-button {
     border: 1px solid var(--line);
     color: var(--text);
     background: var(--panel-2);
@@ -105,12 +106,31 @@ code {
 
 .tab {
     justify-content: flex-start;
+    gap: 8px;
 }
 
 .tab.active {
     border-color: rgba(101, 209, 180, .7);
     background: rgba(101, 209, 180, .12);
     color: #d9fff5;
+}
+
+.tab.is-running::after {
+    content: "";
+    width: 12px;
+    height: 12px;
+    margin-left: auto;
+    border: 2px solid rgba(238, 244, 248, .25);
+    border-top-color: var(--accent);
+    border-radius: 999px;
+    animation: tab-spin .8s linear infinite;
+    flex: 0 0 auto;
+}
+
+@keyframes tab-spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .primary-button {
@@ -127,6 +147,18 @@ code {
 
 .secondary-button {
     font-weight: 750;
+}
+
+.danger-button {
+    border-color: rgba(255, 107, 107, .55);
+    color: #ffd5d5;
+    font-weight: 750;
+}
+
+.danger-button:disabled,
+.secondary-button:disabled {
+    cursor: not-allowed;
+    opacity: .55;
 }
 
 .disabled {
@@ -206,7 +238,8 @@ iframe {
 }
 
 .model-grid,
-.playground-grid {
+.playground-grid,
+.scraper-grid {
     grid-template-columns: minmax(0, 1.35fr) minmax(360px, .85fr);
     gap: 12px;
 }
@@ -221,6 +254,7 @@ iframe {
 }
 
 .retrain-panel,
+.scraper-panel,
 .playground-form,
 .result-panel {
     padding: 16px;
@@ -297,6 +331,42 @@ iframe {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 10px;
+}
+
+.scraper-grid.active {
+    display: grid;
+}
+
+.scraper-settings {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-bottom: 14px;
+}
+
+.button-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.scraper-progress {
+    margin-top: 4px;
+}
+
+.stage-detail {
+    color: var(--muted);
+    line-height: 1.4;
+    min-height: 20px;
+}
+
+.scraper-stat-grid {
+    margin-top: 14px;
+}
+
+.scraper-log {
+    height: calc(100vh - 382px);
+    min-height: 280px;
+    margin-top: 14px;
 }
 
 label {
@@ -736,7 +806,7 @@ textarea {
     }
 
     .tabs {
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(5, 1fr);
     }
 
     .tab {
@@ -752,8 +822,11 @@ textarea {
     .model-grid,
     .playground-grid,
     .playground-grid.active,
+    .scraper-grid,
+    .scraper-grid.active,
     .playground-results,
     .form-grid,
+    .scraper-settings,
     .advanced-fields,
     .veto-layout,
     .veto-card-grid,
