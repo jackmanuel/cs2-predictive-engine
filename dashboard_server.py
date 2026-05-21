@@ -1127,7 +1127,7 @@ def bracket_match_payload(round_name, label, left_dist, right_dist, match_format
 
 
 def bracket_simulation_payload(request):
-    from config import MC_THRESHOLD
+    from config import MC_ITERATIONS, MC_THRESHOLD
     from model.predict import calculate_expected_series_win
 
     raw_teams = request.get("teams", [])
@@ -1149,7 +1149,7 @@ def bracket_simulation_payload(request):
     grand_final_format = str(request.get("grand_final_format", "bo5")).lower()
     if grand_final_format not in {"bo1", "bo3", "bo5"}:
         grand_final_format = "bo5"
-    iters = parse_positive_int(request.get("iters"), 3000, minimum=100, maximum=25000)
+    iters = parse_positive_int(request.get("iters"), MC_ITERATIONS, minimum=100, maximum=25000)
     threshold = parse_probability(request.get("threshold"), MC_THRESHOLD)
     ctx = get_playground_predictor_context()
     matchup_cache = {}
@@ -1172,8 +1172,8 @@ def bracket_simulation_payload(request):
     if team_count == 6:
         quarter_1 = bracket_match_payload("quarterfinal", "Quarter-final 1", {teams[2]: 1.0}, {teams[5]: 1.0}, series_format, probability_lookup)
         quarter_2 = bracket_match_payload("quarterfinal", "Quarter-final 2", {teams[3]: 1.0}, {teams[4]: 1.0}, series_format, probability_lookup)
-        semi_1 = bracket_match_payload("semifinal", "Semi-final 1", {teams[0]: 1.0}, quarter_2["outcomes"], series_format, probability_lookup)
-        semi_2 = bracket_match_payload("semifinal", "Semi-final 2", {teams[1]: 1.0}, quarter_1["outcomes"], series_format, probability_lookup)
+        semi_1 = bracket_match_payload("semifinal", "Semi-final 1", {teams[0]: 1.0}, quarter_1["outcomes"], series_format, probability_lookup)
+        semi_2 = bracket_match_payload("semifinal", "Semi-final 2", {teams[1]: 1.0}, quarter_2["outcomes"], series_format, probability_lookup)
         final = bracket_match_payload("final", "Grand final", semi_1["outcomes"], semi_2["outcomes"], grand_final_format, probability_lookup)
         rounds = [
             {"name": "Quarter-finals", "matches": [quarter_1, quarter_2]},

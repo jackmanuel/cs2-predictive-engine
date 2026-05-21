@@ -264,7 +264,6 @@ iframe {
 .playground-form,
 .bracket-form,
 .bracket-board-panel,
-.bracket-winners-panel,
 .result-panel {
     padding: 16px;
 }
@@ -416,8 +415,16 @@ iframe {
 }
 
 .bracket-settings {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     margin-bottom: 14px;
+}
+
+.bracket-advanced-toggle {
+    align-self: end;
+}
+
+.bracket-advanced-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .bracket-board-heading {
@@ -536,10 +543,6 @@ textarea {
     min-width: 0;
 }
 
-.bracket-winners-panel {
-    grid-column: 1 / -1;
-}
-
 .bracket-board {
     min-height: 430px;
     overflow: hidden;
@@ -594,10 +597,29 @@ textarea {
 
 .bracket-inline-input {
     gap: 4px;
+    min-width: 0;
 }
 
 .bracket-inline-input input {
     min-height: 34px;
+    max-width: 170px;
+}
+
+.bracket-entry-row {
+    display: grid;
+    grid-template-columns: minmax(0, 180px) auto;
+    align-items: end;
+    gap: 8px;
+}
+
+.bracket-entry-probability {
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
 .bracket-placeholder {
@@ -609,6 +631,59 @@ textarea {
     align-items: center;
     padding: 7px 9px;
     background: rgba(255, 255, 255, .018);
+}
+
+.bracket-projected-card {
+    cursor: pointer;
+}
+
+.bracket-projected-card:hover,
+.bracket-projected-card:focus {
+    border-color: rgba(101, 209, 180, .5);
+    outline: none;
+}
+
+.bracket-projection-list,
+.bracket-projection-details {
+    display: grid;
+    gap: 6px;
+}
+
+.bracket-projection-details {
+    border-top: 1px solid rgba(148, 163, 173, .16);
+    padding-top: 8px;
+}
+
+.bracket-projection-row,
+.bracket-expand-hint {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.bracket-projection-row {
+    background: rgba(255, 255, 255, .025);
+    border: 1px solid rgba(255, 255, 255, .045);
+    border-radius: 7px;
+    padding: 5px 8px;
+}
+
+.bracket-projection-row span,
+.bracket-projection-empty,
+.bracket-expand-hint {
+    color: var(--muted);
+}
+
+.bracket-projection-row strong {
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.bracket-expand-hint {
+    font-size: 12px;
 }
 
 .bracket-result-details {
@@ -646,8 +721,7 @@ textarea {
     display: none;
 }
 
-.bracket-match-meta,
-.winner-row-head {
+.bracket-match-meta {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -656,8 +730,7 @@ textarea {
 
 .bracket-match-meta span,
 .bracket-team-pair span,
-.bracket-matchup-row span,
-.winner-row-head span {
+.bracket-matchup-row span {
     color: var(--muted);
 }
 
@@ -696,35 +769,6 @@ textarea {
 
 .bracket-matchup-row strong {
     white-space: nowrap;
-}
-
-.winner-list {
-    display: grid;
-    gap: 8px;
-    margin-top: 10px;
-}
-
-.winner-row {
-    background: #111820;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    padding: 9px 10px;
-    display: grid;
-    gap: 7px;
-}
-
-.winner-track {
-    height: 8px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, .06);
-}
-
-.winner-fill {
-    height: 100%;
-    min-width: 2px;
-    border-radius: 999px;
-    background: linear-gradient(90deg, var(--accent), var(--accent-2));
 }
 
 .wide-panel {

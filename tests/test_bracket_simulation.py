@@ -40,6 +40,8 @@ def test_six_team_bracket_gives_top_byes_and_normalized_winners(monkeypatch):
     ]
     assert payload["rounds"][1]["matches"][0]["left"] == ["Alpha"]
     assert payload["rounds"][1]["matches"][1]["left"] == ["Bravo"]
+    assert set(payload["rounds"][1]["matches"][0]["right"]) == {"Charlie", "Foxtrot"}
+    assert set(payload["rounds"][1]["matches"][1]["right"]) == {"Delta", "Echo"}
     assert payload["rounds"][2]["matches"][0]["format"] == "bo5"
     assert "bo5" in formats_seen
     assert round(sum(item["probability"] for item in payload["champion_probabilities"]), 8) == 1
