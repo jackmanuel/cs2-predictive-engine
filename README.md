@@ -13,9 +13,9 @@ These results come from training on a local dataset covering roughly 7 months of
 ## Current State
 
 - **Prediction report:** `model/automate_predictions.py` scrapes upcoming HLTV matches, predicts series win probabilities, estimates map-veto paths, gathers market odds when available, records shadow-ledger snapshots, and writes a standalone HTML report under `reports/`.
-- **Model performance report:** `evaluation/shadow_ledger.py report` summarizes settled predictions, calibration, odds snapshots, model versions, and paper-trading style edge analysis in a standalone HTML report.
-- **Local dashboard:** `dashboard_server.py` serves the latest reports, manual prediction playground, scraper/update controls, model metadata, and retraining controls.
-- **Training pipeline:** `pipeline.py` cleans scraped match data, rebuilds temporal features, trains the winner model, saves the scaler/checkpoint, and registers a model version.
+- **Model performance report:** `evaluation/shadow_ledger.py report` summarizes settled predictions, calibration, odds snapshots, and paper-trading style edge analysis in a standalone HTML report.
+- **Local dashboard:** `dashboard_server.py` serves the latest reports, manual prediction playground, scraper/update controls, model metadata, training evaluation diagnostics, and retraining controls.
+- **Training pipeline:** `pipeline.py` cleans scraped match data, rebuilds temporal features, trains the winner model, saves the scaler/checkpoint, registers a model version, and stores selected-checkpoint evaluation diagnostics.
 - **Manual predictions:** `model.predict_series` predicts a matchup from inferred veto paths. `model.predict` can score a known map list from the command line when the veto or expected map pool is already known.
 - **Settlement-risk adjustment:** `model.train_forfeit` trains a separate forfeit/default model used for optional Polymarket-style fair probability adjustment.
 
@@ -34,7 +34,7 @@ The repository does not redistribute scraped HLTV data, betting odds snapshots, 
 - PyTorch binary map classifier with mirrored training rows to reduce team-order bias.
 - Monte Carlo veto simulator with map pool, explicit veto-history ban weights, pick tendencies, and veto-starter heuristics.
 - Series probability aggregation over likely veto paths.
-- SQLite-backed shadow ledger for prediction snapshots, model versions, odds history, calibration, and settled-result analysis.
+- SQLite-backed shadow ledger for prediction snapshots, model versions, named training evaluations, odds history, calibration, and settled-result analysis.
 - Walk-forward feature experiment runner for comparing feature variants across fixed future windows.
 - Separate forfeit/default settlement-risk model for optional market-specific adjustment.
 
@@ -105,7 +105,7 @@ Then open `http://127.0.0.1:8765/`.
 
 The Scraper tab runs `update.py` either once or in its jittered loop. It exposes the loop interval, random jitter, result-page count, and optional match cap. While a pass is running, the tab shows stage progress for completed-match scraping, upcoming-match prediction and odds scraping, and shadow-ledger refreshes. It also records separate date/time values for the last completed-match scrape, the last upcoming-match scrape, and the last ledger refresh, since upcoming odds collection can finish much later than the completed-results scrape.
 
-The Model tab includes the Retrain button for `pipeline.py`, with live log output and progress updates. The Scraper and Model sidebar tabs show an animated activity indicator while their background jobs are running. The dashboard prefers `venv\Scripts\python.exe` when it exists so launched jobs use the project dependencies; otherwise it falls back to the Python interpreter that started the dashboard.
+The Model tab includes the Retrain button for `pipeline.py`, with live log output and progress updates. It also shows model-version training diagnostics for the selected saved checkpoint, including Brier score, log loss, mirrored log loss, accuracy, ROC AUC, label mean, prediction mean, symmetry error, training maps, and the reconstructed temporal test slice. The Scraper and Model sidebar tabs show an animated activity indicator while their background jobs are running. The dashboard prefers `venv\Scripts\python.exe` when it exists so launched jobs use the project dependencies; otherwise it falls back to the Python interpreter that started the dashboard.
 
 ### 1. Scrape Recent Results
 
@@ -213,7 +213,7 @@ This path is currently command-line only and is not surfaced in the HTML predict
 
 ### 7. Shadow Ledger And Model Performance Report
 
-The shadow ledger records prediction snapshots from the prediction report, stores model and odds metadata, and resolves match results later.
+The shadow ledger records prediction snapshots from the prediction report, stores model, training-evaluation, and odds metadata, and resolves match results later.
 
 ```bash
 python -m evaluation.shadow_ledger refresh
@@ -230,7 +230,7 @@ python -m evaluation.shadow_ledger versions
 python -m evaluation.shadow_ledger odds <hltv_match_url>
 ```
 
-The HTML report includes performance cards, calibration bins, edge strategy breakdowns, a match browser, odds history fields, and model version history.
+The HTML report includes performance cards, calibration bins, edge strategy breakdowns, a match browser, and odds history fields. Model-version training diagnostics live in the dashboard's Model tab rather than the Performance report.
 
 ### 8. Feature Experiments
 

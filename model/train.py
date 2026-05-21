@@ -11,6 +11,7 @@ import pandas as pd
 import joblib
 from sklearn.preprocessing import StandardScaler
 import copy
+import numpy as np
 
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,7 +22,7 @@ from processing.features import mirror_data, MODEL_FEATURES
 from model.dataset import MatchDataset
 from model.net import MatchPredictor
 from model.veto_sim import MAP_POOL
-from evaluation.shadow_ledger import register_model_version
+from evaluation.shadow_ledger import register_model_evaluation, register_model_version
 from evaluation.metrics import compute_metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -71,6 +72,82 @@ def save_training_state(df: pd.DataFrame):
         logger.info(f"Training state statistics saved to {out_path}")
     except Exception as e:
         logger.error(f"Failed to save training state: {e}")
+
+
+def rank_ordering_diagnostics(df: pd.DataFrame):
+    """Returns simple diagnostics for source ordering versus rank-favourite ordering."""
+    if df.empty or "rank_diff" not in df.columns:
+        return None, None
+
+    ranked = df[df["rank_diff"] != 0].copy()
+    if ranked.empty:
+        return None, None
+
+    team_a_rank_favoured_rate = float((ranked["rank_diff"] > 0).mean())
+    rank_favourite_won = np.where(
+        ranked["rank_diff"] > 0,
+        ranked["label"] == 1,
+        ranked["label"] == 0,
+    )
+    return team_a_rank_favoured_rate, float(rank_favourite_won.mean())
+
+
+def predict_frame(model, scaler, df: pd.DataFrame):
+    X = df[MODEL_FEATURES].values.astype(np.float32)
+    X_scaled = scaler.transform(X)
+    with torch.no_grad():
+        return model(torch.tensor(X_scaled, dtype=torch.float32)).numpy().reshape(-1)
+
+
+def evaluation_payload(df: pd.DataFrame, preds, metrics: dict):
+    labels = df["label"].values.astype(np.float32)
+    rank_a_rate, rank_fav_win_rate = rank_ordering_diagnostics(df)
+    return {
+        "rows": len(df),
+        "matches": int(df["match_id"].nunique()) if "match_id" in df.columns else None,
+        "start_date": str(df["date"].min()) if "date" in df.columns and not df.empty else None,
+        "end_date": str(df["date"].max()) if "date" in df.columns and not df.empty else None,
+        "brier_score": metrics["brier_score"],
+        "log_loss": metrics["log_loss"],
+        "accuracy": metrics["accuracy"],
+        "roc_auc": metrics["roc_auc"],
+        "ece": metrics["ece"],
+        "label_mean": float(labels.mean()) if len(labels) else None,
+        "prediction_mean": float(np.mean(preds)) if len(preds) else None,
+        "team_a_rank_favoured_rate": rank_a_rate,
+        "rank_favourite_win_rate": rank_fav_win_rate,
+    }
+
+
+def register_temporal_test_evaluations(version_id: str, model, scaler, test_df: pd.DataFrame):
+    """Stores original, mirrored, and order-symmetry diagnostics for the saved model."""
+    model.eval()
+    original_preds = predict_frame(model, scaler, test_df)
+    original_metrics = compute_metrics(test_df["label"].values, original_preds)
+    original_payload = evaluation_payload(test_df, original_preds, original_metrics)
+    register_model_evaluation(version_id=version_id, eval_name="temporal_test", **original_payload)
+
+    mirrored_test_df = mirror_data(test_df).iloc[len(test_df):].reset_index(drop=True)
+    mirrored_preds = predict_frame(model, scaler, mirrored_test_df)
+    mirrored_metrics = compute_metrics(mirrored_test_df["label"].values, mirrored_preds)
+    mirrored_payload = evaluation_payload(mirrored_test_df, mirrored_preds, mirrored_metrics)
+    register_model_evaluation(version_id=version_id, eval_name="mirrored_temporal_test", **mirrored_payload)
+
+    symmetry_error = np.abs(original_preds + mirrored_preds - 1.0)
+    register_model_evaluation(
+        version_id=version_id,
+        eval_name="order_symmetry",
+        rows=len(test_df),
+        matches=int(test_df["match_id"].nunique()),
+        start_date=str(test_df["date"].min()),
+        end_date=str(test_df["date"].max()),
+        symmetry_error_mean=float(np.mean(symmetry_error)),
+        symmetry_error_p95=float(np.percentile(symmetry_error, 95)),
+        details={
+            "description": "abs(P(original Team A wins) + P(mirrored Team B wins) - 1)",
+        },
+    )
+
 
 def train_model():
     data_path = PROCESSED_DIR / "features.parquet"
@@ -236,7 +313,7 @@ def train_model():
     except Exception:
         data_stats = {}
     
-    register_model_version(
+    version_id = register_model_version(
         trained_at=training_timestamp,
         best_val_loss=best_overall_val_loss,
         epochs_run=epochs_run_overall,
@@ -248,6 +325,10 @@ def train_model():
         test_brier_score=avg_brier,
         test_log_loss=avg_log_loss,
     )
+
+    saved_model = MatchPredictor(input_dim)
+    saved_model.load_state_dict(best_overall_state)
+    register_temporal_test_evaluations(version_id, saved_model, scaler, test_df)
 
 if __name__ == "__main__":
     train_model()

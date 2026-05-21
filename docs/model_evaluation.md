@@ -127,6 +127,29 @@ separately because calibration should not usually improve ranking quality.
 The summary CSV also includes deltas versus `baseline_all`. Negative Brier/log
 loss deltas mean a variant improved on the current feature set.
 
+## Production Training Diagnostics
+
+Production retrains still use a temporal 70/15/15 train/validation/test split
+inside `model.train`. The version row keeps the historical five-seed average
+test Brier and log loss for continuity, while the selected saved checkpoint is
+now evaluated separately in `model_version_evaluations`.
+
+Each registered model version can have named evaluation rows:
+
+- `temporal_test`: the selected archived checkpoint on that version's temporal
+  held-out test slice.
+- `mirrored_temporal_test`: the same test rows with Team A/B swapped and labels
+  flipped, used to detect ordering-sensitive behaviour.
+- `order_symmetry`: the mean and 95th-percentile value of
+  `abs(P(original Team A wins) + P(mirrored Team B wins) - 1)`.
+
+These rows are stored in the shadow-ledger SQLite database and shown in the
+dashboard's Model tab. The dashboard focuses on selected-checkpoint metrics:
+Brier score, log loss, mirrored log loss, accuracy, ROC AUC, label mean,
+prediction mean, symmetry error, training maps, and the reconstructed test
+slice. Rank-ordering diagnostics are retained in the backend for investigation
+but are not surfaced as headline dashboard columns.
+
 ## Current Feature Hypotheses
 
 These notes are working hypotheses, not permanent conclusions.
@@ -167,11 +190,11 @@ The project currently has two standalone report artefacts:
 
 `dashboard_server.py` provides a local dashboard around those artefacts. It
 serves the latest reports, exposes a manual prediction playground, can run the
-`update.py` scraper workflow once or in its jittered loop, and can launch the
-full `pipeline.py` retrain job. The scraper dashboard tracks separate
-completion times for recent-results scraping, upcoming-match/odds scraping, and
-shadow-ledger refreshes because those stages can finish at meaningfully
-different times.
+`update.py` scraper workflow once or in its jittered loop, can launch the full
+`pipeline.py` retrain job, and shows model-version training diagnostics in the
+Model tab. The scraper dashboard tracks separate completion times for
+recent-results scraping, upcoming-match/odds scraping, and shadow-ledger
+refreshes because those stages can finish at meaningfully different times.
 
 ## Promotion Rule
 

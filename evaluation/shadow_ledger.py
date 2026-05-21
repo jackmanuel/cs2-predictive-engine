@@ -64,6 +64,30 @@ CREATE TABLE IF NOT EXISTS model_versions (
     test_log_loss    REAL
 );
 
+CREATE TABLE IF NOT EXISTS model_version_evaluations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id      TEXT NOT NULL REFERENCES model_versions(version_id) ON DELETE CASCADE,
+    eval_name       TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    rows            INTEGER,
+    matches         INTEGER,
+    start_date      TEXT,
+    end_date        TEXT,
+    brier_score     REAL,
+    log_loss        REAL,
+    accuracy        REAL,
+    roc_auc         REAL,
+    ece             REAL,
+    label_mean      REAL,
+    prediction_mean REAL,
+    team_a_rank_favoured_rate REAL,
+    rank_favourite_win_rate   REAL,
+    symmetry_error_mean       REAL,
+    symmetry_error_p95        REAL,
+    details_json    TEXT,
+    UNIQUE(version_id, eval_name)
+);
+
 CREATE TABLE IF NOT EXISTS matches (
     match_url   TEXT PRIMARY KEY,
     team_a      TEXT NOT NULL,
@@ -117,6 +141,9 @@ CREATE TABLE IF NOT EXISTS snapshot_bookmaker_odds (
 
 CREATE INDEX IF NOT EXISTS idx_snapshot_bookmaker_odds_snapshot
 ON snapshot_bookmaker_odds(snapshot_id);
+
+CREATE INDEX IF NOT EXISTS idx_model_version_evaluations_version
+ON model_version_evaluations(version_id);
 """
 
 
@@ -234,6 +261,83 @@ def register_model_version(
         conn.close()
 
     return version_id
+
+
+def register_model_evaluation(
+    *,
+    version_id: str,
+    eval_name: str,
+    rows: int = None,
+    matches: int = None,
+    start_date: str = None,
+    end_date: str = None,
+    brier_score: float = None,
+    log_loss: float = None,
+    accuracy: float = None,
+    roc_auc: float = None,
+    ece: float = None,
+    label_mean: float = None,
+    prediction_mean: float = None,
+    team_a_rank_favoured_rate: float = None,
+    rank_favourite_win_rate: float = None,
+    symmetry_error_mean: float = None,
+    symmetry_error_p95: float = None,
+    details: dict = None,
+):
+    """Stores a named evaluation row for a model version."""
+    conn = get_db()
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        conn.execute(
+            """INSERT INTO model_version_evaluations
+               (version_id, eval_name, created_at, rows, matches, start_date, end_date,
+                brier_score, log_loss, accuracy, roc_auc, ece, label_mean, prediction_mean,
+                team_a_rank_favoured_rate, rank_favourite_win_rate,
+                symmetry_error_mean, symmetry_error_p95, details_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(version_id, eval_name) DO UPDATE SET
+                   created_at = excluded.created_at,
+                   rows = excluded.rows,
+                   matches = excluded.matches,
+                   start_date = excluded.start_date,
+                   end_date = excluded.end_date,
+                   brier_score = excluded.brier_score,
+                   log_loss = excluded.log_loss,
+                   accuracy = excluded.accuracy,
+                   roc_auc = excluded.roc_auc,
+                   ece = excluded.ece,
+                   label_mean = excluded.label_mean,
+                   prediction_mean = excluded.prediction_mean,
+                   team_a_rank_favoured_rate = excluded.team_a_rank_favoured_rate,
+                   rank_favourite_win_rate = excluded.rank_favourite_win_rate,
+                   symmetry_error_mean = excluded.symmetry_error_mean,
+                   symmetry_error_p95 = excluded.symmetry_error_p95,
+                   details_json = excluded.details_json""",
+            (
+                version_id,
+                eval_name,
+                created_at,
+                rows,
+                matches,
+                start_date,
+                end_date,
+                brier_score,
+                log_loss,
+                accuracy,
+                roc_auc,
+                ece,
+                label_mean,
+                prediction_mean,
+                team_a_rank_favoured_rate,
+                rank_favourite_win_rate,
+                symmetry_error_mean,
+                symmetry_error_p95,
+                json.dumps(details or {}),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_latest_version_id():
@@ -940,6 +1044,66 @@ def _load_version_frame(conn):
         """,
         conn,
     )
+
+
+def _load_model_evaluation_frame(conn):
+    return pd.read_sql_query(
+        """
+        SELECT version_id, eval_name, created_at, rows, matches, start_date, end_date,
+               ROUND(brier_score, 4) AS brier_score,
+               ROUND(log_loss, 4) AS log_loss,
+               ROUND(accuracy, 4) AS accuracy,
+               ROUND(roc_auc, 4) AS roc_auc,
+               ROUND(ece, 4) AS ece,
+               ROUND(label_mean, 4) AS label_mean,
+               ROUND(prediction_mean, 4) AS prediction_mean,
+               ROUND(team_a_rank_favoured_rate, 4) AS team_a_rank_favoured_rate,
+               ROUND(rank_favourite_win_rate, 4) AS rank_favourite_win_rate,
+               ROUND(symmetry_error_mean, 4) AS symmetry_error_mean,
+               ROUND(symmetry_error_p95, 4) AS symmetry_error_p95,
+               details_json
+        FROM model_version_evaluations
+        ORDER BY created_at DESC, eval_name
+        """,
+        conn,
+    )
+
+
+def model_version_payload(limit: int = 25):
+    """Returns model versions and training-evaluation rows for dashboard display."""
+    conn = get_db()
+    try:
+        versions = pd.read_sql_query(
+            """
+            SELECT v.version_id, v.trained_at, ROUND(v.test_brier_score, 4) as brier,
+                   ROUND(v.test_log_loss, 4) as logloss, ROUND(v.best_val_loss, 4) as best_val_loss,
+                   v.epochs_run, v.num_features, v.architecture_hash,
+                   (SELECT COUNT(DISTINCT s.match_url) FROM snapshots s WHERE s.version_id = v.version_id) as matches_predicted,
+                   json_extract(v.data_stats_json, '$.total_maps') as training_maps,
+                   json_extract(v.data_stats_json, '$.total_matches') as training_matches,
+                   json_extract(v.data_stats_json, '$.date_range.start') as train_start_date,
+                   json_extract(v.data_stats_json, '$.date_range.end') as train_end_date
+            FROM model_versions v
+            ORDER BY v.trained_at DESC
+            LIMIT ?
+            """,
+            conn,
+            params=(limit,),
+        )
+        evaluations = _load_model_evaluation_frame(conn)
+    finally:
+        conn.close()
+
+    version_ids = set(versions["version_id"].tolist()) if not versions.empty else set()
+    if version_ids and not evaluations.empty:
+        evaluations = evaluations[evaluations["version_id"].isin(version_ids)].copy()
+    else:
+        evaluations = evaluations.iloc[0:0].copy()
+
+    return {
+        "versions": _records_for_json(versions),
+        "evaluations": _records_for_json(evaluations),
+    }
 
 
 def _clean_json_value(value):

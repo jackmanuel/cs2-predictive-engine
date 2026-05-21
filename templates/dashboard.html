@@ -235,6 +235,18 @@
                     <pre class="log" id="retrain-log" aria-live="polite">No retraining run started.</pre>
                 </div>
 
+                <div class="panel model-version-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Model Versions</h2>
+                            <p>Training metrics and temporal held-out evaluation diagnostics.</p>
+                        </div>
+                    </div>
+                    <div class="table-wrap model-version-wrap">
+                        <table class="model-version-table" id="model-version-table"></table>
+                    </div>
+                </div>
+
             </section>
         </main>
     </div>
@@ -320,6 +332,108 @@
             return entries.map(([name, value]) => `<div class="list-row"><span>${name}</span><strong>${fmtNumber(value)}</strong></div>`).join("");
         }
 
+        function fmtDecimal(value, digits = 4) {
+            if (value === null || value === undefined) return "n/a";
+            return Number(value).toFixed(digits);
+        }
+
+        function metricShade(value, min, max, reverse = false) {
+            if (value === null || value === undefined || min === null || max === null || min === max) return "";
+            const raw = Math.max(0, Math.min(1, (Number(value) - min) / (max - min)));
+            const score = reverse ? 1 - raw : raw;
+            const hue = 5 + score * 120;
+            return `style="color: hsl(${hue}, 70%, 64%);"`;
+        }
+
+        function metricRange(items, getter) {
+            const values = items
+                .map(getter)
+                .filter(value => value !== null && value !== undefined && Number.isFinite(Number(value)))
+                .map(Number);
+            return values.length ? [Math.min(...values), Math.max(...values)] : [null, null];
+        }
+
+        function renderModelVersions(payload) {
+            const table = document.getElementById("model-version-table");
+            const versions = payload?.versions || [];
+            const evaluations = payload?.evaluations || [];
+            if (!versions.length) {
+                table.innerHTML = `<tbody><tr><td class="empty">No model versions registered yet.</td></tr></tbody>`;
+                return;
+            }
+            const evalByVersion = {};
+            evaluations.forEach(item => {
+                if (!evalByVersion[item.version_id]) evalByVersion[item.version_id] = {};
+                evalByVersion[item.version_id][item.eval_name] = item;
+            });
+            const enriched = versions.map(version => {
+                const evals = evalByVersion[version.version_id] || {};
+                return {
+                    version,
+                    temporal: evals.temporal_test || {},
+                    mirrored: evals.mirrored_temporal_test || {},
+                    symmetry: evals.order_symmetry || {},
+                };
+            });
+            const [savedBrierMin, savedBrierMax] = metricRange(enriched, row => row.temporal.brier_score);
+            const [savedLogMin, savedLogMax] = metricRange(enriched, row => row.temporal.log_loss);
+            const [mirroredLogMin, mirroredLogMax] = metricRange(enriched, row => row.mirrored.log_loss);
+            const [accuracyMin, accuracyMax] = metricRange(enriched, row => row.temporal.accuracy);
+            const [aucMin, aucMax] = metricRange(enriched, row => row.temporal.roc_auc);
+            const [symMin, symMax] = metricRange(enriched, row => row.symmetry.symmetry_error_mean);
+            const rows = versions.map(version => {
+                const evals = evalByVersion[version.version_id] || {};
+                const temporal = evals.temporal_test || {};
+                const mirrored = evals.mirrored_temporal_test || {};
+                const symmetry = evals.order_symmetry || {};
+                const slice = temporal.rows
+                    ? `${fmtNumber(temporal.rows)} maps / ${fmtNumber(temporal.matches)} matches`
+                    : "n/a";
+                const dateRange = temporal.start_date
+                    ? `${String(temporal.start_date).slice(0, 10)} to ${String(temporal.end_date || "").slice(0, 10)}`
+                    : "n/a";
+                return `
+                    <tr>
+                        <td>
+                            <strong>${escapeText(version.version_id)}</strong>
+                            <small>${escapeText(version.trained_at || "n/a")}</small>
+                        </td>
+                        <td class="num shade" ${metricShade(temporal.brier_score, savedBrierMin, savedBrierMax, true)}>${fmtDecimal(temporal.brier_score)}</td>
+                        <td class="num shade" ${metricShade(temporal.log_loss, savedLogMin, savedLogMax, true)}>${fmtDecimal(temporal.log_loss)}</td>
+                        <td class="num shade" ${metricShade(mirrored.log_loss, mirroredLogMin, mirroredLogMax, true)}>${fmtDecimal(mirrored.log_loss)}</td>
+                        <td class="num shade" ${metricShade(temporal.accuracy, accuracyMin, accuracyMax)}>${pct(temporal.accuracy)}</td>
+                        <td class="num shade" ${metricShade(temporal.roc_auc, aucMin, aucMax)}>${fmtDecimal(temporal.roc_auc)}</td>
+                        <td class="num">${pct(temporal.label_mean)}</td>
+                        <td class="num">${pct(temporal.prediction_mean)}</td>
+                        <td class="num shade" ${metricShade(symmetry.symmetry_error_mean, symMin, symMax, true)}>${fmtDecimal(symmetry.symmetry_error_mean)}</td>
+                        <td class="num">${fmtNumber(version.training_maps)}</td>
+                        <td>
+                            <span>${escapeText(slice)}</span>
+                            <small>${escapeText(dateRange)}</small>
+                        </td>
+                    </tr>
+                `;
+            }).join("");
+            table.innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Version</th>
+                        <th class="num">Brier</th>
+                        <th class="num">Log Loss</th>
+                        <th class="num">Mirrored Log Loss</th>
+                        <th class="num">Accuracy</th>
+                        <th class="num">ROC AUC</th>
+                        <th class="num">Label Mean</th>
+                        <th class="num">Pred Mean</th>
+                        <th class="num">Sym Err</th>
+                        <th class="num">Training Maps</th>
+                        <th>Test Slice</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            `;
+        }
+
         async function loadModelInfo() {
             const response = await fetch("/api/model-info");
             const data = await response.json();
@@ -335,6 +449,7 @@
             ].join("");
             document.getElementById("format-list").innerHTML = listRows(state.formats);
             document.getElementById("map-list").innerHTML = listRows(state.map_popularity || state.top_maps);
+            renderModelVersions(data.model_versions);
         }
 
         async function refreshPerformanceReport() {

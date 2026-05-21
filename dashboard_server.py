@@ -699,6 +699,12 @@ def normalize_training_state(state):
 
 def model_info_payload():
     state = normalize_training_state(read_json(TRAINING_STATE_PATH))
+    try:
+        from evaluation.shadow_ledger import model_version_payload
+
+        model_versions = model_version_payload()
+    except Exception as exc:
+        model_versions = {"versions": [], "evaluations": [], "error": str(exc)}
     checkpoints = {
         "model_checkpoint": file_meta(PROJECT_ROOT / "data" / "checkpoints" / "best_mvp_model.pt"),
         "scaler": file_meta(PROJECT_ROOT / "data" / "checkpoints" / "scaler.pkl"),
@@ -709,6 +715,7 @@ def model_info_payload():
         "training_state": state,
         "training_state_file": file_meta(TRAINING_STATE_PATH),
         "checkpoints": checkpoints,
+        "model_versions": model_versions,
     }
 
 

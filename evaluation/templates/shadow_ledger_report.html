@@ -177,11 +177,6 @@ input, select {
     </section>
 
     <section class="section panel">
-        <div class="section-title"><h2>Model Versions</h2><span class="note">Greener Brier/log loss cells are better; redder cells are worse.</span></div>
-        <table id="versions-table"></table>
-    </section>
-
-    <section class="section panel">
         <div class="section-title">
             <h2>Biggest Upsets</h2>
             <span class="note">Largest model win probabilities where the favourite lost. Click a row to open HLTV.</span>
@@ -384,31 +379,6 @@ function renderMatches() {
     ], body);
 }
 
-function renderVersions() {
-    const briers = report.versions.map(v => v.brier).filter(v => v !== null && v !== undefined);
-    const logs = report.versions.map(v => v.logloss).filter(v => v !== null && v !== undefined);
-    const brierMin = briers.length ? Math.min(...briers) : null;
-    const brierMax = briers.length ? Math.max(...briers) : null;
-    const logMin = logs.length ? Math.min(...logs) : null;
-    const logMax = logs.length ? Math.max(...logs) : null;
-    const rows = report.versions.map(v => `
-        <tr>
-            <td>${esc(v.version_id)}</td>
-            <td>${esc(v.trained_at)}</td>
-            <td class="num shade" style="${shade(v.brier, brierMin, brierMax, true)}">${fmtNum(v.brier, 4)}</td>
-            <td class="num shade" style="${shade(v.logloss, logMin, logMax, true)}">${fmtNum(v.logloss, 4)}</td>
-            <td class="num">${v.matches_predicted ?? 0}</td>
-            <td class="num">${v.training_maps ?? "n/a"}</td>
-            <td class="num">${v.num_features ?? "n/a"}</td>
-        </tr>
-    `);
-    renderTable("versions-table", [
-        {label:"Version"}, {label:"Trained"}, {label:"Brier", cls:"num"},
-        {label:"Log loss", cls:"num"}, {label:"Matches", cls:"num"},
-        {label:"Training maps", cls:"num"}, {label:"Features", cls:"num"}
-    ], rows);
-}
-
 function renderUpsets() {
     const rows = (report.biggest_upsets || []).map(u => `
         <tr class="clickable upset-row" data-url="${esc(u.match_url)}">
@@ -447,7 +417,6 @@ function initControls() {
 }
 renderCalibration();
 renderEdge();
-renderVersions();
 renderUpsets();
 initControls();
 renderMatches();
