@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from processing.clean import clean_data
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -155,6 +157,8 @@ def run_update(args: argparse.Namespace) -> None:
 
     run_step("Scraping recent matches", scrape_command)
     print_model_freshness()
+    print("\n=== Refreshing cleaned map data ===")
+    clean_data()
     run_step("Running predictions with report", predict_command)
     run_step("Refreshing shadow ledger", refresh_command)
 
