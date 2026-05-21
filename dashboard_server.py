@@ -1093,6 +1093,127 @@ def top_map_sequences(sequence_counts, iters, limit=8):
     ]
 
 
+def bracket_match_payload(round_name, label, left_dist, right_dist, match_format, probability_lookup):
+    outcomes = {}
+    matchup_rows = []
+    for left_team, left_probability in left_dist.items():
+        if left_probability <= 0:
+            continue
+        for right_team, right_probability in right_dist.items():
+            if right_probability <= 0:
+                continue
+            matchup_probability = left_probability * right_probability
+            left_win_probability = probability_lookup(left_team, right_team, match_format)
+            outcomes[left_team] = outcomes.get(left_team, 0) + matchup_probability * left_win_probability
+            outcomes[right_team] = outcomes.get(right_team, 0) + matchup_probability * (1 - left_win_probability)
+            matchup_rows.append(
+                {
+                    "team_a": left_team,
+                    "team_b": right_team,
+                    "probability": matchup_probability,
+                    "team_a_win_probability": left_win_probability,
+                }
+            )
+
+    return {
+        "round": round_name,
+        "label": label,
+        "format": match_format,
+        "left": sorted(left_dist),
+        "right": sorted(right_dist),
+        "outcomes": outcomes,
+        "matchups": sorted(matchup_rows, key=lambda item: item["probability"], reverse=True),
+    }
+
+
+def bracket_simulation_payload(request):
+    from config import MC_THRESHOLD
+    from model.predict import calculate_expected_series_win
+
+    raw_teams = request.get("teams", [])
+    if isinstance(raw_teams, str):
+        teams = [part.strip() for part in re.split(r"[\n,]+", raw_teams) if part.strip()]
+    else:
+        teams = [str(team).strip() for team in raw_teams if str(team).strip()]
+
+    bracket_format = str(request.get("format", "8")).lower().replace("team", "").strip()
+    team_count = 6 if bracket_format in {"6", "6-team", "6_team"} else 8
+    if len(teams) != team_count:
+        return {"error": f"Enter exactly {team_count} teams for a {team_count}-team playoff."}, HTTPStatus.BAD_REQUEST
+    if len({team.casefold() for team in teams}) != len(teams):
+        return {"error": "Each bracket slot needs a unique team."}, HTTPStatus.BAD_REQUEST
+
+    series_format = str(request.get("series_format", "bo3")).lower()
+    if series_format not in {"bo1", "bo3", "bo5"}:
+        series_format = "bo3"
+    grand_final_format = str(request.get("grand_final_format", "bo5")).lower()
+    if grand_final_format not in {"bo1", "bo3", "bo5"}:
+        grand_final_format = "bo5"
+    iters = parse_positive_int(request.get("iters"), 3000, minimum=100, maximum=25000)
+    threshold = parse_probability(request.get("threshold"), MC_THRESHOLD)
+    ctx = get_playground_predictor_context()
+    matchup_cache = {}
+
+    def probability_lookup(team_a, team_b, match_format):
+        key = (team_a, team_b, match_format)
+        if key not in matchup_cache:
+            result = calculate_expected_series_win(
+                team_a,
+                team_b,
+                series_format=match_format,
+                threshold=threshold,
+                iters=iters,
+                starts_veto=None,
+                ctx=ctx,
+            )
+            matchup_cache[key] = float(result["expected_win_prob"])
+        return matchup_cache[key]
+
+    if team_count == 6:
+        quarter_1 = bracket_match_payload("quarterfinal", "Quarter-final 1", {teams[2]: 1.0}, {teams[5]: 1.0}, series_format, probability_lookup)
+        quarter_2 = bracket_match_payload("quarterfinal", "Quarter-final 2", {teams[3]: 1.0}, {teams[4]: 1.0}, series_format, probability_lookup)
+        semi_1 = bracket_match_payload("semifinal", "Semi-final 1", {teams[0]: 1.0}, quarter_2["outcomes"], series_format, probability_lookup)
+        semi_2 = bracket_match_payload("semifinal", "Semi-final 2", {teams[1]: 1.0}, quarter_1["outcomes"], series_format, probability_lookup)
+        final = bracket_match_payload("final", "Grand final", semi_1["outcomes"], semi_2["outcomes"], grand_final_format, probability_lookup)
+        rounds = [
+            {"name": "Quarter-finals", "matches": [quarter_1, quarter_2]},
+            {"name": "Semi-finals", "matches": [semi_1, semi_2]},
+            {"name": "Grand final", "matches": [final]},
+        ]
+    else:
+        quarters = [
+            bracket_match_payload("quarterfinal", f"Quarter-final {index + 1}", {teams[index * 2]: 1.0}, {teams[index * 2 + 1]: 1.0}, series_format, probability_lookup)
+            for index in range(4)
+        ]
+        semi_1 = bracket_match_payload("semifinal", "Semi-final 1", quarters[0]["outcomes"], quarters[1]["outcomes"], series_format, probability_lookup)
+        semi_2 = bracket_match_payload("semifinal", "Semi-final 2", quarters[2]["outcomes"], quarters[3]["outcomes"], series_format, probability_lookup)
+        final = bracket_match_payload("final", "Grand final", semi_1["outcomes"], semi_2["outcomes"], grand_final_format, probability_lookup)
+        rounds = [
+            {"name": "Quarter-finals", "matches": quarters},
+            {"name": "Semi-finals", "matches": [semi_1, semi_2]},
+            {"name": "Grand final", "matches": [final]},
+        ]
+
+    champion_probabilities = [
+        {"team": team, "probability": probability}
+        for team, probability in sorted(final["outcomes"].items(), key=lambda item: item[1], reverse=True)
+    ]
+
+    return {
+        "format": team_count,
+        "settings": {
+            "series_format": series_format,
+            "grand_final_format": grand_final_format,
+            "iterations": iters,
+            "threshold": threshold,
+        },
+        "teams": teams,
+        "rounds": rounds,
+        "champion_probabilities": champion_probabilities,
+        "matchup_count": len(matchup_cache),
+    }, HTTPStatus.OK
+
+
 def playground_prediction_payload(request):
     from config import MC_ITERATIONS, MC_THRESHOLD
     from model import veto_sim
@@ -1388,6 +1509,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 payload = self.read_request_json()
                 result, status = playground_prediction_payload(payload)
+                self.send_json(result, status=status)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif path == "/api/bracket/simulate":
+            try:
+                payload = self.read_request_json()
+                result, status = bracket_simulation_payload(payload)
                 self.send_json(result, status=status)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)

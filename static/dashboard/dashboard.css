@@ -239,12 +239,18 @@ iframe {
 
 .model-grid,
 .playground-grid,
+.bracket-grid,
 .scraper-grid {
     grid-template-columns: minmax(0, 1.35fr) minmax(360px, .85fr);
     gap: 12px;
 }
 
 .playground-grid.active {
+    display: grid;
+    grid-template-columns: 1fr;
+}
+
+.bracket-grid.active {
     display: grid;
     grid-template-columns: 1fr;
 }
@@ -256,6 +262,9 @@ iframe {
 .retrain-panel,
 .scraper-panel,
 .playground-form,
+.bracket-form,
+.bracket-board-panel,
+.bracket-winners-panel,
 .result-panel {
     padding: 16px;
 }
@@ -406,6 +415,23 @@ iframe {
     margin-bottom: 14px;
 }
 
+.bracket-settings {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    margin-bottom: 14px;
+}
+
+.bracket-board-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.bracket-board-heading p {
+    color: var(--muted);
+}
+
 .button-row {
     display: flex;
     flex-wrap: wrap;
@@ -504,6 +530,201 @@ textarea {
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
     align-content: start;
+}
+
+.bracket-board-panel {
+    min-width: 0;
+}
+
+.bracket-winners-panel {
+    grid-column: 1 / -1;
+}
+
+.bracket-board {
+    min-height: 430px;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(180px, 1fr));
+    gap: 12px;
+    align-items: stretch;
+    padding: 4px 2px 2px;
+}
+
+.bracket-board.is-running .bracket-match-card {
+    border-color: rgba(101, 209, 180, .42);
+}
+
+.bracket-round {
+    min-width: 0;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 12px;
+}
+
+.bracket-round h3 {
+    margin-bottom: 0;
+}
+
+.bracket-round-matches {
+    display: grid;
+    gap: 18px;
+    align-content: space-around;
+    min-height: 100%;
+}
+
+.bracket-match-card {
+    position: relative;
+    min-height: 132px;
+    background: #111820;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 9px;
+    display: grid;
+    gap: 9px;
+}
+
+.bracket-match-card.editable {
+    min-height: 118px;
+}
+
+.bracket-input-pair {
+    display: grid;
+    gap: 7px;
+}
+
+.bracket-inline-input {
+    gap: 4px;
+}
+
+.bracket-inline-input input {
+    min-height: 34px;
+}
+
+.bracket-placeholder {
+    min-height: 34px;
+    border: 1px dashed rgba(148, 163, 173, .26);
+    border-radius: 7px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    padding: 7px 9px;
+    background: rgba(255, 255, 255, .018);
+}
+
+.bracket-result-details {
+    display: grid;
+    gap: 7px;
+    border-top: 1px solid rgba(148, 163, 173, .16);
+    padding-top: 8px;
+}
+
+.bracket-result-winner {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+}
+
+.bracket-result-winner span {
+    color: var(--muted);
+}
+
+.bracket-result-winner strong {
+    text-align: right;
+}
+
+.bracket-match-card::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: -13px;
+    width: 12px;
+    border-top: 1px solid rgba(148, 163, 173, .32);
+}
+
+.bracket-round:last-child .bracket-match-card::after {
+    display: none;
+}
+
+.bracket-match-meta,
+.winner-row-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.bracket-match-meta span,
+.bracket-team-pair span,
+.bracket-matchup-row span,
+.winner-row-head span {
+    color: var(--muted);
+}
+
+.bracket-match-meta strong {
+    text-align: right;
+}
+
+.bracket-team-pair {
+    display: grid;
+    gap: 1px;
+}
+
+.bracket-team-pair > div {
+    min-height: 30px;
+    background: rgba(255, 255, 255, .025);
+    border: 1px solid rgba(255, 255, 255, .045);
+    padding: 6px 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+}
+
+.bracket-matchup-list {
+    display: grid;
+    gap: 5px;
+}
+
+.bracket-matchup-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+}
+
+.bracket-matchup-row strong {
+    white-space: nowrap;
+}
+
+.winner-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.winner-row {
+    background: #111820;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 9px 10px;
+    display: grid;
+    gap: 7px;
+}
+
+.winner-track {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .06);
+}
+
+.winner-fill {
+    height: 100%;
+    min-width: 2px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
 }
 
 .wide-panel {
@@ -870,7 +1091,7 @@ textarea {
     }
 
     .tabs {
-        grid-template-columns: repeat(5, 1fr);
+        grid-template-columns: repeat(6, 1fr);
     }
 
     .tab {
@@ -886,11 +1107,15 @@ textarea {
     .model-grid,
     .playground-grid,
     .playground-grid.active,
+    .bracket-grid,
+    .bracket-grid.active,
     .scraper-grid,
     .scraper-grid.active,
+    .bracket-board,
     .playground-results,
     .form-grid,
     .scraper-settings,
+    .bracket-settings,
     .advanced-fields,
     .veto-layout,
     .veto-card-grid,

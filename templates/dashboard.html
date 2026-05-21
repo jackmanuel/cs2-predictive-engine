@@ -17,6 +17,7 @@
                 <button class="tab active" data-tab="predictions" type="button">Predictions</button>
                 <button class="tab" data-tab="performance" type="button">Performance</button>
                 <button class="tab" data-tab="playground" type="button">Playground</button>
+                <button class="tab" data-tab="bracket" type="button">Bracket Simulator</button>
                 <button class="tab" data-tab="scraper" type="button">Scraper</button>
                 <button class="tab" data-tab="model" type="button">Model</button>
             </nav>
@@ -189,6 +190,69 @@
                 </div>
             </section>
 
+            <section class="bracket-grid tab-panel" id="bracket-panel">
+                <form class="panel bracket-form" id="bracket-form">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Bracket Simulator</h2>
+                            <p>Manual single-elimination playoff inputs.</p>
+                        </div>
+                        <div class="button-row">
+                            <button class="secondary-button" id="bracket-clear" type="button">Clear</button>
+                            <button class="primary-button" id="bracket-run" type="submit">Simulate</button>
+                        </div>
+                    </div>
+
+                    <div class="form-grid bracket-settings">
+                        <label>
+                            <span>Format</span>
+                            <select id="bracket-format" name="format">
+                                <option value="6">6-team playoff</option>
+                                <option value="8" selected>8-team playoff</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Series</span>
+                            <select id="bracket-series-format" name="series_format">
+                                <option value="bo1">BO1</option>
+                                <option value="bo3" selected>BO3</option>
+                                <option value="bo5">BO5</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Grand final</span>
+                            <select id="bracket-grand-final-format" name="grand_final_format">
+                                <option value="bo1">BO1</option>
+                                <option value="bo3">BO3</option>
+                                <option value="bo5" selected>BO5</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Iterations</span>
+                            <input id="bracket-iters" name="iters" type="number" min="100" max="25000" step="100" value="3000">
+                        </label>
+                        <label>
+                            <span>Threshold</span>
+                            <input id="bracket-threshold" name="threshold" type="number" min="10" max="100" step="1" value="90">
+                        </label>
+                    </div>
+
+                    <div class="bracket-board-heading">
+                        <h2>Single Elimination Bracket</h2>
+                        <p id="bracket-summary">Enter teams in bracket order, then run a simulation.</p>
+                    </div>
+                    <div class="bracket-board" id="bracket-board">
+                    </div>
+                </form>
+
+                <div class="panel bracket-winners-panel">
+                    <h2>Winner Probabilities</h2>
+                    <div class="winner-list" id="bracket-winners">
+                        <div class="empty">No simulation run yet.</div>
+                    </div>
+                </div>
+            </section>
+
             <section class="panel tab-panel" id="performance-panel">
                 <iframe id="performance-frame" title="Model performance report" src="/reports/performance"></iframe>
             </section>
@@ -257,6 +321,7 @@
             predictions: document.getElementById("predictions-panel"),
             scraper: document.getElementById("scraper-panel"),
             playground: document.getElementById("playground-panel"),
+            bracket: document.getElementById("bracket-panel"),
             performance: document.getElementById("performance-panel"),
             model: document.getElementById("model-panel"),
         };
@@ -264,6 +329,7 @@
             predictions: ["Upcoming Match Prediction Report", "Latest file: __PREDICTION_REPORT_LABEL__", "/reports/latest-predictions"],
             scraper: ["Scraper Pipeline", "Run update.py once or in its randomized loop.", null],
             playground: ["Prediction Playground", "Granular map, series, veto, forfeit, and team-stat calculations.", null],
+            bracket: ["Bracket Simulator", "Manual playoff bracket simulation.", null],
             performance: ["Model Performance Report", "Shadow ledger calibration and betting performance.", "/reports/performance"],
             model: ["Model Details And Retraining", "Training metadata and live pipeline output.", null],
         };
@@ -277,7 +343,7 @@
             activeTab = name;
             tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.tab === name));
             Object.entries(panels).forEach(([key, panel]) => panel.classList.toggle("active", key === name));
-            const hideTopbar = ["playground", "scraper", "model"].includes(name);
+            const hideTopbar = ["playground", "bracket", "scraper", "model"].includes(name);
             topbar.hidden = hideTopbar;
             topbar.classList.toggle("is-hidden", hideTopbar);
             sectionLabel.textContent = labels[name][0];
@@ -301,6 +367,8 @@
             } else if (activeTab === "performance") {
                 refreshPerformanceReport();
             } else if (activeTab === "playground") {
+                loadPlaygroundOptions(true);
+            } else if (activeTab === "bracket") {
                 loadPlaygroundOptions(true);
             } else if (activeTab === "scraper") {
                 loadScraperStatus();
@@ -460,6 +528,8 @@
         }
 
         let playgroundOptionsLoaded = false;
+        let bracketLastTeams = [];
+        let bracketLastResult = null;
 
         function escapeText(value) {
             return String(value ?? "")
@@ -507,6 +577,7 @@
             }
             playgroundOptionsLoaded = true;
             syncPlaygroundFields();
+            renderEditableBracket();
         }
 
         function isSeriesFormat() {
@@ -768,6 +839,147 @@
             renderTeamStats(data);
         }
 
+        function bracketSlotLabels(count) {
+            if (count === 6) {
+                return [
+                    "Seed 1",
+                    "Seed 2",
+                    "Seed 3",
+                    "Seed 4",
+                    "Seed 5",
+                    "Seed 6",
+                ];
+            }
+            return Array.from({ length: count }, (_, index) => `Bracket slot ${index + 1}`);
+        }
+
+        function bracketInput(index, label, previous) {
+            return `
+                <label class="bracket-inline-input">
+                    <span>${escapeText(label)}</span>
+                    <input class="bracket-team-input" list="team-options" autocomplete="off" value="${escapeText(previous[index] || "")}" required>
+                </label>
+            `;
+        }
+
+        function bracketResultByLabel(label) {
+            if (!bracketLastResult?.rounds) return null;
+            for (const round of bracketLastResult.rounds) {
+                const match = (round.matches || []).find(item => item.label === label);
+                if (match) return match;
+            }
+            return null;
+        }
+
+        function renderBracketResultDetails(match) {
+            if (!match) return "";
+            const topMatchups = (match.matchups || []).slice(0, 3).map(item => {
+                const rightWin = 1 - Number(item.team_a_win_probability || 0);
+                return `
+                    <div class="bracket-matchup-row">
+                        <span>${escapeText(item.team_a)} vs ${escapeText(item.team_b)}</span>
+                        <strong>${pct(item.team_a_win_probability)} / ${pct(rightWin)}</strong>
+                    </div>
+                `;
+            }).join("");
+            const probableWinner = Object.entries(match.outcomes || {}).sort((a, b) => b[1] - a[1])[0];
+            return `
+                <div class="bracket-result-details">
+                    ${probableWinner ? `<div class="bracket-result-winner"><span>Projected winner</span><strong>${escapeText(probableWinner[0])} ${pct(probableWinner[1])}</strong></div>` : ""}
+                    <div class="bracket-matchup-list">${topMatchups}</div>
+                </div>
+            `;
+        }
+
+        function bracketCard(label, badge, body, match = null) {
+            return `
+                <article class="bracket-match-card editable">
+                    <div class="bracket-match-meta"><span>${escapeText(label)}</span><strong>${escapeText(badge)}</strong></div>
+                    <div class="bracket-input-pair">${body}</div>
+                    ${renderBracketResultDetails(match)}
+                </article>
+            `;
+        }
+
+        function renderEditableBracket() {
+            const board = document.getElementById("bracket-board");
+            if (!board) return;
+            const count = Number(document.getElementById("bracket-format").value);
+            const previousInputs = [...document.querySelectorAll(".bracket-team-input")].map(input => input.value);
+            const previous = previousInputs.length ? previousInputs : bracketLastTeams;
+            const labels = bracketSlotLabels(count);
+            const roundFormat = escapeText(document.getElementById("bracket-series-format").value.toUpperCase());
+            const finalFormat = escapeText(document.getElementById("bracket-grand-final-format").value.toUpperCase());
+            if (count === 6) {
+                board.innerHTML = `
+                    <section class="bracket-round">
+                        <h3>Quarter-finals</h3>
+                        <div class="bracket-round-matches">
+                            ${bracketCard("Quarter-final 1", roundFormat, `${bracketInput(2, labels[2], previous)}${bracketInput(5, labels[5], previous)}`, bracketResultByLabel("Quarter-final 1"))}
+                            ${bracketCard("Quarter-final 2", roundFormat, `${bracketInput(3, labels[3], previous)}${bracketInput(4, labels[4], previous)}`, bracketResultByLabel("Quarter-final 2"))}
+                        </div>
+                    </section>
+                    <section class="bracket-round">
+                        <h3>Semi-finals</h3>
+                        <div class="bracket-round-matches">
+                            ${bracketCard("Semi-final 1", "Bye", `${bracketInput(0, `${labels[0]} (bye)`, previous)}<div class="bracket-placeholder">Winner QF2</div>`, bracketResultByLabel("Semi-final 1"))}
+                            ${bracketCard("Semi-final 2", "Bye", `${bracketInput(1, `${labels[1]} (bye)`, previous)}<div class="bracket-placeholder">Winner QF1</div>`, bracketResultByLabel("Semi-final 2"))}
+                        </div>
+                    </section>
+                    <section class="bracket-round">
+                        <h3>Grand final</h3>
+                        <div class="bracket-round-matches">
+                            ${bracketCard("Grand final", finalFormat, `<div class="bracket-placeholder">Winner SF1</div><div class="bracket-placeholder">Winner SF2</div>`, bracketResultByLabel("Grand final"))}
+                        </div>
+                    </section>
+                `;
+                return;
+            }
+
+            board.innerHTML = `
+                <section class="bracket-round">
+                    <h3>Quarter-finals</h3>
+                    <div class="bracket-round-matches">
+                        ${[0, 2, 4, 6].map((slot, matchIndex) => `
+                            ${bracketCard(`Quarter-final ${matchIndex + 1}`, roundFormat, `${bracketInput(slot, labels[slot], previous)}${bracketInput(slot + 1, labels[slot + 1], previous)}`, bracketResultByLabel(`Quarter-final ${matchIndex + 1}`))}
+                        `).join("")}
+                    </div>
+                </section>
+                <section class="bracket-round">
+                    <h3>Semi-finals</h3>
+                    <div class="bracket-round-matches">
+                        ${bracketCard("Semi-final 1", "Projected", `<div class="bracket-placeholder">Winner QF1</div><div class="bracket-placeholder">Winner QF2</div>`, bracketResultByLabel("Semi-final 1"))}
+                        ${bracketCard("Semi-final 2", "Projected", `<div class="bracket-placeholder">Winner QF3</div><div class="bracket-placeholder">Winner QF4</div>`, bracketResultByLabel("Semi-final 2"))}
+                    </div>
+                </section>
+                <section class="bracket-round">
+                    <h3>Grand final</h3>
+                    <div class="bracket-round-matches">
+                        ${bracketCard("Grand final", finalFormat, `<div class="bracket-placeholder">Winner SF1</div><div class="bracket-placeholder">Winner SF2</div>`, bracketResultByLabel("Grand final"))}
+                    </div>
+                </section>
+            `;
+        }
+
+        function renderBracket(data) {
+            bracketLastTeams = data.teams || bracketLastTeams;
+            bracketLastResult = data;
+            document.getElementById("bracket-summary").textContent = `${data.format}-team playoff, ${String(data.settings.series_format).toUpperCase()} through semis, ${String(data.settings.grand_final_format).toUpperCase()} final, ${fmtNumber(data.matchup_count)} possible matchups evaluated.`;
+            renderEditableBracket();
+            document.getElementById("bracket-winners").innerHTML = (data.champion_probabilities || []).map((item, index) => {
+                const width = Math.max(0, Math.min(100, Number(item.probability || 0) * 100));
+                return `
+                    <div class="winner-row">
+                        <div class="winner-row-head">
+                            <span>${index + 1}. ${escapeText(item.team)}</span>
+                            <strong>${pct(item.probability)}</strong>
+                        </div>
+                        <div class="winner-track"><div class="winner-fill" style="width:${width}%"></div></div>
+                    </div>
+                `;
+            }).join("");
+        }
+
         document.getElementById("playground-form").addEventListener("submit", async event => {
             event.preventDefault();
             const button = document.getElementById("playground-run");
@@ -813,6 +1025,73 @@
         });
 
         document.getElementById("playground-format").addEventListener("change", syncPlaygroundFields);
+        function resetBracketResults(message = "Enter teams in bracket order, then run a simulation.") {
+            bracketLastTeams = [...document.querySelectorAll(".bracket-team-input")].map(input => input.value);
+            bracketLastResult = null;
+            document.getElementById("bracket-summary").textContent = message;
+            document.getElementById("bracket-winners").innerHTML = `<div class="empty">No simulation run yet.</div>`;
+            document.getElementById("bracket-board").classList.remove("is-running");
+            renderEditableBracket();
+        }
+
+        document.getElementById("bracket-format").addEventListener("change", () => resetBracketResults());
+        document.getElementById("bracket-series-format").addEventListener("change", () => resetBracketResults());
+        document.getElementById("bracket-grand-final-format").addEventListener("change", () => resetBracketResults());
+        document.getElementById("bracket-clear").addEventListener("click", () => {
+            bracketLastTeams = [];
+            bracketLastResult = null;
+            document.getElementById("bracket-summary").textContent = "Enter teams in bracket order, then run a simulation.";
+            document.getElementById("bracket-winners").innerHTML = `<div class="empty">No simulation run yet.</div>`;
+            document.getElementById("bracket-board").classList.remove("is-running");
+            renderEditableBracket();
+        });
+        document.getElementById("bracket-form").addEventListener("submit", async event => {
+            event.preventDefault();
+            const button = document.getElementById("bracket-run");
+            const originalButtonText = button.textContent;
+            button.disabled = true;
+            button.textContent = "Simulating...";
+            const board = document.getElementById("bracket-board");
+            const body = {
+                format: document.getElementById("bracket-format").value,
+                series_format: document.getElementById("bracket-series-format").value,
+                grand_final_format: document.getElementById("bracket-grand-final-format").value,
+                iters: document.getElementById("bracket-iters").value,
+                threshold: document.getElementById("bracket-threshold").value,
+                teams: [...document.querySelectorAll(".bracket-team-input")].map(input => input.value),
+            };
+            if (body.teams.length) {
+                bracketLastTeams = body.teams;
+            } else {
+                body.teams = bracketLastTeams;
+            }
+            board.classList.add("is-running");
+            document.getElementById("bracket-summary").textContent = "Simulating bracket...";
+            document.getElementById("bracket-winners").innerHTML = `<div class="empty">Simulation running. The bracket remains editable after results load.</div>`;
+            try {
+                const response = await fetch("/api/bracket/simulate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                const raw = await response.text();
+                let data;
+                try {
+                    data = JSON.parse(raw);
+                } catch {
+                    data = { error: "Bracket endpoint returned an unexpected response." };
+                }
+                if (!response.ok) {
+                    document.getElementById("bracket-summary").textContent = data.error || "Simulation failed.";
+                    return;
+                }
+                renderBracket(data);
+            } finally {
+                button.disabled = false;
+                button.textContent = originalButtonText;
+                board.classList.remove("is-running");
+            }
+        });
         document.getElementById("playground-advanced-toggle").addEventListener("click", () => {
             const fields = document.getElementById("playground-advanced-fields");
             const button = document.getElementById("playground-advanced-toggle");
@@ -1011,6 +1290,7 @@
         setInterval(tickClock, 1000);
         tickClock();
         loadModelInfo();
+        renderEditableBracket();
         loadPlaygroundOptions();
         loadScraperStatus();
         connectScraperEvents();
