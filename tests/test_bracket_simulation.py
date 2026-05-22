@@ -154,3 +154,34 @@ def test_sixteen_team_swiss_pickem_optimization(monkeypatch):
         assert team in teams
 
 
+def test_sixteen_team_swiss_simulation_bo3_only(monkeypatch):
+    formats_seen = set()
+
+    def fake_series(team_a, team_b, **kwargs):
+        formats_seen.add(kwargs.get("series_format"))
+        return {"expected_win_prob": 0.5}
+
+    monkeypatch.setattr(dashboard_server, "get_playground_predictor_context", lambda: object())
+    monkeypatch.setattr(model.predict, "calculate_expected_series_win", fake_series)
+
+    teams = [f"Team_{i}" for i in range(1, 17)]
+    payload, status = dashboard_server.bracket_simulation_payload(
+        {
+            "format": "16",
+            "series_format": "bo3",
+            "teams": teams,
+            "iters": 10,
+            "bo3_only": True,
+        }
+    )
+
+    assert status == HTTPStatus.OK
+    assert payload["format"] == 16
+    assert payload["settings"]["bo3_only"] is True
+    # In BO3-only Swiss, all matches should be evaluated/simulated as BO3, and only BO3 should be in formats_seen
+    assert formats_seen == {"bo3"}
+    
+    # Also verify that every match returned has "BO3" format
+    for round_info in payload["rounds"]:
+        for match in round_info["matches"]:
+            assert match["format"] == "BO3"

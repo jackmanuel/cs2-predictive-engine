@@ -1234,7 +1234,7 @@ def optimize_pickem(teams, run_records, iters):
     }
 
 
-def simulate_swiss_stage(teams, series_format, threshold, iters, probability_lookup):
+def simulate_swiss_stage(teams, series_format, threshold, iters, probability_lookup, bo3_only=False):
     import random
     
     qualifications = {team: 0 for team in teams}
@@ -1289,7 +1289,9 @@ def simulate_swiss_stage(teams, series_format, threshold, iters, probability_loo
                         
                 for slot_idx, (t_a, t_b) in enumerate(pairings):
                     # Deciders (wins=2 or losses=2) are BO3, others BO1
-                    if series_format == "bo1":
+                    if bo3_only:
+                        m_fmt = "bo3"
+                    elif series_format == "bo1":
                         m_fmt = "bo1"
                     elif series_format == "bo5":
                         m_fmt = "bo5"
@@ -1359,7 +1361,9 @@ def simulate_swiss_stage(teams, series_format, threshold, iters, probability_loo
             for slot_idx in range(num_slots):
                 stat_key = (r, record_key, slot_idx)
                 
-                if series_format == "bo1":
+                if bo3_only:
+                    m_fmt = "bo3"
+                elif series_format == "bo1":
                     m_fmt = "bo1"
                 elif series_format == "bo5":
                     m_fmt = "bo5"
@@ -1476,9 +1480,10 @@ def bracket_simulation_payload(request):
             matchup_cache[key] = float(result["expected_win_prob"])
         return matchup_cache[key]
 
+    bo3_only = bool(request.get("bo3_only", False))
     pickem_optimization = None
     if team_count == 16:
-        rounds, champion_probabilities, pickem_optimization = simulate_swiss_stage(teams, series_format, threshold, iters, probability_lookup)
+        rounds, champion_probabilities, pickem_optimization = simulate_swiss_stage(teams, series_format, threshold, iters, probability_lookup, bo3_only=bo3_only)
     elif team_count == 6:
         quarter_1 = bracket_match_payload("quarterfinal", "Quarter-final 1", {teams[2]: 1.0}, {teams[5]: 1.0}, series_format, probability_lookup)
         quarter_2 = bracket_match_payload("quarterfinal", "Quarter-final 2", {teams[3]: 1.0}, {teams[4]: 1.0}, series_format, probability_lookup)
@@ -1519,6 +1524,7 @@ def bracket_simulation_payload(request):
             "grand_final_format": grand_final_format,
             "iterations": iters,
             "threshold": threshold,
+            "bo3_only": bo3_only,
         },
         "teams": teams,
         "rounds": rounds,

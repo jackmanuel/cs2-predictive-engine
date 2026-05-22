@@ -212,7 +212,7 @@
                                 <option value="16">16-team Swiss (Major)</option>
                             </select>
                         </label>
-                        <label>
+                        <label id="bracket-series-format-wrapper">
                             <span>Series</span>
                             <select id="bracket-series-format" name="series_format">
                                 <option value="bo1">BO1</option>
@@ -220,13 +220,17 @@
                                 <option value="bo5">BO5</option>
                             </select>
                         </label>
-                        <label>
+                        <label id="bracket-grand-final-wrapper">
                             <span>Grand final</span>
                             <select id="bracket-grand-final-format" name="grand_final_format">
                                 <option value="bo1">BO1</option>
                                 <option value="bo3">BO3</option>
                                 <option value="bo5" selected>BO5</option>
                             </select>
+                        </label>
+                        <label class="checkbox-field is-hidden" id="bracket-bo3-only-wrapper" hidden>
+                            <input id="bracket-bo3-only" name="bo3_only" type="checkbox">
+                            <span>BO3 Only</span>
                         </label>
                         <button class="secondary-button advanced-toggle bracket-advanced-toggle" id="bracket-advanced-toggle" type="button" aria-expanded="false" aria-controls="bracket-advanced-fields">Advanced Settings</button>
                         <div class="advanced-fields bracket-advanced-fields is-hidden" id="bracket-advanced-fields" hidden>
@@ -583,6 +587,7 @@
             }
             playgroundOptionsLoaded = true;
             syncPlaygroundFields();
+            syncBracketFields();
             renderEditableBracket();
         }
 
@@ -605,6 +610,31 @@
                 document.getElementById("playground-single-picker").value = "neutral";
             } else {
                 document.getElementById("playground-maps").value = "";
+            }
+        }
+
+        function syncBracketFields() {
+            const count = Number(document.getElementById("bracket-format").value);
+            const isSwiss = count === 16;
+            
+            const seriesWrapper = document.getElementById("bracket-series-format-wrapper");
+            const grandFinalWrapper = document.getElementById("bracket-grand-final-wrapper");
+            const bo3OnlyWrapper = document.getElementById("bracket-bo3-only-wrapper");
+            
+            if (seriesWrapper) {
+                seriesWrapper.hidden = isSwiss;
+                seriesWrapper.classList.toggle("is-hidden", isSwiss);
+            }
+            if (grandFinalWrapper) {
+                grandFinalWrapper.hidden = isSwiss;
+                grandFinalWrapper.classList.toggle("is-hidden", isSwiss);
+            }
+            if (bo3OnlyWrapper) {
+                bo3OnlyWrapper.hidden = !isSwiss;
+                bo3OnlyWrapper.classList.toggle("is-hidden", !isSwiss);
+                if (!isSwiss) {
+                    document.getElementById("bracket-bo3-only").checked = false;
+                }
             }
         }
 
@@ -1323,7 +1353,8 @@
             bracketLastTeams = data.teams || bracketLastTeams;
             bracketLastResult = data;
             if (data.format === 16) {
-                document.getElementById("bracket-summary").textContent = `16-team Swiss Stage, dynamic BO1/BO3 matches, ${fmtNumber(data.settings.iterations)} iterations, ${fmtNumber(data.matchup_count)} unique matchups evaluated.`;
+                const matchType = data.settings.bo3_only ? "BO3-only matches" : "dynamic BO1/BO3 matches";
+                document.getElementById("bracket-summary").textContent = `16-team Swiss Stage, ${matchType}, ${fmtNumber(data.settings.iterations)} iterations, ${fmtNumber(data.matchup_count)} unique matchups evaluated.`;
             } else {
                 document.getElementById("bracket-summary").textContent = `${data.format}-team playoff, ${String(data.settings.series_format).toUpperCase()} through semis, ${String(data.settings.grand_final_format).toUpperCase()} final, ${fmtNumber(data.matchup_count)} possible matchups evaluated.`;
             }
@@ -1391,7 +1422,10 @@
             renderEditableBracket();
         }
 
-        document.getElementById("bracket-format").addEventListener("change", () => resetBracketResults());
+        document.getElementById("bracket-format").addEventListener("change", () => {
+            resetBracketResults();
+            syncBracketFields();
+        });
         document.getElementById("bracket-series-format").addEventListener("change", () => resetBracketResults());
         document.getElementById("bracket-grand-final-format").addEventListener("change", () => resetBracketResults());
         document.getElementById("bracket-clear").addEventListener("click", () => {
@@ -1399,6 +1433,11 @@
             bracketLastResult = null;
             bracketExpandedCards = new Set();
             swissExpandedRecords = new Set();
+            
+            const bo3OnlyInput = document.getElementById("bracket-bo3-only");
+            if (bo3OnlyInput) {
+                bo3OnlyInput.checked = false;
+            }
             
             const count = Number(document.getElementById("bracket-format").value);
             document.getElementById("bracket-summary").textContent = count === 16 
@@ -1455,6 +1494,7 @@
                 grand_final_format: document.getElementById("bracket-grand-final-format").value,
                 iters: document.getElementById("bracket-iters").value,
                 threshold: document.getElementById("bracket-threshold").value,
+                bo3_only: document.getElementById("bracket-bo3-only") ? document.getElementById("bracket-bo3-only").checked : false,
                 teams: collectBracketTeams(),
             };
             bracketLastTeams = body.teams;
