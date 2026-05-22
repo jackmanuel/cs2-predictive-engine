@@ -1126,6 +1126,304 @@ def bracket_match_payload(round_name, label, left_dist, right_dist, match_format
     }
 
 
+class SwissTeam:
+    def __init__(self, name, initial_seed):
+        self.name = name
+        self.initial_seed = initial_seed
+        self.wins = 0
+        self.losses = 0
+        self.buchholz = 0
+        self.opponents = []  # history of opponent names (strings)
+
+
+def find_swiss_pairings(unpaired_teams, history):
+    if not unpaired_teams:
+        return []
+    team_a = unpaired_teams[0]
+    for i in range(len(unpaired_teams) - 1, 0, -1):
+        team_b = unpaired_teams[i]
+        if team_b.name not in history[team_a.name]:
+            remaining = [t for t in unpaired_teams if t != team_a and t != team_b]
+            sub_pairings = find_swiss_pairings(remaining, history)
+            if sub_pairings is not None:
+                return [(team_a, team_b)] + sub_pairings
+    return None
+
+
+def optimize_pickem(teams, run_records, iters):
+    import itertools
+    
+    team_to_idx = {name: i for i, name in enumerate(teams)}
+    
+    # Precompute masks
+    team_3_0_mask = [0] * 16
+    team_0_3_mask = [0] * 16
+    team_qual_mask = [0] * 16
+    
+    for i, run_record in enumerate(run_records):
+        for team_name, record in run_record.items():
+            t_idx = team_to_idx[team_name]
+            if record == "3-0":
+                team_3_0_mask[t_idx] |= (1 << i)
+            elif record == "0-3":
+                team_0_3_mask[t_idx] |= (1 << i)
+            elif record in ("3-1", "3-2"):
+                team_qual_mask[t_idx] |= (1 << i)
+                
+    def add3(a, b, c):
+        s = a ^ b ^ c
+        cy = (a & b) | (c & (a ^ b))
+        return s, cy
+
+    def add2(a, b):
+        return a ^ b, a & b
+
+    best_prob = -1.0
+    best_picks = None
+    
+    # Fully exhaustive search over all 10,090,080 combinations without any pruning
+    for p_30 in itertools.combinations(range(16), 2):
+        x0 = team_3_0_mask[p_30[0]]
+        x1 = team_3_0_mask[p_30[1]]
+        
+        remaining_after_30 = tuple(t for t in range(16) if t not in p_30)
+        for p_03 in itertools.combinations(remaining_after_30, 2):
+            x2 = team_0_3_mask[p_03[0]]
+            x3 = team_0_3_mask[p_03[1]]
+            
+            remaining_after_03 = tuple(t for t in remaining_after_30 if t not in p_03)
+            
+            for p_qual in itertools.combinations(remaining_after_03, 6):
+                x4 = team_qual_mask[p_qual[0]]
+                x5 = team_qual_mask[p_qual[1]]
+                x6 = team_qual_mask[p_qual[2]]
+                x7 = team_qual_mask[p_qual[3]]
+                x8 = team_qual_mask[p_qual[4]]
+                x9 = team_qual_mask[p_qual[5]]
+                
+                s1_a, c2_a = add3(x0, x1, x2)
+                s1_b, c2_b = add3(x3, x4, x5)
+                s1_c, c2_c = add3(x6, x7, x8)
+                
+                s1_d, c2_d = add3(s1_a, s1_b, s1_c)
+                s0, c2_e = add2(s1_d, x9)
+                
+                s2_a, c4_a = add3(c2_a, c2_b, c2_c)
+                s1, c4_b = add3(s2_a, c2_d, c2_e)
+                
+                s2, s3 = add2(c4_a, c4_b)
+                
+                ge_5_mask = s3 | (s2 & (s1 | s0))
+                
+                successes = ge_5_mask.bit_count()
+                prob = successes / iters
+                
+                if prob > best_prob:
+                    best_prob = prob
+                    best_picks = {
+                        "picks_3_0": [teams[p_30[0]], teams[p_30[1]]],
+                        "picks_0_3": [teams[p_03[0]], teams[p_03[1]]],
+                        "picks_qual": [teams[p_qual[0]], teams[p_qual[1]], teams[p_qual[2]], teams[p_qual[3]], teams[p_qual[4]], teams[p_qual[5]]]
+                    }
+                    
+    return {
+        "success_probability": float(best_prob),
+        "picks_3_0": best_picks["picks_3_0"] if best_picks else [],
+        "picks_0_3": best_picks["picks_0_3"] if best_picks else [],
+        "picks_qual": best_picks["picks_qual"] if best_picks else []
+    }
+
+
+def simulate_swiss_stage(teams, series_format, threshold, iters, probability_lookup):
+    import random
+    
+    qualifications = {team: 0 for team in teams}
+    record_counts = {team: {
+        "3-0": 0, "3-1": 0, "3-2": 0,
+        "2-3": 0, "1-3": 0, "0-3": 0
+    } for team in teams}
+    
+    run_records = []
+    
+    slot_matchups = {}  # (round, record_key, slot_idx) -> { (team_a, team_b): count }
+    slot_winners = {}   # (round, record_key, slot_idx) -> { (team_a, team_b): count_t_a_won }
+    
+    for _ in range(iters):
+        team_objs = [SwissTeam(name, idx) for idx, name in enumerate(teams)]
+        team_map = {t.name: t for t in team_objs}
+        
+        for r in range(1, 6):
+            active = [t for t in team_objs if t.wins < 3 and t.losses < 3]
+            if not active:
+                break
+                
+            # Update Buchholz scores (wins - losses of faced opponents)
+            for t in active:
+                t.buchholz = sum((team_map[opp_name].wins - team_map[opp_name].losses) for opp_name in t.opponents)
+                
+            # Group by current record
+            pools = {}
+            for t in active:
+                key = f"{t.wins}-{t.losses}"
+                pools.setdefault(key, []).append(t)
+                
+            for record_key, pool_teams in pools.items():
+                # Sort pool: primary Buchholz descending, secondary Initial Seed ascending
+                pool_teams.sort(key=lambda t: (-t.buchholz, t.initial_seed))
+                
+                if r == 1:
+                    # Round 1 in Swiss Major stages pairs teams using 1 vs 9, 2 vs 10, etc. (i vs i + 8)
+                    pairings = []
+                    n = len(pool_teams)
+                    for i in range(n // 2):
+                        pairings.append((pool_teams[i], pool_teams[i + n // 2]))
+                else:
+                    # Pair subsequent rounds using the recursive backtracking algorithm
+                    pairings = find_swiss_pairings(pool_teams, {t.name: set(t.opponents) for t in pool_teams})
+                    if pairings is None:
+                        # Fallback: simple folded pairing to prevent deadlock
+                        pairings = []
+                        n = len(pool_teams)
+                        for i in range(n // 2):
+                            pairings.append((pool_teams[i], pool_teams[n - 1 - i]))
+                        
+                for slot_idx, (t_a, t_b) in enumerate(pairings):
+                    # Deciders (wins=2 or losses=2) are BO3, others BO1
+                    if series_format == "bo1":
+                        m_fmt = "bo1"
+                    elif series_format == "bo5":
+                        m_fmt = "bo5"
+                    else:
+                        m_fmt = "bo3" if (t_a.wins == 2 or t_a.losses == 2) else "bo1"
+                        
+                    prob_a = probability_lookup(t_a.name, t_b.name, m_fmt)
+                    
+                    if random.random() < prob_a:
+                        winner, loser = t_a, t_b
+                        is_a_winner = True
+                    else:
+                        winner, loser = t_b, t_a
+                        is_a_winner = False
+                        
+                    winner.wins += 1
+                    loser.losses += 1
+                    t_a.opponents.append(t_b.name)
+                    t_b.opponents.append(t_a.name)
+                    
+                    stat_key = (r, record_key, slot_idx)
+                    matchup_pair = (t_a.name, t_b.name)
+                    
+                    slot_matchups.setdefault(stat_key, {})
+                    slot_matchups[stat_key][matchup_pair] = slot_matchups[stat_key].get(matchup_pair, 0) + 1
+                    
+                    slot_winners.setdefault(stat_key, {})
+                    if is_a_winner:
+                        slot_winners[stat_key][matchup_pair] = slot_winners[stat_key].get(matchup_pair, 0) + 1
+                        
+        run_record = {}
+        for t in team_objs:
+            if t.wins == 3:
+                qualifications[t.name] += 1
+                record_counts[t.name][f"3-{t.losses}"] += 1
+                run_record[t.name] = f"3-{t.losses}"
+            elif t.losses == 3:
+                record_counts[t.name][f"{t.wins}-3"] += 1
+                run_record[t.name] = f"{t.wins}-3"
+        run_records.append(run_record)
+                
+    # Build rounds structure
+    rounds = []
+    for r in range(1, 6):
+        round_matches = []
+        if r == 1:
+            pool_keys = ["0-0"]
+        elif r == 2:
+            pool_keys = ["1-0", "0-1"]
+        elif r == 3:
+            pool_keys = ["2-0", "1-1", "0-2"]
+        elif r == 4:
+            pool_keys = ["2-1", "1-2"]
+        elif r == 5:
+            pool_keys = ["2-2"]
+            
+        for record_key in pool_keys:
+            if record_key == "0-0":
+                num_slots = 8
+            elif record_key in {"1-0", "0-1", "1-1"}:
+                num_slots = 4
+            elif record_key in {"2-1", "1-2", "2-2"}:
+                num_slots = 3
+            elif record_key in {"2-0", "0-2"}:
+                num_slots = 2
+                
+            for slot_idx in range(num_slots):
+                stat_key = (r, record_key, slot_idx)
+                
+                if series_format == "bo1":
+                    m_fmt = "bo1"
+                elif series_format == "bo5":
+                    m_fmt = "bo5"
+                else:
+                    m_fmt = "bo3" if record_key in {"2-0", "0-2", "2-1", "1-2", "2-2"} else "bo1"
+                    
+                matchup_rows = []
+                outcomes = {}
+                left_teams = set()
+                right_teams = set()
+                
+                for (t_a, t_b), count in slot_matchups.get(stat_key, {}).items():
+                    matchup_prob = count / iters
+                    win_prob = probability_lookup(t_a, t_b, m_fmt)
+                    matchup_rows.append({
+                        "team_a": t_a,
+                        "team_b": t_b,
+                        "probability": matchup_prob,
+                        "team_a_win_probability": win_prob
+                    })
+                    
+                    if r == 1:
+                        t_a_wins = slot_winners.get(stat_key, {}).get((t_a, t_b), 0)
+                        outcomes[t_a] = t_a_wins / iters
+                        outcomes[t_b] = (iters - t_a_wins) / iters
+                    else:
+                        outcomes[t_a] = outcomes.get(t_a, 0.0) + matchup_prob
+                        outcomes[t_b] = outcomes.get(t_b, 0.0) + matchup_prob
+                        
+                    left_teams.add(t_a)
+                    right_teams.add(t_b)
+                    
+                matchup_rows.sort(key=lambda m: m["probability"], reverse=True)
+                
+                label = f"{record_key} Match {slot_idx + 1}"
+                if r == 1:
+                    label = f"Match {slot_idx + 1}"
+                    
+                round_matches.append({
+                    "round": f"round_{r}",
+                    "pool": record_key,
+                    "label": label,
+                    "format": m_fmt.upper(),
+                    "left": sorted(left_teams),
+                    "right": sorted(right_teams),
+                    "outcomes": outcomes,
+                    "matchups": matchup_rows
+                })
+                
+        rounds.append({
+            "name": f"Round {r}",
+            "matches": round_matches
+        })
+        
+    champion_probabilities = [
+        {"team": team, "probability": qualifications[team] / iters, "records": record_counts[team]}
+        for team in sorted(qualifications, key=lambda t: qualifications[t], reverse=True)
+    ]
+    
+    pickem_optimization = optimize_pickem(teams, run_records, iters)
+    
+    return rounds, champion_probabilities, pickem_optimization
+
+
 def bracket_simulation_payload(request):
     from config import MC_ITERATIONS, MC_THRESHOLD
     from model.predict import calculate_expected_series_win
@@ -1137,11 +1435,20 @@ def bracket_simulation_payload(request):
         teams = [str(team).strip() for team in raw_teams if str(team).strip()]
 
     bracket_format = str(request.get("format", "8")).lower().replace("team", "").strip()
-    team_count = 6 if bracket_format in {"6", "6-team", "6_team"} else 8
+    if bracket_format in {"16", "16-team", "swiss", "16_team"}:
+        team_count = 16
+    elif bracket_format in {"6", "6-team", "6_team"}:
+        team_count = 6
+    else:
+        team_count = 8
+
     if len(teams) != team_count:
+        if team_count == 16:
+            return {"error": "Enter exactly 16 teams for the Swiss stage simulation."}, HTTPStatus.BAD_REQUEST
         return {"error": f"Enter exactly {team_count} teams for a {team_count}-team playoff."}, HTTPStatus.BAD_REQUEST
+
     if len({team.casefold() for team in teams}) != len(teams):
-        return {"error": "Each bracket slot needs a unique team."}, HTTPStatus.BAD_REQUEST
+        return {"error": "Each slot needs a unique team."}, HTTPStatus.BAD_REQUEST
 
     series_format = str(request.get("series_format", "bo3")).lower()
     if series_format not in {"bo1", "bo3", "bo5"}:
@@ -1169,7 +1476,10 @@ def bracket_simulation_payload(request):
             matchup_cache[key] = float(result["expected_win_prob"])
         return matchup_cache[key]
 
-    if team_count == 6:
+    pickem_optimization = None
+    if team_count == 16:
+        rounds, champion_probabilities, pickem_optimization = simulate_swiss_stage(teams, series_format, threshold, iters, probability_lookup)
+    elif team_count == 6:
         quarter_1 = bracket_match_payload("quarterfinal", "Quarter-final 1", {teams[2]: 1.0}, {teams[5]: 1.0}, series_format, probability_lookup)
         quarter_2 = bracket_match_payload("quarterfinal", "Quarter-final 2", {teams[3]: 1.0}, {teams[4]: 1.0}, series_format, probability_lookup)
         semi_1 = bracket_match_payload("semifinal", "Semi-final 1", {teams[0]: 1.0}, quarter_1["outcomes"], series_format, probability_lookup)
@@ -1179,6 +1489,10 @@ def bracket_simulation_payload(request):
             {"name": "Quarter-finals", "matches": [quarter_1, quarter_2]},
             {"name": "Semi-finals", "matches": [semi_1, semi_2]},
             {"name": "Grand final", "matches": [final]},
+        ]
+        champion_probabilities = [
+            {"team": team, "probability": probability}
+            for team, probability in sorted(final["outcomes"].items(), key=lambda item: item[1], reverse=True)
         ]
     else:
         quarters = [
@@ -1193,11 +1507,10 @@ def bracket_simulation_payload(request):
             {"name": "Semi-finals", "matches": [semi_1, semi_2]},
             {"name": "Grand final", "matches": [final]},
         ]
-
-    champion_probabilities = [
-        {"team": team, "probability": probability}
-        for team, probability in sorted(final["outcomes"].items(), key=lambda item: item[1], reverse=True)
-    ]
+        champion_probabilities = [
+            {"team": team, "probability": probability}
+            for team, probability in sorted(final["outcomes"].items(), key=lambda item: item[1], reverse=True)
+        ]
 
     return {
         "format": team_count,
@@ -1210,6 +1523,7 @@ def bracket_simulation_payload(request):
         "teams": teams,
         "rounds": rounds,
         "champion_probabilities": champion_probabilities,
+        "pickem_optimization": pickem_optimization,
         "matchup_count": len(matchup_cache),
     }, HTTPStatus.OK
 
