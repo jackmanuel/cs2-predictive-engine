@@ -1554,6 +1554,121 @@ def bracket_simulation_payload(request):
     }, HTTPStatus.OK
 
 
+def scrape_hltv_event_teams(event_url: str):
+    """
+    Parses/scrapes HLTV event overview and matches pages to verify
+    the 16-team Swiss stage format and extract initial opening round seed pairings.
+    """
+    match = re.search(r"/events/(\d+)", event_url)
+    if not match:
+        raise ValueError("Invalid HLTV event URL format. Please provide a valid HLTV event link (e.g. containing /events/9028).")
+    
+    event_id = int(match.group(1))
+    
+    # Construct exact overview and matches URLs
+    overview_url = f"https://www.hltv.org/events/{event_id}/overview"
+    matches_url = f"https://www.hltv.org/events/{event_id}/matches"
+    
+    from bs4 import BeautifulSoup
+    from ingestion.hltv_client import HLTVClient
+    
+    client = HLTVClient()
+    try:
+        client.start()
+        
+        # 1. Fetch & Parse overview page
+        print(f"[HLTV Scraper] Navigating to overview: {overview_url}")
+        client.driver.get(overview_url)
+        client._wait_for_cloudflare()
+        overview_html = client.driver.page_source
+        
+        overview_soup = BeautifulSoup(overview_html, "html.parser")
+        
+        # Check format
+        format_data_el = overview_soup.find(class_="format-data")
+        if not format_data_el:
+            raise ValueError("Could not find the event format description. Please ensure this is a standard HLTV event page.")
+            
+        format_text = format_data_el.get_text(" ", strip=True)
+        if "swiss" not in format_text.lower():
+            raise ValueError(f"Event format is '{format_text}', which is not a Swiss competition. Only Swiss competitions are currently supported.")
+            
+        # Count teams attending
+        teams_attending_container = overview_soup.find(class_="teams-attending")
+        if not teams_attending_container:
+            raise ValueError("Could not find the 'Teams attending' section on the event overview page.")
+            
+        team_boxes = teams_attending_container.find_all(class_="team-box")
+        team_names = []
+        for box in team_boxes:
+            name_el = box.find(class_="team-name")
+            if name_el:
+                text_el = name_el.find(class_="text")
+                if text_el:
+                    team_names.append(text_el.get_text(strip=True))
+                    
+        if len(team_names) != 16:
+            raise ValueError(f"Found {len(team_names)} attending teams. Only 16-team events are currently supported.")
+            
+        # 2. Fetch & Parse matches page
+        print(f"[HLTV Scraper] Navigating to matches: {matches_url}")
+        client.driver.get(matches_url)
+        client._wait_for_cloudflare()
+        matches_html = client.driver.page_source
+        
+        matches_soup = BeautifulSoup(matches_html, "html.parser")
+        match_wrappers = matches_soup.find_all(class_="match-wrapper")
+        if len(match_wrappers) < 8:
+            raise ValueError(f"Found only {len(match_wrappers)} matches on the matches page. At least 8 matches are required to establish the 16-team Swiss seeding.")
+            
+        # Parse the opening 8 matches
+        matches = []
+        for i in range(8):
+            wrapper = match_wrappers[i]
+            t1_div = wrapper.find(class_="team1")
+            t2_div = wrapper.find(class_="team2")
+            if not t1_div or not t2_div:
+                raise ValueError(f"Match {i+1} on the matches page is missing team information elements.")
+                
+            name1_el = t1_div.find(class_="match-teamname")
+            name2_el = t2_div.find(class_="match-teamname")
+            if not name1_el or not name2_el:
+                raise ValueError(f"Match {i+1} on the matches page is missing team name elements.")
+                
+            name1 = name1_el.get_text(strip=True)
+            name2 = name2_el.get_text(strip=True)
+            matches.append((name1, name2))
+            
+        # Mapping: Seeds 1-8 are Team 1, Seeds 9-16 are Team 2 of matches 1-8
+        seeds_1_to_8 = [m[0] for m in matches]
+        seeds_9_to_16 = [m[1] for m in matches]
+        final_seeds = seeds_1_to_8 + seeds_9_to_16
+        
+        return final_seeds
+        
+    finally:
+        client.stop()
+
+
+def hltv_event_teams_payload(request):
+    """
+    Payload wrapper for parsing and retrieving HLTV event teams.
+    """
+    event_url = str(request.get("url", "")).strip()
+    if not event_url:
+        return {"error": "Please enter an HLTV event link."}, HTTPStatus.BAD_REQUEST
+        
+    try:
+        teams = scrape_hltv_event_teams(event_url)
+        return {"teams": teams}, HTTPStatus.OK
+    except ValueError as exc:
+        return {"error": str(exc)}, HTTPStatus.BAD_REQUEST
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return {"error": f"Failed to retrieve HLTV teams: {str(exc)}"}, HTTPStatus.INTERNAL_SERVER_ERROR
+
+
 def playground_prediction_payload(request):
     from config import MC_ITERATIONS, MC_THRESHOLD
     from model import veto_sim
@@ -1856,6 +1971,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 payload = self.read_request_json()
                 result, status = bracket_simulation_payload(payload)
+                self.send_json(result, status=status)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif path == "/api/hltv/event-teams":
+            try:
+                payload = self.read_request_json()
+                result, status = hltv_event_teams_payload(payload)
                 self.send_json(result, status=status)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)

@@ -254,6 +254,15 @@
                         </div>
                     </div>
 
+                    <div class="bracket-hltv-import is-hidden" id="bracket-hltv-import-wrapper" hidden>
+                        <span>Import from HLTV Event Link</span>
+                        <div class="hltv-import-input-group">
+                            <input id="bracket-hltv-url" type="url" placeholder="e.g. https://www.hltv.org/events/9028/iem-cologne-major-2026-stage-1" autocomplete="off">
+                            <button class="secondary-button" id="bracket-hltv-fetch" type="button">Fetch Teams</button>
+                        </div>
+                        <div id="bracket-hltv-error" class="bracket-hltv-error is-hidden" hidden></div>
+                    </div>
+
                     <div class="bracket-board-heading">
                         <h2>Single Elimination Bracket</h2>
                         <p id="bracket-summary">Enter teams in bracket order, then run a simulation.</p>
@@ -645,6 +654,12 @@
                     document.getElementById("bracket-bo3-only").checked = false;
                 }
             }
+            
+            const hltvWrapper = document.getElementById("bracket-hltv-import-wrapper");
+            if (hltvWrapper) {
+                hltvWrapper.hidden = !isSwiss;
+                hltvWrapper.classList.toggle("is-hidden", !isSwiss);
+            }
         }
 
         function renderMatchupProbabilityBar(teamA, teamB, teamAProbability) {
@@ -1026,11 +1041,11 @@
             `;
         }
 
-        function renderEditableBracket() {
+        function renderEditableBracket(forceTeams = null) {
             const board = document.getElementById("bracket-board");
             if (!board) return;
             const count = Number(document.getElementById("bracket-format").value);
-            const previous = collectBracketTeams();
+            const previous = forceTeams || collectBracketTeams();
             const labels = bracketSlotLabels(count);
             const roundFormat = escapeText(document.getElementById("bracket-series-format").value.toUpperCase());
             const finalFormat = escapeText(document.getElementById("bracket-grand-final-format").value.toUpperCase());
@@ -1415,8 +1430,10 @@
         });
 
         document.getElementById("playground-format").addEventListener("change", syncPlaygroundFields);
-        function resetBracketResults(message = null) {
-            bracketLastTeams = collectBracketTeams();
+        function resetBracketResults(message = null, keepTeams = false) {
+            if (!keepTeams) {
+                bracketLastTeams = collectBracketTeams();
+            }
             bracketLastResult = null;
             bracketExpandedCards = new Set();
             swissExpandedRecords = new Set();
@@ -1428,7 +1445,7 @@
             
             document.getElementById("bracket-summary").textContent = message || defaultMsg;
             document.getElementById("bracket-board").classList.remove("is-running");
-            renderEditableBracket();
+            renderEditableBracket(keepTeams ? bracketLastTeams : null);
         }
 
         document.getElementById("bracket-format").addEventListener("change", () => {
@@ -1437,6 +1454,60 @@
         });
         document.getElementById("bracket-series-format").addEventListener("change", () => resetBracketResults());
         document.getElementById("bracket-grand-final-format").addEventListener("change", () => resetBracketResults());
+        
+        document.getElementById("bracket-hltv-fetch").addEventListener("click", async () => {
+            const urlInput = document.getElementById("bracket-hltv-url");
+            const fetchBtn = document.getElementById("bracket-hltv-fetch");
+            const errDiv = document.getElementById("bracket-hltv-error");
+            
+            const url = urlInput.value.trim();
+            if (!url) {
+                errDiv.textContent = "Please enter a valid HLTV event link.";
+                errDiv.hidden = false;
+                errDiv.classList.remove("is-hidden");
+                return;
+            }
+            
+            // Clear any previous error
+            errDiv.textContent = "";
+            errDiv.hidden = true;
+            errDiv.classList.add("is-hidden");
+            
+            // Premium loading state
+            const originalText = fetchBtn.textContent;
+            fetchBtn.disabled = true;
+            fetchBtn.textContent = "Fetching...";
+            urlInput.disabled = true;
+            
+            try {
+                const response = await fetch("/api/hltv/event-teams", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: url })
+                });
+                
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || "Failed to retrieve teams from HLTV event link.");
+                }
+                
+                if (data.teams && data.teams.length === 16) {
+                    bracketLastTeams = data.teams;
+                    resetBracketResults(null, true);
+                } else {
+                    throw new Error("HLTV response did not return exactly 16 teams.");
+                }
+            } catch (err) {
+                errDiv.textContent = err.message;
+                errDiv.hidden = false;
+                errDiv.classList.remove("is-hidden");
+            } finally {
+                fetchBtn.disabled = false;
+                fetchBtn.textContent = originalText;
+                urlInput.disabled = false;
+            }
+        });
+
         document.getElementById("bracket-clear").addEventListener("click", () => {
             bracketLastTeams = [];
             bracketLastResult = null;
