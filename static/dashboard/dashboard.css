@@ -1316,8 +1316,6 @@ textarea {
     letter-spacing: 0.08em;
     color: var(--muted);
     margin: 0;
-    border-left: 3px solid var(--line);
-    padding-left: 8px;
 }
 
 /* Standings Grid (Top Section) */

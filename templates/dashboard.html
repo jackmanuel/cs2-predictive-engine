@@ -1210,22 +1210,6 @@
                                             </div>
                                             
                                             <div class="pickem-pool-group">
-                                                <h5>0-3 Winless Selections <span class="subtle-info">(2 Picks)</span></h5>
-                                                <div class="pickem-team-pills">
-                                                    ${bracketLastResult.pickem_optimization.picks_0_3.map(team => {
-                                                        const teamData = bracketLastResult.champion_probabilities.find(item => item.team === team);
-                                                        const teamProb03 = teamData ? (teamData.records ? (teamData.records["0-3"] || 0) / iters : 0) : 0;
-                                                        return `
-                                                            <div class="pickem-pill pill-0-3" title="Individual 0-3 Probability: ${pct(teamProb03)}">
-                                                                <span class="pill-team-name">${escapeText(team)}</span>
-                                                                <span class="pill-prob-badge">${pct(teamProb03)}</span>
-                                                            </div>
-                                                        `;
-                                                    }).join("")}
-                                                </div>
-                                            </div>
-                                            
-                                            <div class="pickem-pool-group">
                                                 <h5>3-1 or 3-2 Qualified Selections <span class="subtle-info">(6 Picks)</span></h5>
                                                 <div class="pickem-team-pills qual-pills">
                                                     ${bracketLastResult.pickem_optimization.picks_qual.map(team => {
@@ -1237,6 +1221,22 @@
                                                             <div class="pickem-pill pill-qual" title="Individual 3-1: ${pct(teamProb31)} | 3-2: ${pct(teamProb32)}">
                                                                 <span class="pill-team-name">${escapeText(team)}</span>
                                                                 <span class="pill-prob-badge">${pct(totalQualNotUndefeated)}</span>
+                                                            </div>
+                                                        `;
+                                                    }).join("")}
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="pickem-pool-group">
+                                                <h5>0-3 Winless Selections <span class="subtle-info">(2 Picks)</span></h5>
+                                                <div class="pickem-team-pills">
+                                                    ${bracketLastResult.pickem_optimization.picks_0_3.map(team => {
+                                                        const teamData = bracketLastResult.champion_probabilities.find(item => item.team === team);
+                                                        const teamProb03 = teamData ? (teamData.records ? (teamData.records["0-3"] || 0) / iters : 0) : 0;
+                                                        return `
+                                                            <div class="pickem-pill pill-0-3" title="Individual 0-3 Probability: ${pct(teamProb03)}">
+                                                                <span class="pill-team-name">${escapeText(team)}</span>
+                                                                <span class="pill-prob-badge">${pct(teamProb03)}</span>
                                                             </div>
                                                         `;
                                                     }).join("")}
