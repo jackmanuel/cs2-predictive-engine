@@ -216,6 +216,7 @@
                         <label>
                             <span>Format</span>
                             <select id="bracket-format" name="format">
+                                <option value="4">4-team playoff</option>
                                 <option value="6">6-team playoff</option>
                                 <option value="8" selected>8-team playoff</option>
                                 <option value="16">16-team Swiss (Major)</option>
@@ -910,6 +911,14 @@
                     "Seed 6",
                 ];
             }
+            if (count === 4) {
+                return [
+                    "Semi-finalist 1",
+                    "Semi-finalist 2",
+                    "Semi-finalist 3",
+                    "Semi-finalist 4",
+                ];
+            }
             if (count === 16) {
                 return Array.from({ length: 16 }, (_, index) => `Initial Seed ${index + 1}`);
             }
@@ -1057,6 +1066,8 @@
                     headingEl.textContent = "16-Team Swiss Major Stage";
                 } else if (count === 6) {
                     headingEl.textContent = "6-Team Playoff Bracket";
+                } else if (count === 4) {
+                    headingEl.textContent = "4-Team Playoff Bracket";
                 } else {
                     headingEl.textContent = "8-Team Playoff Bracket";
                 }
@@ -1298,6 +1309,37 @@
                 return;
             } else {
                 board.classList.remove("swiss-board");
+            }
+
+            if (count === 4) {
+                board.classList.add("four-team-board");
+            } else {
+                board.classList.remove("four-team-board");
+            }
+
+            if (count === 4) {
+                board.innerHTML = `
+                    <section class="bracket-round">
+                        <h3>Semi-finals</h3>
+                        <div class="bracket-round-matches">
+                            ${(() => {
+                                const match = bracketResultByLabel("Semi-final 1");
+                                return bracketCard("Semi-final 1", roundFormat, `${bracketInput(0, labels[0], previous, match)}${bracketInput(1, labels[1], previous, match)}`, match, { hideDetails: true });
+                            })()}
+                            ${(() => {
+                                const match = bracketResultByLabel("Semi-final 2");
+                                return bracketCard("Semi-final 2", roundFormat, `${bracketInput(2, labels[2], previous, match)}${bracketInput(3, labels[3], previous, match)}`, match, { hideDetails: true });
+                            })()}
+                        </div>
+                    </section>
+                    <section class="bracket-round">
+                        <h3>Grand final</h3>
+                        <div class="bracket-round-matches">
+                            ${projectedBracketCard("Grand final", finalFormat, bracketResultByLabel("Grand final"))}
+                        </div>
+                    </section>
+                `;
+                return;
             }
 
             if (count === 6) {

@@ -1459,10 +1459,13 @@ def bracket_simulation_payload(request):
         teams = [str(team).strip() for team in raw_teams if str(team).strip()]
 
     bracket_format = str(request.get("format", "8")).lower().replace("team", "").strip()
+    print(f"[DEBUG] bracket_simulation_payload format={request.get('format')} parsed_format={bracket_format} teams={teams}")
     if bracket_format in {"16", "16-team", "swiss", "16_team"}:
         team_count = 16
     elif bracket_format in {"6", "6-team", "6_team"}:
         team_count = 6
+    elif bracket_format in {"4", "4-team", "4_team"}:
+        team_count = 4
     else:
         team_count = 8
 
@@ -1512,6 +1515,18 @@ def bracket_simulation_payload(request):
         final = bracket_match_payload("final", "Grand final", semi_1["outcomes"], semi_2["outcomes"], grand_final_format, probability_lookup)
         rounds = [
             {"name": "Quarter-finals", "matches": [quarter_1, quarter_2]},
+            {"name": "Semi-finals", "matches": [semi_1, semi_2]},
+            {"name": "Grand final", "matches": [final]},
+        ]
+        champion_probabilities = [
+            {"team": team, "probability": probability}
+            for team, probability in sorted(final["outcomes"].items(), key=lambda item: item[1], reverse=True)
+        ]
+    elif team_count == 4:
+        semi_1 = bracket_match_payload("semifinal", "Semi-final 1", {teams[0]: 1.0}, {teams[1]: 1.0}, series_format, probability_lookup)
+        semi_2 = bracket_match_payload("semifinal", "Semi-final 2", {teams[2]: 1.0}, {teams[3]: 1.0}, series_format, probability_lookup)
+        final = bracket_match_payload("final", "Grand final", semi_1["outcomes"], semi_2["outcomes"], grand_final_format, probability_lookup)
+        rounds = [
             {"name": "Semi-finals", "matches": [semi_1, semi_2]},
             {"name": "Grand final", "matches": [final]},
         ]
@@ -1970,6 +1985,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/bracket/simulate":
             try:
                 payload = self.read_request_json()
+                print(f"[DEBUG] Raw incoming /api/bracket/simulate JSON payload: {payload}")
                 result, status = bracket_simulation_payload(payload)
                 self.send_json(result, status=status)
             except Exception as exc:

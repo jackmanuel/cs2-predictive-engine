@@ -1952,3 +1952,9 @@ textarea {
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
 }
+
+/* 4-Team Playoff Simulator Custom Aesthetics */
+.bracket-board.four-team-board {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+}
+
