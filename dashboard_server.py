@@ -39,6 +39,7 @@ DEFAULT_SCRAPER_SETTINGS = {
     "jitter_minutes": 30.0,
     "pages": 1,
     "count": None,
+    "stage": "all",
 }
 
 # Conservative phase ranges based on one local timing run. The values are only
@@ -349,6 +350,13 @@ class ScraperJob:
             request.get("pages"), DEFAULT_SCRAPER_SETTINGS["pages"], minimum=1, maximum=20
         )
         settings["count"] = parse_optional_positive_int(request.get("count"), default=None, maximum=200)
+        
+        stage = request.get("stage")
+        if stage in {"all", "scrape", "predict", "resolve"}:
+            settings["stage"] = stage
+        else:
+            settings["stage"] = DEFAULT_SCRAPER_SETTINGS.get("stage", "all")
+            
         return settings
 
     def start(self, mode, settings):
@@ -375,6 +383,10 @@ class ScraperJob:
             command = [PROJECT_PYTHON, "-u", "update.py", "--pages", str(settings["pages"]), "--no-open"]
             if settings.get("count") is not None:
                 command.extend(["--matches", str(settings["count"])])
+            
+            stage = settings.get("stage", "all")
+            command.extend(["--stage", stage])
+
             if mode == "once":
                 command.append("--run-once")
             else:
@@ -493,7 +505,15 @@ class ScraperJob:
                 self.phase = "completed" if returncode == 0 else "failed"
                 self.current_detail = "Update pipeline completed." if returncode == 0 else "Update pipeline failed."
                 if returncode == 0:
-                    self.mark_phase_completed_locked(self.phase if self.phase == "ledger" else "ledger")
+                    stage = self.settings.get("stage", "all")
+                    if stage == "scrape":
+                        self.mark_phase_completed_locked("completed_matches")
+                    elif stage == "predict":
+                        self.mark_phase_completed_locked("upcoming_matches")
+                    elif stage == "resolve":
+                        self.mark_phase_completed_locked("ledger")
+                    else: # "all"
+                        self.mark_phase_completed_locked("ledger")
             self.progress = 100
             self.process = None
             snapshot = self.snapshot_locked()

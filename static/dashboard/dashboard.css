@@ -1110,6 +1110,15 @@ textarea {
     transition: width .3s ease;
 }
 
+.progress-fill.failed {
+    background: var(--danger) !important;
+}
+
+#scraper-status.failed {
+    color: var(--danger) !important;
+    font-weight: bold;
+}
+
 .log {
     height: calc(100vh - 294px);
     min-height: 300px;

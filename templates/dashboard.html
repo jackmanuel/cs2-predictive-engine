@@ -74,6 +74,15 @@
                             <span>Match cap</span>
                             <input id="scraper-count" type="number" min="1" max="200" step="1" placeholder="No cap">
                         </label>
+                        <label>
+                            <span>Pipeline Stage</span>
+                            <select id="scraper-stage">
+                                <option value="all">Entire Pipeline</option>
+                                <option value="scrape">Match Scraping</option>
+                                <option value="predict">Match Predictions</option>
+                                <option value="resolve">Finished Match Resolutions</option>
+                            </select>
+                        </label>
                     </div>
 
                     <div class="progress-wrap scraper-progress">
@@ -1565,6 +1574,7 @@
                 jitter_minutes: document.getElementById("scraper-jitter").value,
                 pages: document.getElementById("scraper-pages").value,
                 count: document.getElementById("scraper-count").value,
+                stage: document.getElementById("scraper-stage").value,
             };
         }
 
@@ -1574,6 +1584,7 @@
             document.getElementById("scraper-jitter").value = settings.jitter_minutes ?? 30;
             document.getElementById("scraper-pages").value = settings.pages ?? 1;
             document.getElementById("scraper-count").value = settings.count ?? "";
+            document.getElementById("scraper-stage").value = settings.stage ?? "all";
             scraperSettingsHydrated = true;
         }
 
@@ -1588,6 +1599,15 @@
             const previousStatus = lastScraperStatus;
             lastScraperStatus = snapshot.status || "idle";
             hydrateScraperSettings(snapshot.settings);
+            
+            if (snapshot.status === "failed") {
+                scraperProgress.classList.add("failed");
+                scraperStatus.classList.add("failed");
+            } else {
+                scraperProgress.classList.remove("failed");
+                scraperStatus.classList.remove("failed");
+            }
+
             scraperStatus.textContent = snapshot.status === "running"
                 ? `${snapshot.phase_label || "Running"} (${snapshot.mode || "once"})`
                 : (snapshot.status || "idle");
@@ -1596,6 +1616,13 @@
             scraperDetail.textContent = snapshot.detail || "";
             const isRunning = snapshot.status === "running" || snapshot.status === "stopping";
             setTabRunning("scraper", isRunning);
+            
+            document.getElementById("scraper-interval").disabled = isRunning;
+            document.getElementById("scraper-jitter").disabled = isRunning;
+            document.getElementById("scraper-pages").disabled = isRunning;
+            document.getElementById("scraper-count").disabled = isRunning;
+            document.getElementById("scraper-stage").disabled = isRunning;
+
             scraperRunOnce.disabled = isRunning;
             scraperStartLoop.disabled = isRunning;
             scraperStop.disabled = !isRunning;

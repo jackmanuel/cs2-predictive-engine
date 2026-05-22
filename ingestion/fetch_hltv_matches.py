@@ -114,15 +114,8 @@ def main():
                 
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
-                    logger.warning("Hit 3 consecutive errors! Restarting Selenium browser to clear memory and recover...")
-                    try:
-                        hltv.stop()
-                    except Exception as stop_err:
-                        logger.error(f"Error while trying to stop Selenium during recovery: {stop_err}")
-                    
-                    time.sleep(5)
-                    hltv.start()
-                    consecutive_errors = 0
+                    logger.error("Hit 3 consecutive errors! Halting scraper...")
+                    raise RuntimeError("Hit 3 consecutive errors during scraping details!")
             
             # Add to the running dataset
             scraped_data.append(match)
@@ -143,6 +136,7 @@ def main():
         
     except Exception as e:
         logger.error(f"Pipeline error: {e}")
+        sys.exit(1)
     finally:
         hltv.stop()
 

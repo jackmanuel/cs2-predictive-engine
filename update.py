@@ -125,10 +125,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-once", action="store_true", help="Run one update pass and exit instead of looping.")
     parser.add_argument("--interval-hours", type=float, default=DEFAULT_INTERVAL_HOURS, help="Base delay between looped runs.")
     parser.add_argument("--jitter-minutes", type=float, default=DEFAULT_JITTER_MINUTES, help="Random +/- jitter applied to each loop delay.")
+    parser.add_argument(
+        "--stage",
+        choices=["all", "scrape", "predict", "resolve"],
+        default="all",
+        help="Pipeline stage to run: 'scrape' (completed match scrape & clean), 'predict' (predictions), 'resolve' (ledger refresh), or 'all' (entire pipeline)."
+    )
     return parser.parse_args()
 
 
 def run_update(args: argparse.Namespace) -> None:
+    stage = getattr(args, "stage", "all")
+
     scrape_command = [
         sys.executable,
         "-m",
@@ -155,12 +163,17 @@ def run_update(args: argparse.Namespace) -> None:
 
     refresh_command = [sys.executable, "-m", "evaluation.shadow_ledger", "refresh"]
 
-    run_step("Scraping recent matches", scrape_command)
-    print_model_freshness()
-    print("\n=== Refreshing cleaned map data ===")
-    clean_data()
-    run_step("Running predictions with report", predict_command)
-    run_step("Refreshing shadow ledger", refresh_command)
+    if stage in {"all", "scrape"}:
+        run_step("Scraping recent matches", scrape_command)
+        print_model_freshness()
+        print("\n=== Refreshing cleaned map data ===")
+        clean_data()
+
+    if stage in {"all", "predict"}:
+        run_step("Running predictions with report", predict_command)
+
+    if stage in {"all", "resolve"}:
+        run_step("Refreshing shadow ledger", refresh_command)
 
 
 def next_delay_seconds(args: argparse.Namespace) -> float:
