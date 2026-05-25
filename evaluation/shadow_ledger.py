@@ -118,7 +118,11 @@ CREATE TABLE IF NOT EXISTS snapshots (
     odds_book_count INTEGER DEFAULT 0,
     odds_summary_json TEXT,
     analytics_summary_json TEXT,
-    eval_exclusion_reason TEXT
+    eval_exclusion_reason TEXT,
+    forfeit_prob REAL,
+    forfeit_model_metadata_json TEXT,
+    polymarket_fair_prob_a REAL,
+    polymarket_fair_prob_b REAL
 );
 
 CREATE TABLE IF NOT EXISTS snapshot_bookmaker_odds (
@@ -155,30 +159,47 @@ def get_db():
     conn.executescript(SCHEMA)
     
     # Simple migration block for existing DBs
-    try:
-        conn.execute("ALTER TABLE model_versions ADD COLUMN test_brier_score REAL;")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        conn.execute("ALTER TABLE model_versions ADD COLUMN test_log_loss REAL;")
-    except sqlite3.OperationalError:
-        pass
-    for statement in [
-        "ALTER TABLE snapshots ADD COLUMN edge_b REAL;",
-        "ALTER TABLE snapshots ADD COLUMN valid_for_eval INTEGER DEFAULT 1;",
-        "ALTER TABLE snapshots ADD COLUMN odds_source TEXT;",
-        "ALTER TABLE snapshots ADD COLUMN odds_book_count INTEGER DEFAULT 0;",
-        "ALTER TABLE snapshots ADD COLUMN odds_summary_json TEXT;",
-        "ALTER TABLE snapshots ADD COLUMN analytics_summary_json TEXT;",
-        "ALTER TABLE snapshots ADD COLUMN eval_exclusion_reason TEXT;",
-    ]:
-        try:
-            conn.execute(statement)
-        except sqlite3.OperationalError:
-            pass
+    _add_missing_columns(
+        conn,
+        "model_versions",
+        [
+            ("test_brier_score", "REAL"),
+            ("test_log_loss", "REAL"),
+        ],
+    )
+    _add_missing_columns(
+        conn,
+        "snapshots",
+        [
+            ("edge_b", "REAL"),
+            ("valid_for_eval", "INTEGER DEFAULT 1"),
+            ("odds_source", "TEXT"),
+            ("odds_book_count", "INTEGER DEFAULT 0"),
+            ("odds_summary_json", "TEXT"),
+            ("analytics_summary_json", "TEXT"),
+            ("eval_exclusion_reason", "TEXT"),
+            ("forfeit_prob", "REAL"),
+            ("forfeit_model_metadata_json", "TEXT"),
+            ("polymarket_fair_prob_a", "REAL"),
+            ("polymarket_fair_prob_b", "REAL"),
+        ],
+    )
     conn.commit()
         
     return conn
+
+
+def _table_columns(conn, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def _add_missing_columns(conn, table_name: str, columns: list[tuple[str, str]]) -> None:
+    existing = _table_columns(conn, table_name)
+    for column_name, column_type in columns:
+        if column_name not in existing:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type};")
+            existing.add(column_name)
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +373,162 @@ def get_latest_version_id():
         conn.close()
 
 
+def _safe_decimal_odds(value):
+    try:
+        odds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(odds) or odds <= 0:
+        return None
+    return odds
+
+
+def _no_vig_probabilities(odds_a, odds_b):
+    odds_a = _safe_decimal_odds(odds_a)
+    odds_b = _safe_decimal_odds(odds_b)
+    if odds_a is None or odds_b is None:
+        return None, None
+
+    raw_a = 1.0 / odds_a
+    raw_b = 1.0 / odds_b
+    total = raw_a + raw_b
+    if total <= 0:
+        return None, None
+    return raw_a / total, raw_b / total
+
+
+def _sha256_file(path):
+    try:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _forfeit_model_metadata(ctx, *, status="loaded", error=None, adjustment_applied=False):
+    model_path = getattr(ctx, "model_path", None)
+    metadata = getattr(ctx, "metadata", {}) or {}
+    features = metadata.get("features") or []
+    model_hash = _sha256_file(model_path) if model_path else None
+    feature_version = (
+        hashlib.sha256(json.dumps(features, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        if features
+        else None
+    )
+    return {
+        "status": status,
+        "adjustment_applied": bool(adjustment_applied),
+        "error": str(error) if error else None,
+        "model_path": str(model_path) if model_path else None,
+        "model_sha256": model_hash,
+        "model_version": metadata.get("trained_at") or model_hash,
+        "trained_at": metadata.get("trained_at"),
+        "model_type": metadata.get("model_type"),
+        "calibration_method": metadata.get("calibration_method"),
+        "feature_count": len(features),
+        "feature_version": feature_version,
+        "target": metadata.get("target") or "forfeit_target",
+    }
+
+
+def _load_forfeit_predictor_context():
+    try:
+        from model.forfeit import ForfeitPredictorContext
+
+        ctx = ForfeitPredictorContext()
+        return ctx, _forfeit_model_metadata(ctx), None
+    except Exception as exc:
+        metadata = {
+            "status": "model_unavailable",
+            "adjustment_applied": False,
+            "error": str(exc),
+        }
+        return None, metadata, exc
+
+
+def _forfeit_match_payload(item: dict) -> dict:
+    match = dict(item.get("match") or {})
+    match.update(
+        {
+            "team1": item.get("team_a") or match.get("team1"),
+            "team2": item.get("team_b") or match.get("team2"),
+            "format": item.get("fmt") or match.get("format"),
+        }
+    )
+    return match
+
+
+def _analytics_with_forfeit_status(analytics_summary, metadata):
+    summary = dict(analytics_summary or {})
+    summary["forfeit_adjustment"] = {
+        "status": metadata.get("status"),
+        "adjustment_applied": metadata.get("adjustment_applied", False),
+        "error": metadata.get("error"),
+    }
+    return summary
+
+
+def _snapshot_forfeit_adjustment(item: dict, odds_a, odds_b, forfeit_ctx, base_metadata: dict) -> dict:
+    no_vig_a, no_vig_b = _no_vig_probabilities(odds_a, odds_b)
+
+    if forfeit_ctx is None:
+        metadata = dict(base_metadata)
+        metadata["adjustment_applied"] = False
+        return {
+            "forfeit_prob": None,
+            "polymarket_fair_prob_a": None,
+            "polymarket_fair_prob_b": None,
+            "metadata": metadata,
+        }
+
+    try:
+        forfeit_prob = float(forfeit_ctx.predict_forfeit_probability(_forfeit_match_payload(item)))
+        forfeit_prob = max(0.0, min(1.0, forfeit_prob))
+    except Exception as exc:
+        metadata = _forfeit_model_metadata(
+            forfeit_ctx,
+            status="prediction_failed",
+            error=exc,
+            adjustment_applied=False,
+        )
+        return {
+            "forfeit_prob": None,
+            "polymarket_fair_prob_a": None,
+            "polymarket_fair_prob_b": None,
+            "metadata": metadata,
+        }
+
+    if no_vig_a is None or no_vig_b is None:
+        metadata = _forfeit_model_metadata(forfeit_ctx, status="missing_odds", adjustment_applied=False)
+        metadata["forfeit_prob"] = forfeit_prob
+        return {
+            "forfeit_prob": forfeit_prob,
+            "polymarket_fair_prob_a": None,
+            "polymarket_fair_prob_b": None,
+            "metadata": metadata,
+        }
+
+    fair_a = (1.0 - forfeit_prob) * no_vig_a + 0.5 * forfeit_prob
+    fair_b = (1.0 - forfeit_prob) * no_vig_b + 0.5 * forfeit_prob
+    metadata = _forfeit_model_metadata(forfeit_ctx, status="applied", adjustment_applied=True)
+    metadata.update(
+        {
+            "forfeit_prob": forfeit_prob,
+            "no_vig_prob_a": no_vig_a,
+            "no_vig_prob_b": no_vig_b,
+        }
+    )
+    return {
+        "forfeit_prob": forfeit_prob,
+        "polymarket_fair_prob_a": fair_a,
+        "polymarket_fair_prob_b": fair_b,
+        "metadata": metadata,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Prediction Recording
 # ---------------------------------------------------------------------------
@@ -367,6 +544,7 @@ def record_predictions(match_results: list, version_id: str = None):
     conn = get_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     added = 0
+    forfeit_ctx, base_forfeit_metadata, _ = _load_forfeit_predictor_context()
 
     try:
         for item in match_results:
@@ -415,6 +593,17 @@ def record_predictions(match_results: list, version_id: str = None):
                 or item.get("match", {}).get("source_url")
                 or item.get("match", {}).get("analytics_url")
             )
+            forfeit_adjustment = _snapshot_forfeit_adjustment(
+                item,
+                o_a,
+                o_b,
+                forfeit_ctx,
+                base_forfeit_metadata,
+            )
+            analytics_summary = _analytics_with_forfeit_status(
+                analytics_summary,
+                forfeit_adjustment["metadata"],
+            )
 
             snapshot_cur = conn.execute(
                 """INSERT INTO snapshots
@@ -422,8 +611,9 @@ def record_predictions(match_results: list, version_id: str = None):
                     odds_a, odds_b, implied_prob_a, implied_prob_b,
                     edge_a, edge_b, best_bet, best_edge, valid_for_eval,
                     odds_source, odds_book_count, odds_summary_json, analytics_summary_json,
-                    eval_exclusion_reason)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    eval_exclusion_reason, forfeit_prob, forfeit_model_metadata_json,
+                    polymarket_fair_prob_a, polymarket_fair_prob_b)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     url,
                     version_id,
@@ -443,6 +633,22 @@ def record_predictions(match_results: list, version_id: str = None):
                     json.dumps(odds_summary) if odds_summary else None,
                     json.dumps(analytics_summary) if analytics_summary else None,
                     eval_exclusion_reason,
+                    (
+                        round(forfeit_adjustment["forfeit_prob"], 6)
+                        if forfeit_adjustment["forfeit_prob"] is not None
+                        else None
+                    ),
+                    json.dumps(forfeit_adjustment["metadata"]),
+                    (
+                        round(forfeit_adjustment["polymarket_fair_prob_a"], 6)
+                        if forfeit_adjustment["polymarket_fair_prob_a"] is not None
+                        else None
+                    ),
+                    (
+                        round(forfeit_adjustment["polymarket_fair_prob_b"], 6)
+                        if forfeit_adjustment["polymarket_fair_prob_b"] is not None
+                        else None
+                    ),
                 ),
             )
             snapshot_id = snapshot_cur.lastrowid
