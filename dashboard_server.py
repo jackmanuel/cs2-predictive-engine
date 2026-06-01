@@ -1569,119 +1569,178 @@ def bracket_simulation_payload(request):
     }, HTTPStatus.OK
 
 
-def scrape_hltv_event_teams(event_url: str):
+def scrape_liquipedia_event_teams(event_url: str):
     """
-    Parses/scrapes HLTV event overview and matches pages to verify
+    Parses/scrapes Liquipedia event overview and standings pages to verify
     the 16-team Swiss stage format and extract initial opening round seed pairings.
+    Matches names dynamically against database names.
     """
-    match = re.search(r"/events/(\d+)", event_url)
-    if not match:
-        raise ValueError("Invalid HLTV event URL format. Please provide a valid HLTV event link (e.g. containing /events/9028).")
-    
-    event_id = int(match.group(1))
-    
-    # Construct exact overview and matches URLs
-    overview_url = f"https://www.hltv.org/events/{event_id}/overview"
-    matches_url = f"https://www.hltv.org/events/{event_id}/matches"
+    if "liquipedia.net/counterstrike/" not in event_url:
+        raise ValueError("Invalid Liquipedia event URL format. Please provide a valid Counter-Strike Liquipedia link.")
     
     from bs4 import BeautifulSoup
     from ingestion.hltv_client import HLTVClient
     
+    def clean_noise_words(name: str) -> str:
+        if not name:
+            return ""
+        name = name.upper()
+        # Remove punctuation
+        name = re.sub(r"[^A-Z0-9\s]", "", name)
+        # Tokenize and remove common noise words
+        noise = {"TEAM", "ESPORTS", "GAMING", "CLUB", "SQUAD", "GAMERS", "ORGANIZATION", "CLAN"}
+        tokens = [t for t in name.split() if t not in noise]
+        return "".join(tokens)
+        
     client = HLTVClient()
     try:
+        # Load unique database team names to perform robust name translation
+        db_names = set()
+        if CLEAN_MAPS_PATH.exists():
+            import pandas as pd
+            try:
+                df = pd.read_parquet(CLEAN_MAPS_PATH)
+                for col in ("team_a_name", "team_b_name"):
+                    if col in df.columns:
+                        db_names.update(str(n) for n in df[col].dropna().unique())
+            except Exception as e:
+                print(f"[Liquipedia Scraper] Warning: could not load database team names: {e}")
+                
         client.start()
         
-        # 1. Fetch & Parse overview page
-        print(f"[HLTV Scraper] Navigating to overview: {overview_url}")
-        client.driver.get(overview_url)
-        client._wait_for_cloudflare()
-        overview_html = client.driver.page_source
+        print(f"[Liquipedia Scraper] Navigating to: {event_url}")
+        client.driver.get(event_url)
         
-        overview_soup = BeautifulSoup(overview_html, "html.parser")
+        # Wait for page load
+        import time
+        time.sleep(5)
         
-        # Check format
-        format_data_el = overview_soup.find(class_="format-data")
-        if not format_data_el:
-            raise ValueError("Could not find the event format description. Please ensure this is a standard HLTV event page.")
+        html = client.driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Find Swiss standings table
+        swiss_table = soup.find("table", class_="swisstable")
+        if not swiss_table:
+            # Fallback to any table with class 'swisstable' or first wikitable with swiss structure
+            for table in soup.find_all("table"):
+                if "swisstable" in table.get("class", []):
+                    swiss_table = table
+                    break
             
-        format_text = format_data_el.get_text(" ", strip=True)
-        if "swiss" not in format_text.lower():
-            raise ValueError(f"Event format is '{format_text}', which is not a Swiss competition. Only Swiss competitions are currently supported.")
+        if not swiss_table:
+            raise ValueError("Could not find the Swiss standings table (class 'swisstable') on the Liquipedia page.")
             
-        # Count teams attending
-        teams_attending_container = overview_soup.find(class_="teams-attending")
-        if not teams_attending_container:
-            raise ValueError("Could not find the 'Teams attending' section on the event overview page.")
+        rows = swiss_table.find_all("tr")
+        team_rows = []
+        for row in rows[1:]:
+            cells = row.find_all(["th", "td"])
+            if len(cells) >= 7:
+                team_rows.append(cells)
+                
+        if len(team_rows) != 16:
+            raise ValueError(f"Found {len(team_rows)} teams in the Swiss table. Only 16-team Swiss stages are supported.")
             
-        team_boxes = teams_attending_container.find_all(class_="team-box")
-        team_names = []
-        for box in team_boxes:
-            name_el = box.find(class_="team-name")
-            if name_el:
-                text_el = name_el.find(class_="text")
-                if text_el:
-                    team_names.append(text_el.get_text(strip=True))
+        parsed_teams = []
+        for cells in team_rows:
+            team_cell = cells[1]
+            team_name = ""
+            
+            # 1. Try mobile-hide text span
+            team_span = team_cell.find("span", class_=lambda c: c and "team-template-text" in c and "mobile-hide" in c)
+            if team_span:
+                team_name = team_span.get_text(strip=True)
+                
+            # 2. Try getting from title of the image icon anchor
+            if not team_name:
+                icon_span = team_cell.find("span", class_="team-template-image-icon")
+                if icon_span:
+                    icon_a = icon_span.find("a")
+                    if icon_a and icon_a.get("title"):
+                        team_name = icon_a.get("title")
+                        
+            # 3. Fallback to getting text from first standard link
+            if not team_name:
+                for a in team_cell.find_all("a"):
+                    txt = a.get_text(strip=True)
+                    if txt:
+                        team_name = txt
+                        break
+                        
+            if not team_name:
+                team_name = team_cell.get_text(strip=True)
+                
+            # Round 1 opponent cell is index 6
+            r1_cell = cells[6]
+            opp_name = ""
+            opp_span = r1_cell.find("span", class_="team-template-team-icon")
+            if opp_span:
+                opp_a = opp_span.find("a")
+                if opp_a and opp_a.get("title"):
+                    opp_name = opp_a.get("title")
+                else:
+                    opp_name = opp_span.get("data-highlightingclass")
+            if not opp_name:
+                opp_a = r1_cell.find("a")
+                if opp_a:
+                    opp_name = opp_a.get("title") or opp_a.get_text(strip=True)
+            if not opp_name:
+                opp_name = r1_cell.get_text(strip=True)
+                
+            # Perform robust name matching against historical database team names
+            team_name_clean = clean_noise_words(team_name)
+            for db_n in db_names:
+                if clean_noise_words(db_n) == team_name_clean:
+                    team_name = db_n
+                    break
                     
-        if len(team_names) != 16:
-            raise ValueError(f"Found {len(team_names)} attending teams. Only 16-team events are currently supported.")
+            opp_name_clean = clean_noise_words(opp_name)
+            for db_n in db_names:
+                if clean_noise_words(db_n) == opp_name_clean:
+                    opp_name = db_n
+                    break
+                    
+            parsed_teams.append({
+                "team": team_name.strip(),
+                "opponent": opp_name.strip()
+            })
             
-        # 2. Fetch & Parse matches page
-        print(f"[HLTV Scraper] Navigating to matches: {matches_url}")
-        client.driver.get(matches_url)
-        client._wait_for_cloudflare()
-        matches_html = client.driver.page_source
-        
-        matches_soup = BeautifulSoup(matches_html, "html.parser")
-        match_wrappers = matches_soup.find_all(class_="match-wrapper")
-        if len(match_wrappers) < 8:
-            raise ValueError(f"Found only {len(match_wrappers)} matches on the matches page. At least 8 matches are required to establish the 16-team Swiss seeding.")
-            
-        # Parse the opening 8 matches
-        matches = []
+        # Reconstruct seeds based on i vs i + 8 opening matchups
+        final_seeds = [None] * 16
         for i in range(8):
-            wrapper = match_wrappers[i]
-            t1_div = wrapper.find(class_="team1")
-            t2_div = wrapper.find(class_="team2")
-            if not t1_div or not t2_div:
-                raise ValueError(f"Match {i+1} on the matches page is missing team information elements.")
-                
-            name1_el = t1_div.find(class_="match-teamname")
-            name2_el = t2_div.find(class_="match-teamname")
-            if not name1_el or not name2_el:
-                raise ValueError(f"Match {i+1} on the matches page is missing team name elements.")
-                
-            name1 = name1_el.get_text(strip=True)
-            name2 = name2_el.get_text(strip=True)
-            matches.append((name1, name2))
+            high_team = parsed_teams[i]["team"]
+            low_team = parsed_teams[i]["opponent"]
+            final_seeds[i] = high_team
+            final_seeds[i + 8] = low_team
             
-        # Mapping: Seeds 1-8 are Team 1, Seeds 9-16 are Team 2 of matches 1-8
-        seeds_1_to_8 = [m[0] for m in matches]
-        seeds_9_to_16 = [m[1] for m in matches]
-        final_seeds = seeds_1_to_8 + seeds_9_to_16
-        
+        if any(not name for name in final_seeds):
+            raise ValueError("Failed to parse all 16 team names successfully from the Liquipedia table.")
+            
+        if len(set(final_seeds)) != 16:
+            raise ValueError("Resolved duplicate team names in seeding. Ensure the event overview has a complete Swiss table.")
+            
         return final_seeds
         
     finally:
         client.stop()
 
 
-def hltv_event_teams_payload(request):
+def liquipedia_event_teams_payload(request):
     """
-    Payload wrapper for parsing and retrieving HLTV event teams.
+    Payload wrapper for parsing and retrieving Liquipedia event teams.
     """
     event_url = str(request.get("url", "")).strip()
     if not event_url:
-        return {"error": "Please enter an HLTV event link."}, HTTPStatus.BAD_REQUEST
+        return {"error": "Please enter a Liquipedia event link."}, HTTPStatus.BAD_REQUEST
         
     try:
-        teams = scrape_hltv_event_teams(event_url)
+        teams = scrape_liquipedia_event_teams(event_url)
         return {"teams": teams}, HTTPStatus.OK
     except ValueError as exc:
         return {"error": str(exc)}, HTTPStatus.BAD_REQUEST
     except Exception as exc:
         import traceback
         traceback.print_exc()
-        return {"error": f"Failed to retrieve HLTV teams: {str(exc)}"}, HTTPStatus.INTERNAL_SERVER_ERROR
+        return {"error": f"Failed to retrieve Liquipedia teams: {str(exc)}"}, HTTPStatus.INTERNAL_SERVER_ERROR
 
 
 def playground_prediction_payload(request):
@@ -1990,10 +2049,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(result, status=status)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
-        elif path == "/api/hltv/event-teams":
+        elif path == "/api/liquipedia/event-teams":
             try:
                 payload = self.read_request_json()
-                result, status = hltv_event_teams_payload(payload)
+                result, status = liquipedia_event_teams_payload(payload)
                 self.send_json(result, status=status)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)

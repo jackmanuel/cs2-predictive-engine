@@ -255,13 +255,13 @@
                         </div>
                     </div>
 
-                    <div class="bracket-hltv-import is-hidden" id="bracket-hltv-import-wrapper" hidden>
-                        <span>Import from HLTV Event Link</span>
+                    <div class="bracket-hltv-import is-hidden" id="bracket-liquipedia-import-wrapper" hidden>
+                        <span>Import from Liquipedia Event Link</span>
                         <div class="hltv-import-input-group">
-                            <input id="bracket-hltv-url" type="url" placeholder="e.g. https://www.hltv.org/events/9028/iem-cologne-major-2026-stage-1" autocomplete="off">
-                            <button class="secondary-button" id="bracket-hltv-fetch" type="button">Fetch Teams</button>
+                            <input id="bracket-liquipedia-url" type="url" placeholder="e.g. https://liquipedia.net/counterstrike/Intel_Extreme_Masters/2026/Cologne/Stage_1" autocomplete="off">
+                            <button class="secondary-button" id="bracket-liquipedia-fetch" type="button">Fetch Teams</button>
                         </div>
-                        <div id="bracket-hltv-error" class="bracket-hltv-error is-hidden" hidden></div>
+                        <div id="bracket-liquipedia-error" class="bracket-hltv-error is-hidden" hidden></div>
                     </div>
 
                     <div class="bracket-board-heading">
@@ -656,10 +656,10 @@
                 }
             }
             
-            const hltvWrapper = document.getElementById("bracket-hltv-import-wrapper");
-            if (hltvWrapper) {
-                hltvWrapper.hidden = !isSwiss;
-                hltvWrapper.classList.toggle("is-hidden", !isSwiss);
+            const liquipediaWrapper = document.getElementById("bracket-liquipedia-import-wrapper");
+            if (liquipediaWrapper) {
+                liquipediaWrapper.hidden = !isSwiss;
+                liquipediaWrapper.classList.toggle("is-hidden", !isSwiss);
             }
         }
 
@@ -1497,14 +1497,14 @@
         document.getElementById("bracket-series-format").addEventListener("change", () => resetBracketResults());
         document.getElementById("bracket-grand-final-format").addEventListener("change", () => resetBracketResults());
         
-        document.getElementById("bracket-hltv-fetch").addEventListener("click", async () => {
-            const urlInput = document.getElementById("bracket-hltv-url");
-            const fetchBtn = document.getElementById("bracket-hltv-fetch");
-            const errDiv = document.getElementById("bracket-hltv-error");
+        document.getElementById("bracket-liquipedia-fetch").addEventListener("click", async () => {
+            const urlInput = document.getElementById("bracket-liquipedia-url");
+            const fetchBtn = document.getElementById("bracket-liquipedia-fetch");
+            const errDiv = document.getElementById("bracket-liquipedia-error");
             
             const url = urlInput.value.trim();
             if (!url) {
-                errDiv.textContent = "Please enter a valid HLTV event link.";
+                errDiv.textContent = "Please enter a valid Liquipedia event link.";
                 errDiv.hidden = false;
                 errDiv.classList.remove("is-hidden");
                 return;
@@ -1522,7 +1522,7 @@
             urlInput.disabled = true;
             
             try {
-                const response = await fetch("/api/hltv/event-teams", {
+                const response = await fetch("/api/liquipedia/event-teams", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ url: url })
@@ -1530,14 +1530,14 @@
                 
                 const data = await response.json();
                 if (!response.ok) {
-                    throw new Error(data.error || "Failed to retrieve teams from HLTV event link.");
+                    throw new Error(data.error || "Failed to retrieve teams from Liquipedia event link.");
                 }
                 
                 if (data.teams && data.teams.length === 16) {
                     bracketLastTeams = data.teams;
                     resetBracketResults(null, true);
                 } else {
-                    throw new Error("HLTV response did not return exactly 16 teams.");
+                    throw new Error("Liquipedia response did not return exactly 16 teams.");
                 }
             } catch (err) {
                 errDiv.textContent = err.message;
