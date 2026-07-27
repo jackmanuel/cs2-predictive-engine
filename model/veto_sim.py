@@ -24,7 +24,7 @@ except ImportError:
     MC_ITERATIONS = 10000
 
 from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
-from processing.map_pool import ACTIVE_MAP_POOL, SUPPORTED_VETO_MAPS, canonical_map_name
+from processing.map_pool import ACTIVE_MAP_POOL, canonical_map_name
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -44,10 +44,9 @@ LOCKED_FIRST_BAN_PROBABILITY = 0.90
 SHARED_LOCKED_FIRST_BAN_MIN_SAMPLE = 10
 SHARED_LOCKED_FIRST_BAN_RATE = 0.75
 
-_VETO_MAP_PATTERN = "|".join(re.escape(map_name) for map_name in SUPPORTED_VETO_MAPS)
 ACTION_RE = re.compile(
     r"^\s*\d+\.\s*(?P<team>.*?)\s+(?P<action>removed|picked)\s+"
-    rf"(?P<map>{_VETO_MAP_PATTERN})\s*$",
+    r"(?P<map>.+?)\s*$",
     re.IGNORECASE,
 )
 _RAW_MATCH_CACHE = {"signature": None, "matches": None}

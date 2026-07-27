@@ -5,11 +5,19 @@ from evaluation.veto_backtest import (
     FeatureRow,
     ModelSpec,
     VetoHistory,
+    infer_event_era_hints,
     normalize_name,
     parse_veto_match,
     predict_probabilities,
 )
-from processing.map_pool import ACTIVE_MAP_POOL, MAP_POOL_CHANGE_AT, PREVIOUS_MAP_POOL, canonical_map_name
+from processing.map_pool import (
+    ACTIVE_MAP_POOL,
+    MAP_POOL_CHANGE_AT,
+    MAP_POOL_ERAS,
+    PREVIOUS_MAP_POOL,
+    canonical_map_name,
+    map_image_filename,
+)
 
 
 def test_active_pool_and_common_aliases_include_cache_not_overpass():
@@ -21,6 +29,8 @@ def test_active_pool_and_common_aliases_include_cache_not_overpass():
     assert canonical_map_name("cch") == "Cache"
     assert canonical_map_name("mrg") == "Mirage"
     assert canonical_map_name("d2") == "Dust2"
+    assert map_image_filename("cch") == "de_cache.png"
+    assert MAP_POOL_ERAS[-1].maps == ACTIVE_MAP_POOL
 
 
 def test_parse_veto_match_uses_cache_pool_from_change_date():
@@ -47,6 +57,75 @@ def test_parse_veto_match_uses_cache_pool_from_change_date():
     assert match.actions[-1].action_type == "decider"
     assert match.actions[-1].map_name == "Cache"
     assert match.actions[-1].era_name == "cache_active_duty"
+
+
+def test_veto_evidence_overrides_date_for_an_event_still_using_overpass():
+    record = {
+        "url": "https://www.hltv.org/matches/5/a-vs-b",
+        "date": "2026-07-20",
+        "event": "Long Running League",
+        "format": "bo1",
+        "team1": "Team A",
+        "team2": "Team B",
+        "hltv_vetoes": [
+            "1. Team A removed Mirage",
+            "2. Team A removed Anubis",
+            "3. Team B removed Nuke",
+            "4. Team B removed Ancient",
+            "5. Team B removed Inferno",
+            "6. Team A removed Dust2",
+            "7. Overpass was left over",
+        ],
+    }
+
+    match = parse_veto_match(record, DEFAULT_ERAS)
+
+    assert match is not None
+    assert match.actions[-1].map_name == "Overpass"
+    assert match.actions[-1].era_name == "overpass_active_duty"
+
+
+def test_event_evidence_resolves_an_ambiguous_veto_before_date_fallback():
+    distinctive = {
+        "date": "2026-07-20",
+        "event": "Long Running League",
+        "hltv_vetoes": ["1. Team A removed Overpass"],
+    }
+    ambiguous = {
+        "url": "https://www.hltv.org/matches/6/a-vs-b",
+        "date": "2026-07-21",
+        "event": "Long Running League",
+        "format": "bo3",
+        "team1": "Team A",
+        "team2": "Team B",
+        "hltv_vetoes": ["1. Team A removed Mirage"],
+    }
+    hints = infer_event_era_hints([distinctive, ambiguous], DEFAULT_ERAS)
+
+    match = parse_veto_match(ambiguous, DEFAULT_ERAS, hints)
+
+    assert hints["long running league"] == "overpass_active_duty"
+    assert match is not None
+    assert match.actions[0].era_name == "overpass_active_duty"
+    assert "Overpass" in match.actions[0].pool_before
+    assert "Cache" not in match.actions[0].pool_before
+
+
+def test_explicit_match_era_takes_priority_over_veto_and_date():
+    record = {
+        "url": "https://www.hltv.org/matches/7/a-vs-b",
+        "date": "2026-07-21",
+        "map_pool_era": "overpass_active_duty",
+        "format": "bo3",
+        "team1": "Team A",
+        "team2": "Team B",
+        "hltv_vetoes": ["1. Team A removed Mirage"],
+    }
+
+    match = parse_veto_match(record, DEFAULT_ERAS)
+
+    assert match is not None
+    assert match.actions[0].era_name == "overpass_active_duty"
 
 
 def test_parse_veto_match_tracks_bo1_team_ban_slots():

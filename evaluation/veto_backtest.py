@@ -11,46 +11,29 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
+import sys
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-try:
-    from config import HLTV_MATCHES_FILE
-    from model.veto_sim import MAP_POOL
-    from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
-    from processing.map_pool import (
-        ACTIVE_MAP_POOL,
-        MAP_POOL_CHANGE_AT,
-        PREVIOUS_MAP_POOL,
-        SUPPORTED_VETO_MAPS,
-        canonical_map_name,
-    )
-except ImportError:  # pragma: no cover - keeps the module runnable from odd cwd setups.
-    HLTV_MATCHES_FILE = Path("data/raw/hltv_matches.json")
-    ACTIVE_MAP_POOL = ("Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Cache")
-    PREVIOUS_MAP_POOL = ("Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass")
-    SUPPORTED_VETO_MAPS = (*PREVIOUS_MAP_POOL, "Cache")
-    MAP_POOL_CHANGE_AT = datetime(2026, 7, 8, tzinfo=timezone.utc)
-    MAP_POOL = list(ACTIVE_MAP_POOL)
-    from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
-
-    def canonical_map_name(raw_map: object) -> str | None:
-        key = str(raw_map or "").strip().lower()
-        return {map_name.lower(): map_name for map_name in SUPPORTED_VETO_MAPS}.get(key)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import HLTV_MATCHES_FILE
+from model.veto_sim import MAP_POOL
+from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
+from processing.map_pool import canonical_map_name, map_pool_eras_with_bounds
 
 
-_VETO_MAP_PATTERN = "|".join(re.escape(map_name) for map_name in SUPPORTED_VETO_MAPS)
 ACTION_RE = re.compile(
     r"^\s*(?P<index>\d+)\.\s*(?P<team>.*?)\s+(?P<action>removed|picked)\s+"
-    rf"(?P<map>{_VETO_MAP_PATTERN})\s*$",
+    r"(?P<map>.+?)\s*$",
     re.IGNORECASE,
 )
 DECIDER_RE = re.compile(
-    rf"^\s*(?P<index>\d+)\.\s*(?P<map>{_VETO_MAP_PATTERN})"
+    r"^\s*(?P<index>\d+)\.\s*(?P<map>.+?)"
     r"\s+was\s+left\s+over\s*$",
     re.IGNORECASE,
 )
@@ -62,6 +45,7 @@ class MapPoolEra:
     start: datetime | None
     end: datetime | None
     maps: tuple[str, ...]
+    events: tuple[str, ...] = ()
 
     def contains(self, date: datetime) -> bool:
         if self.start and date < self.start:
@@ -116,19 +100,9 @@ class ModelSpec:
     weights: dict[str, float]
 
 
-DEFAULT_ERAS = (
-    MapPoolEra(
-        name="overpass_active_duty",
-        start=None,
-        end=MAP_POOL_CHANGE_AT,
-        maps=tuple(PREVIOUS_MAP_POOL),
-    ),
-    MapPoolEra(
-        name="cache_active_duty",
-        start=MAP_POOL_CHANGE_AT,
-        end=None,
-        maps=tuple(ACTIVE_MAP_POOL),
-    ),
+DEFAULT_ERAS = tuple(
+    MapPoolEra(name=era.name, start=era.effective_from, end=end, maps=era.maps)
+    for era, end in map_pool_eras_with_bounds()
 )
 
 PRESET_MODELS = [
@@ -247,6 +221,7 @@ def load_map_pool_eras(path: Path | None) -> tuple[MapPoolEra, ...]:
                 start=parse_optional_date(item.get("start")),
                 end=parse_optional_date(item.get("end")),
                 maps=maps,
+                events=tuple(str(event).strip() for event in item.get("events", []) if str(event).strip()),
             )
         )
     if not eras:
@@ -255,10 +230,109 @@ def load_map_pool_eras(path: Path | None) -> tuple[MapPoolEra, ...]:
 
 
 def era_for_date(date: datetime, eras: Iterable[MapPoolEra]) -> MapPoolEra | None:
-    for era in eras:
-        if era.contains(date):
-            return era
+    matches = [era for era in eras if era.contains(date)]
+    if not matches:
+        return None
+    return max(matches, key=lambda era: era.start or datetime.min.replace(tzinfo=timezone.utc))
+
+
+def event_key(record: dict) -> str:
+    return str(record.get("event") or "").strip().casefold()
+
+
+def era_named(name: object, eras: Iterable[MapPoolEra]) -> MapPoolEra | None:
+    key = str(name or "").strip().casefold()
+    return next((era for era in eras if era.name.casefold() == key), None)
+
+
+def veto_maps_for_record(record: dict) -> frozenset[str]:
+    """Extracts all registered map names that appear in an HLTV veto."""
+    maps = set()
+    for line in record.get("hltv_vetoes") or []:
+        text = str(line).strip()
+        match = ACTION_RE.match(text) or DECIDER_RE.match(text)
+        if not match:
+            continue
+        map_name = canonical_map(match.group("map"))
+        if map_name:
+            maps.add(map_name)
+    return frozenset(maps)
+
+
+def era_from_veto(record: dict, eras: tuple[MapPoolEra, ...]) -> MapPoolEra | None:
+    """Returns an era when the maps named in a veto identify one pool."""
+    observed = veto_maps_for_record(record)
+    if not observed:
+        return None
+    candidates = [era for era in eras if observed.issubset(era.maps)]
+    if len(candidates) == 1:
+        return candidates[0]
+
+    distinct_pools = {frozenset(era.maps) for era in candidates}
+    if len(distinct_pools) != 1:
+        return None
+
+    date = parse_date(record.get("date"))
+    return era_for_date(date, candidates) if date else candidates[-1]
+
+
+def explicit_era_for_record(record: dict, eras: tuple[MapPoolEra, ...]) -> MapPoolEra | None:
+    """Resolves match metadata or configured event overrides before inference."""
+    explicit_name = record.get("map_pool_era")
+    if explicit_name:
+        return era_named(explicit_name, eras)
+
+    explicit_pool = record.get("map_pool")
+    if isinstance(explicit_pool, (list, tuple)):
+        maps = tuple(canonical_map(map_name) or str(map_name).strip() for map_name in explicit_pool)
+        exact = next((era for era in eras if frozenset(era.maps) == frozenset(maps)), None)
+        if exact:
+            return exact
+        if maps:
+            return MapPoolEra(name="explicit_match_pool", start=None, end=None, maps=maps)
+
+    key = event_key(record)
+    if key:
+        for era in eras:
+            if key in {event.casefold() for event in era.events}:
+                return era
     return None
+
+
+def infer_event_era_hints(records: Iterable[dict], eras: tuple[MapPoolEra, ...]) -> dict[str, str]:
+    """Learns unambiguous event pools from matches with distinctive vetoes."""
+    evidence: dict[str, set[str]] = defaultdict(set)
+    for record in records:
+        key = event_key(record)
+        if not key:
+            continue
+        era = explicit_era_for_record(record, eras) or era_from_veto(record, eras)
+        if era and era_named(era.name, eras):
+            evidence[key].add(era.name)
+    return {key: next(iter(names)) for key, names in evidence.items() if len(names) == 1}
+
+
+def resolve_match_era(
+    record: dict,
+    date: datetime,
+    eras: tuple[MapPoolEra, ...],
+    event_era_hints: dict[str, str] | None = None,
+) -> MapPoolEra | None:
+    """Resolves the actual match pool, using the effective date only as fallback."""
+    explicit = explicit_era_for_record(record, eras)
+    if explicit:
+        return explicit
+
+    inferred = era_from_veto(record, eras)
+    if inferred:
+        return inferred
+
+    hint_name = (event_era_hints or {}).get(event_key(record))
+    hinted = era_named(hint_name, eras)
+    if hinted:
+        return hinted
+
+    return era_for_date(date, eras)
 
 
 def match_id_from_record(record: dict) -> str:
@@ -268,14 +342,18 @@ def match_id_from_record(record: dict) -> str:
     return url
 
 
-def parse_veto_match(record: dict, eras: tuple[MapPoolEra, ...]) -> MatchVeto | None:
+def parse_veto_match(
+    record: dict,
+    eras: tuple[MapPoolEra, ...],
+    event_era_hints: dict[str, str] | None = None,
+) -> MatchVeto | None:
     if get_invalid_veto_exclusion_reason(record):
         return None
 
     date = parse_date(record.get("date"))
     if date is None:
         return None
-    era = era_for_date(date, eras)
+    era = resolve_match_era(record, date, eras, event_era_hints)
     if era is None:
         return None
 
@@ -791,7 +869,8 @@ def build_grid_models() -> list[ModelSpec]:
 
 def load_matches(raw_path: Path, eras: tuple[MapPoolEra, ...]) -> list[MatchVeto]:
     payload = json.loads(raw_path.read_text(encoding="utf-8"))
-    matches = [parse_veto_match(record, eras) for record in payload]
+    event_era_hints = infer_event_era_hints(payload, eras)
+    matches = [parse_veto_match(record, eras, event_era_hints) for record in payload]
     return sorted((match for match in matches if match is not None), key=lambda match: (match.date, match.match_id))
 
 

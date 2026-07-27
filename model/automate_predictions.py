@@ -16,6 +16,7 @@ from model.forfeit import ForfeitPredictorContext, polymarket_fair_probs, predic
 from ingestion.hltv_client import HLTVClient
 from evaluation.shadow_ledger import record_predictions as record_shadow_bets
 from processing.clean import get_roster_status_flags
+from processing.map_pool import map_image_filename
 from config import MC_ITERATIONS, MC_THRESHOLD
 
 logging.basicConfig(
@@ -56,19 +57,6 @@ try:
 except FileNotFoundError as e:
     logger.error(f"Failed to load templates: {e}")
     sys.exit(1)
-
-MAP_FILENAME_MAP = {
-    "ancient": "de_ancient.png",
-    "anubis": "de_anubis.png",
-    "cache": "de_cache.png",
-    "dust2": "de_dust2.png",
-    "inferno": "de_inferno.png",
-    "mirage": "de_mirage.png",
-    "nuke": "de_nuke.png",
-    "overpass": "de_overpass.png",
-    "train": "de_train.png",
-    "vertigo": "de_vertigo.png"
-}
 
 FORFEIT_WARNING_THRESHOLD = 0.05
 
@@ -393,8 +381,9 @@ def main():
 
             map_thumbs = ""
             for mname in map_names:
-                m_key = mname.lower().replace(" ", "")
-                fname = MAP_FILENAME_MAP.get(m_key, "placeholder.png")
+                fname = map_image_filename(mname)
+                if not fname:
+                    continue
                 project_root = os.path.dirname(os.path.dirname(TEMPLATE_DIR))
                 asset_path = os.path.join(project_root, "static", "maps", fname)
                 if os.path.exists(asset_path):

@@ -91,7 +91,7 @@ source venv/bin/activate
 
 Optional map images can be placed in `static/maps/` using filenames such as `de_mirage.png`, `de_nuke.png`, and `de_inferno.png`. These images are ignored by git.
 
-The active map pool is Mirage, Ancient, Dust2, Nuke, Inferno, Anubis, and Cache. Cache replaced Overpass on July 8, 2026. Historical Overpass vetoes remain parseable, and the veto backtest automatically selects the correct pool on either side of that date.
+The active map pool is Mirage, Ancient, Dust2, Nuke, Inferno, Anubis, and Cache. Cache replaced Overpass on July 8, 2026. Map metadata and ordered pool eras live in `processing/map_pool.py`; the latest era drives current simulations and dashboard options. Historical backtests resolve each match separately from an explicit override, its veto maps, other unambiguous matches at the same event, and finally the effective date. This allows tournaments to continue using an older pool after an official rotation.
 
 ## Usage
 
@@ -274,18 +274,27 @@ Export all model and split results:
 python -m evaluation.veto_backtest --grid-search --output reports/veto_backtest.csv
 ```
 
-The script includes built-in Overpass and Cache eras separated at July 8, 2026. A custom era JSON can still be supplied:
+The script includes built-in Overpass and Cache eras, with July 8, 2026 used only as a fallback when match and event evidence cannot identify the pool. A custom era JSON can still be supplied. Its optional `events` list explicitly assigns named tournaments to an era:
 
 ```json
 [
   {
-    "name": "post_next_major",
-    "start": "2026-07-01",
+    "name": "overpass_active_duty",
+    "start": null,
+    "end": "2026-07-08",
+    "maps": ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass"],
+    "events": ["Example Tournament Season 2"]
+  },
+  {
+    "name": "cache_active_duty",
+    "start": "2026-07-08",
     "end": null,
-    "maps": ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "NewMap"]
+    "maps": ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Cache"]
   }
 ]
 ```
+
+Custom JSON replaces the built-in era list for that run, so include every era needed by the input data. A genuinely new map must first be added to `MAP_DEFINITIONS` so its canonical name, aliases, BO1 abbreviation, and optional report image are known.
 
 ```bash
 python -m evaluation.veto_backtest --map-pool-eras path/to/map_pool_eras.json
