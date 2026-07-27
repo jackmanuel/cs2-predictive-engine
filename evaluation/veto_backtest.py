@@ -22,19 +22,35 @@ try:
     from config import HLTV_MATCHES_FILE
     from model.veto_sim import MAP_POOL
     from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
+    from processing.map_pool import (
+        ACTIVE_MAP_POOL,
+        MAP_POOL_CHANGE_AT,
+        PREVIOUS_MAP_POOL,
+        SUPPORTED_VETO_MAPS,
+        canonical_map_name,
+    )
 except ImportError:  # pragma: no cover - keeps the module runnable from odd cwd setups.
     HLTV_MATCHES_FILE = Path("data/raw/hltv_matches.json")
-    MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass"]
+    ACTIVE_MAP_POOL = ("Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Cache")
+    PREVIOUS_MAP_POOL = ("Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass")
+    SUPPORTED_VETO_MAPS = (*PREVIOUS_MAP_POOL, "Cache")
+    MAP_POOL_CHANGE_AT = datetime(2026, 7, 8, tzinfo=timezone.utc)
+    MAP_POOL = list(ACTIVE_MAP_POOL)
     from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
 
+    def canonical_map_name(raw_map: object) -> str | None:
+        key = str(raw_map or "").strip().lower()
+        return {map_name.lower(): map_name for map_name in SUPPORTED_VETO_MAPS}.get(key)
 
+
+_VETO_MAP_PATTERN = "|".join(re.escape(map_name) for map_name in SUPPORTED_VETO_MAPS)
 ACTION_RE = re.compile(
     r"^\s*(?P<index>\d+)\.\s*(?P<team>.*?)\s+(?P<action>removed|picked)\s+"
-    r"(?P<map>Mirage|Ancient|Dust2|Nuke|Inferno|Anubis|Overpass)\s*$",
+    rf"(?P<map>{_VETO_MAP_PATTERN})\s*$",
     re.IGNORECASE,
 )
 DECIDER_RE = re.compile(
-    r"^\s*(?P<index>\d+)\.\s*(?P<map>Mirage|Ancient|Dust2|Nuke|Inferno|Anubis|Overpass)"
+    rf"^\s*(?P<index>\d+)\.\s*(?P<map>{_VETO_MAP_PATTERN})"
     r"\s+was\s+left\s+over\s*$",
     re.IGNORECASE,
 )
@@ -102,10 +118,16 @@ class ModelSpec:
 
 DEFAULT_ERAS = (
     MapPoolEra(
-        name="current",
+        name="overpass_active_duty",
         start=None,
+        end=MAP_POOL_CHANGE_AT,
+        maps=tuple(PREVIOUS_MAP_POOL),
+    ),
+    MapPoolEra(
+        name="cache_active_duty",
+        start=MAP_POOL_CHANGE_AT,
         end=None,
-        maps=tuple(MAP_POOL),
+        maps=tuple(ACTIVE_MAP_POOL),
     ),
 )
 
@@ -208,10 +230,7 @@ def parse_optional_date(raw_date: str | None) -> datetime | None:
 
 
 def canonical_map(raw_map: str) -> str | None:
-    for map_name in MAP_POOL:
-        if map_name.lower() == str(raw_map).strip().lower():
-            return map_name
-    return None
+    return canonical_map_name(raw_map)
 
 
 def load_map_pool_eras(path: Path | None) -> tuple[MapPoolEra, ...]:

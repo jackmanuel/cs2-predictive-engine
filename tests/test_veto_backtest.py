@@ -9,6 +9,44 @@ from evaluation.veto_backtest import (
     parse_veto_match,
     predict_probabilities,
 )
+from processing.map_pool import ACTIVE_MAP_POOL, MAP_POOL_CHANGE_AT, PREVIOUS_MAP_POOL, canonical_map_name
+
+
+def test_active_pool_and_common_aliases_include_cache_not_overpass():
+    assert tuple(ACTIVE_MAP_POOL) == (
+        "Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Cache"
+    )
+    assert "Overpass" in PREVIOUS_MAP_POOL
+    assert "Overpass" not in ACTIVE_MAP_POOL
+    assert canonical_map_name("cch") == "Cache"
+    assert canonical_map_name("mrg") == "Mirage"
+    assert canonical_map_name("d2") == "Dust2"
+
+
+def test_parse_veto_match_uses_cache_pool_from_change_date():
+    record = {
+        "url": "https://www.hltv.org/matches/4/a-vs-b",
+        "date": MAP_POOL_CHANGE_AT.isoformat(),
+        "format": "bo1",
+        "team1": "Team A",
+        "team2": "Team B",
+        "hltv_vetoes": [
+            "1. Team A removed Mirage",
+            "2. Team A removed Anubis",
+            "3. Team B removed Nuke",
+            "4. Team B removed Ancient",
+            "5. Team B removed Inferno",
+            "6. Team A removed Dust2",
+            "7. Cache was left over",
+        ],
+    }
+
+    match = parse_veto_match(record, DEFAULT_ERAS)
+
+    assert match is not None
+    assert match.actions[-1].action_type == "decider"
+    assert match.actions[-1].map_name == "Cache"
+    assert match.actions[-1].era_name == "cache_active_duty"
 
 
 def test_parse_veto_match_tracks_bo1_team_ban_slots():

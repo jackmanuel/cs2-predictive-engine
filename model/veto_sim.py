@@ -24,12 +24,14 @@ except ImportError:
     MC_ITERATIONS = 10000
 
 from processing.clean import get_invalid_veto_exclusion_reason, normalize_format, normalize_name
+from processing.map_pool import ACTIVE_MAP_POOL, SUPPORTED_VETO_MAPS, canonical_map_name
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-# Standard Active Duty Pool for CS2 (January 2026 onwards)
-MAP_POOL = ["Mirage", "Ancient", "Dust2", "Nuke", "Inferno", "Anubis", "Overpass"]
+# Standard Active Duty Pool for CS2 (July 8, 2026 onwards).
+# This remains a list because simulation callers copy and mutate it.
+MAP_POOL = list(ACTIVE_MAP_POOL)
 
 SIMULATIONS = MC_ITERATIONS
 TOP_SEQUENCES_DISPLAY = 5
@@ -42,9 +44,10 @@ LOCKED_FIRST_BAN_PROBABILITY = 0.90
 SHARED_LOCKED_FIRST_BAN_MIN_SAMPLE = 10
 SHARED_LOCKED_FIRST_BAN_RATE = 0.75
 
+_VETO_MAP_PATTERN = "|".join(re.escape(map_name) for map_name in SUPPORTED_VETO_MAPS)
 ACTION_RE = re.compile(
     r"^\s*\d+\.\s*(?P<team>.*?)\s+(?P<action>removed|picked)\s+"
-    r"(?P<map>Mirage|Ancient|Dust2|Nuke|Inferno|Anubis|Overpass)\s*$",
+    rf"(?P<map>{_VETO_MAP_PATTERN})\s*$",
     re.IGNORECASE,
 )
 _RAW_MATCH_CACHE = {"signature": None, "matches": None}
@@ -74,10 +77,7 @@ def parse_date(raw_date):
     return parsed.astimezone(timezone.utc)
 
 def canonical_map(raw_map: str) -> str | None:
-    for map_name in MAP_POOL:
-        if map_name.lower() == str(raw_map or "").strip().lower():
-            return map_name
-    return None
+    return canonical_map_name(raw_map)
 
 def empty_ban_history() -> dict:
     return {
@@ -150,6 +150,10 @@ def load_team_ban_history(team_id: str, cutoff=None, raw_path: Path = HLTV_MATCH
                 continue
 
             team_ban_index += 1
+            # Preserve historical slot numbers without making removed maps
+            # candidates in the current Active Duty simulation.
+            if map_name not in MAP_POOL:
+                continue
             slot_key = (match_format, team_ban_index)
             history["slot_counts"][slot_key][map_name] += 1
             history["slot_totals"][slot_key] += 1

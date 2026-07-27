@@ -9,6 +9,7 @@ import pandas as pd
 # Ensure project root is in path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROCESSED_DIR, DEFAULT_TEAM_RANK, HLTV_MATCHES_FILE
+from processing.map_pool import BO1_MAP_ABBREVIATIONS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -127,8 +128,7 @@ def normalize_format(fmt: str) -> str:
     
     # Map abbreviations for BO1s on HLTV results page
     # Covers current active duty and common pool maps
-    map_abbreviations = ["mrg", "anc", "inf", "nuke", "anb", "d2", "vtg", "ovp", "trn", "cbl", "cch"]
-    if "bo1" in fmt or "best of 1" in fmt or fmt in map_abbreviations:
+    if "bo1" in fmt or "best of 1" in fmt or fmt in BO1_MAP_ABBREVIATIONS:
         return "bo1"
         
     return "unknown"

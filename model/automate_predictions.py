@@ -60,6 +60,7 @@ except FileNotFoundError as e:
 MAP_FILENAME_MAP = {
     "ancient": "de_ancient.png",
     "anubis": "de_anubis.png",
+    "cache": "de_cache.png",
     "dust2": "de_dust2.png",
     "inferno": "de_inferno.png",
     "mirage": "de_mirage.png",
@@ -394,8 +395,11 @@ def main():
             for mname in map_names:
                 m_key = mname.lower().replace(" ", "")
                 fname = MAP_FILENAME_MAP.get(m_key, "placeholder.png")
-                path = f"../static/maps/{fname}"
-                map_thumbs += f'<img src="{path}" class="map-thumb" alt="{mname}" title="{mname}">'
+                project_root = os.path.dirname(os.path.dirname(TEMPLATE_DIR))
+                asset_path = os.path.join(project_root, "static", "maps", fname)
+                if os.path.exists(asset_path):
+                    path = f"../static/maps/{fname}"
+                    map_thumbs += f'<img src="{path}" class="map-thumb" alt="{mname}" title="{mname}">'
 
             veto_items += simple_format(VETO_ITEM_TEMPLATE,
                 s_prob_str=f"{s_prob:5.1f}%",

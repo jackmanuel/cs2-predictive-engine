@@ -76,7 +76,36 @@ def test_ban_weights_use_slot_and_eventual_ban_history():
 
     assert first_slot_weights["Mirage"] > first_slot_weights["Anubis"]
     assert second_slot_weights["Anubis"] > second_slot_weights["Mirage"]
-    assert second_slot_weights["Anubis"] > second_slot_weights["Overpass"]
+    assert second_slot_weights["Anubis"] > second_slot_weights["Cache"]
+
+
+def test_historical_overpass_ban_preserves_slots_but_is_not_an_active_candidate(tmp_path):
+    raw_path = tmp_path / "hltv_matches.json"
+    raw_path.write_text(
+        json.dumps(
+            [
+                {
+                    "url": "https://www.hltv.org/matches/3/a-vs-b",
+                    "date": "2026-07-01",
+                    "format": "bo3",
+                    "team1": "Team A",
+                    "team2": "Team B",
+                    "hltv_vetoes": [
+                        "1. Team A removed Overpass",
+                        "2. Team B removed Nuke",
+                        "3. Team A removed Mirage",
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    history = veto_sim.load_team_ban_history("TEAM A", raw_path=raw_path)
+
+    assert "Overpass" not in veto_sim.MAP_POOL
+    assert history["slot_counts"][("bo3", 2)]["Mirage"] == 1
+    assert history["team_ban_counts"]["Overpass"] == 0
 
 
 def test_high_sample_first_ban_history_locks_permaban():

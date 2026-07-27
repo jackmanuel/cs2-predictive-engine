@@ -868,6 +868,7 @@ def playground_options_payload():
 
 def normalize_map_names(raw_maps):
     from model.veto_sim import MAP_POOL
+    from processing.map_pool import canonical_map_name
 
     if isinstance(raw_maps, str):
         candidates = [part.strip() for part in re.split(r"[\n,]+", raw_maps) if part.strip()]
@@ -876,13 +877,12 @@ def normalize_map_names(raw_maps):
     else:
         candidates = []
 
-    canonical = {name.lower(): name for name in MAP_POOL}
     maps = []
     unknown = []
     for candidate in candidates:
-        key = candidate.lower()
-        if key in canonical:
-            maps.append(canonical[key])
+        canonical = canonical_map_name(candidate)
+        if canonical in MAP_POOL:
+            maps.append(canonical)
         else:
             unknown.append(candidate)
     return maps, unknown

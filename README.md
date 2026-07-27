@@ -91,6 +91,8 @@ source venv/bin/activate
 
 Optional map images can be placed in `static/maps/` using filenames such as `de_mirage.png`, `de_nuke.png`, and `de_inferno.png`. These images are ignored by git.
 
+The active map pool is Mirage, Ancient, Dust2, Nuke, Inferno, Anubis, and Cache. Cache replaced Overpass on July 8, 2026. Historical Overpass vetoes remain parseable, and the veto backtest automatically selects the correct pool on either side of that date.
+
 ## Usage
 
 ### 0. Local Dashboard
@@ -272,7 +274,7 @@ Export all model and split results:
 python -m evaluation.veto_backtest --grid-search --output reports/veto_backtest.csv
 ```
 
-The script has a map-pool era hook for future active-duty changes. The current local corpus is treated as one era by default, but an era JSON can be supplied later:
+The script includes built-in Overpass and Cache eras separated at July 8, 2026. A custom era JSON can still be supplied:
 
 ```json
 [
