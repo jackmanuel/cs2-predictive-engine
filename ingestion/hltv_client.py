@@ -363,21 +363,22 @@ class HLTVClient:
             
             # The results are grouped by date sublists
             all_sublists = soup.find_all('div', class_='results-sublist')
+            if not all_sublists and not soup.select_one(".results-all, .pagination-data"):
+                raise RuntimeError(f"Unrecognizable HLTV results listing at {url}")
+
+            page_start = len(results)
             for sublist in all_sublists:
                 # The date is in a standard-headline
                 date_el = sublist.find('div', class_='standard-headline')
-                if not date_el:
-                    continue
-                
-                raw_date = date_el.text.replace("Results for ", "").replace("Matches for ", "").strip()
-                clean_date = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', raw_date)
-                
-                try:
-                    dt_obj = time.strptime(clean_date, "%B %d %Y")
-                    match_date_str = time.strftime("%Y-%m-%d", dt_obj)
-                except Exception as e:
-                    logger.warning(f"Failed to parse HLTV date '{raw_date}': {e}")
-                    match_date_str = None
+                match_date_str = None
+                if date_el:
+                    raw_date = date_el.text.replace("Results for ", "").replace("Matches for ", "").strip()
+                    clean_date = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', raw_date)
+                    try:
+                        dt_obj = time.strptime(clean_date, "%B %d %Y")
+                        match_date_str = time.strftime("%Y-%m-%d", dt_obj)
+                    except ValueError as e:
+                        logger.warning(f"Failed to parse HLTV date '{raw_date}': {e}")
                 
                 # Extract matches for this date
                 result_links = sublist.find_all('a', class_='a-reset')
@@ -405,6 +406,11 @@ class HLTVClient:
                             'date': match_date_str
                         })
                     
+            if all_sublists and len(results) == page_start:
+                raise RuntimeError(f"No match links found in HLTV results groups at {url}")
+            if len(results) == page_start:
+                break
+
         return results
 
     def fetch_match_details(self, match_url: str) -> Dict:

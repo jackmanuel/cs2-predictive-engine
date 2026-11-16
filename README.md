@@ -125,6 +125,12 @@ Limit the scrape to a fixed number of new matches:
 python -m ingestion.fetch_hltv_matches --matches 20
 ```
 
+#### Filter by team
+
+Pass `--team-whitelist PATH` with a UTF-8 CSV containing a `team` column. By default, a match qualifies if at least one team is listed. Use `--team-match both` to require both teams. Names must match after normalizing case and whitespace.
+
+Add `--dry-run` to preview the selected matches using HLTV results listings without fetching match details or writing data.
+
 ### 2. Build Or Refresh The Training Artefacts
 
 Run the full pipeline after local match data exists. It writes cleaned maps, engineered features, model checkpoints, a scaler, `data/training_state.json`, and a model-version registry entry.
