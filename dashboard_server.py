@@ -1569,35 +1569,99 @@ def bracket_simulation_payload(request):
     }, HTTPStatus.OK
 
 
+def _liquipedia_round_one_seeds(soup, db_names):
+    def normalize(name):
+        words = re.sub(r"[^A-Z0-9\s]", "", name.upper()).split()
+        noise = {"TEAM", "ESPORTS", "GAMING", "CLUB", "SQUAD", "GAMERS", "ORGANIZATION", "CLAN"}
+        return "".join(word for word in words if word not in noise)
+
+    db_by_name = {normalize(name): name for name in sorted(db_names)}
+    aliases = {
+        "100T": "100 Thieves",
+        "CW": "Chinggis Warriors",
+        "EF": "Eternal Fire",
+        "FLY": "FlyQuest",
+        "GOSH": "BC.Game",
+        "LVG": "Lynn Vision",
+        "NIP": "Ninjas in Pyjamas",
+        "PV": "PARIVISION",
+    }
+
+    def resolve_team(cell):
+        # The matchlist often displays an abbreviation while the team link has the full name.
+        link = cell.select_one(".team-template-text a[title], .team-template-image-icon a[title]")
+        link = link or cell.select_one("a[title]")
+        text = cell.select_one(".team-template-text") or cell
+        icon = cell.select_one(".team-template-team-icon[data-highlightingclass]")
+        labels = [
+            link.get("title", "") if link else "",
+            cell.get("aria-label", ""),
+            icon["data-highlightingclass"] if icon else "",
+            text.get_text(" ", strip=True),
+        ]
+
+        candidates = [label.strip() for label in labels if normalize(label) not in {"", "TBD", "BYE"}]
+        for label in candidates:
+            if name := db_by_name.get(normalize(label)):
+                return name
+        for label in candidates:
+            if name := aliases.get(normalize(label)):
+                return db_by_name.get(normalize(name), name)
+        return candidates[0] if candidates else ""
+
+    matchlist = next(
+        (
+            table for table in soup.select(".brkts-matchlist")
+            if (title := table.select_one(".brkts-matchlist-title"))
+            and re.match(r"^Round\s+1\s+Matches\b", title.get_text(" ", strip=True), re.IGNORECASE)
+        ),
+        None,
+    )
+    if matchlist:
+        opening_matches = [
+            row.select(".brkts-matchlist-opponent")
+            for row in matchlist.select(".brkts-matchlist-match")
+        ]
+        if len(opening_matches) != 8 or any(len(pair) != 2 for pair in opening_matches):
+            raise ValueError("The Liquipedia Round 1 match list must contain eight two-team matches.")
+    else:
+        swiss_table = soup.select_one("table.swisstable")
+        if swiss_table is None:
+            raise ValueError("Could not find the Round 1 match list or Swiss standings on the Liquipedia page.")
+
+        team_rows = [
+            row.find_all(["th", "td"], recursive=False)
+            for row in swiss_table.find_all("tr")[1:]
+        ]
+        team_rows = [cells for cells in team_rows if len(cells) >= 7]
+        if len(team_rows) != 16:
+            raise ValueError(f"Found {len(team_rows)} teams in the Swiss table. Only 16-team Swiss stages are supported.")
+        opening_matches = [(cells[1], cells[6]) for cells in team_rows[:8]]
+
+    # The simulator pairs seed 1 with 9, seed 2 with 10, and so on.
+    pairs = [(resolve_team(left), resolve_team(right)) for left, right in opening_matches]
+    seeds = [left for left, _ in pairs] + [right for _, right in pairs]
+    if any(not name for name in seeds):
+        raise ValueError("Could not identify all 16 teams in the Liquipedia Round 1 matchups.")
+    if len({name.casefold() for name in seeds}) != 16:
+        raise ValueError("The Liquipedia Round 1 matchups must contain 16 distinct teams.")
+    return seeds
+
+
 def scrape_liquipedia_event_teams(event_url: str):
-    """
-    Parses/scrapes Liquipedia event overview and standings pages to verify
-    the 16-team Swiss stage format and extract initial opening round seed pairings.
-    Matches names dynamically against database names.
-    """
+    """Fetch a Liquipedia event page and import its 16-team Swiss opening round."""
     if "liquipedia.net/counterstrike/" not in event_url:
         raise ValueError("Invalid Liquipedia event URL format. Please provide a valid Counter-Strike Liquipedia link.")
-    
+
     from bs4 import BeautifulSoup
     from ingestion.hltv_client import HLTVClient
-    
-    def clean_noise_words(name: str) -> str:
-        if not name:
-            return ""
-        name = name.upper()
-        # Remove punctuation
-        name = re.sub(r"[^A-Z0-9\s]", "", name)
-        # Tokenize and remove common noise words
-        noise = {"TEAM", "ESPORTS", "GAMING", "CLUB", "SQUAD", "GAMERS", "ORGANIZATION", "CLAN"}
-        tokens = [t for t in name.split() if t not in noise]
-        return "".join(tokens)
-        
+
     client = HLTVClient()
     try:
-        # Load unique database team names to perform robust name translation
         db_names = set()
         if CLEAN_MAPS_PATH.exists():
             import pandas as pd
+
             try:
                 df = pd.read_parquet(CLEAN_MAPS_PATH)
                 for col in ("team_a_name", "team_b_name"):
@@ -1605,121 +1669,14 @@ def scrape_liquipedia_event_teams(event_url: str):
                         db_names.update(str(n) for n in df[col].dropna().unique())
             except Exception as e:
                 print(f"[Liquipedia Scraper] Warning: could not load database team names: {e}")
-                
+
         client.start()
-        
         print(f"[Liquipedia Scraper] Navigating to: {event_url}")
         client.driver.get(event_url)
-        
-        # Wait for page load
-        import time
         time.sleep(5)
-        
-        html = client.driver.page_source
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # Find Swiss standings table
-        swiss_table = soup.find("table", class_="swisstable")
-        if not swiss_table:
-            # Fallback to any table with class 'swisstable' or first wikitable with swiss structure
-            for table in soup.find_all("table"):
-                if "swisstable" in table.get("class", []):
-                    swiss_table = table
-                    break
-            
-        if not swiss_table:
-            raise ValueError("Could not find the Swiss standings table (class 'swisstable') on the Liquipedia page.")
-            
-        rows = swiss_table.find_all("tr")
-        team_rows = []
-        for row in rows[1:]:
-            cells = row.find_all(["th", "td"])
-            if len(cells) >= 7:
-                team_rows.append(cells)
-                
-        if len(team_rows) != 16:
-            raise ValueError(f"Found {len(team_rows)} teams in the Swiss table. Only 16-team Swiss stages are supported.")
-            
-        parsed_teams = []
-        for cells in team_rows:
-            team_cell = cells[1]
-            team_name = ""
-            
-            # 1. Try mobile-hide text span
-            team_span = team_cell.find("span", class_=lambda c: c and "team-template-text" in c and "mobile-hide" in c)
-            if team_span:
-                team_name = team_span.get_text(strip=True)
-                
-            # 2. Try getting from title of the image icon anchor
-            if not team_name:
-                icon_span = team_cell.find("span", class_="team-template-image-icon")
-                if icon_span:
-                    icon_a = icon_span.find("a")
-                    if icon_a and icon_a.get("title"):
-                        team_name = icon_a.get("title")
-                        
-            # 3. Fallback to getting text from first standard link
-            if not team_name:
-                for a in team_cell.find_all("a"):
-                    txt = a.get_text(strip=True)
-                    if txt:
-                        team_name = txt
-                        break
-                        
-            if not team_name:
-                team_name = team_cell.get_text(strip=True)
-                
-            # Round 1 opponent cell is index 6
-            r1_cell = cells[6]
-            opp_name = ""
-            opp_span = r1_cell.find("span", class_="team-template-team-icon")
-            if opp_span:
-                opp_a = opp_span.find("a")
-                if opp_a and opp_a.get("title"):
-                    opp_name = opp_a.get("title")
-                else:
-                    opp_name = opp_span.get("data-highlightingclass")
-            if not opp_name:
-                opp_a = r1_cell.find("a")
-                if opp_a:
-                    opp_name = opp_a.get("title") or opp_a.get_text(strip=True)
-            if not opp_name:
-                opp_name = r1_cell.get_text(strip=True)
-                
-            # Perform robust name matching against historical database team names
-            team_name_clean = clean_noise_words(team_name)
-            for db_n in db_names:
-                if clean_noise_words(db_n) == team_name_clean:
-                    team_name = db_n
-                    break
-                    
-            opp_name_clean = clean_noise_words(opp_name)
-            for db_n in db_names:
-                if clean_noise_words(db_n) == opp_name_clean:
-                    opp_name = db_n
-                    break
-                    
-            parsed_teams.append({
-                "team": team_name.strip(),
-                "opponent": opp_name.strip()
-            })
-            
-        # Reconstruct seeds based on i vs i + 8 opening matchups
-        final_seeds = [None] * 16
-        for i in range(8):
-            high_team = parsed_teams[i]["team"]
-            low_team = parsed_teams[i]["opponent"]
-            final_seeds[i] = high_team
-            final_seeds[i + 8] = low_team
-            
-        if any(not name for name in final_seeds):
-            raise ValueError("Failed to parse all 16 team names successfully from the Liquipedia table.")
-            
-        if len(set(final_seeds)) != 16:
-            raise ValueError("Resolved duplicate team names in seeding. Ensure the event overview has a complete Swiss table.")
-            
-        return final_seeds
-        
+
+        soup = BeautifulSoup(client.driver.page_source, "html.parser")
+        return _liquipedia_round_one_seeds(soup, db_names)
     finally:
         client.stop()
 
