@@ -1,3 +1,4 @@
+import csv
 import json
 import mimetypes
 import os
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPORTS_DIR = PROJECT_ROOT / "reports"
@@ -24,6 +25,7 @@ MODEL_CHECKPOINT_PATH = PROJECT_ROOT / "data" / "checkpoints" / "best_mvp_model.
 SCALER_PATH = PROJECT_ROOT / "data" / "checkpoints" / "scaler.pkl"
 FORFEIT_MODEL_PATH = PROJECT_ROOT / "data" / "checkpoints" / "forfeit_model.joblib"
 CLEAN_MAPS_PATH = PROJECT_ROOT / "data" / "processed" / "clean_maps.parquet"
+LIQUIPEDIA_ALIASES_PATH = PROJECT_ROOT / "data" / "liquipedia_team_aliases.csv"
 SCRAPER_STATE_PATH = PROJECT_ROOT / "data" / "scraper_state.json"
 VENV_PYTHON_PATH = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
 PROJECT_PYTHON = str(VENV_PYTHON_PATH if VENV_PYTHON_PATH.exists() else Path(sys.executable))
@@ -1569,22 +1571,44 @@ def bracket_simulation_payload(request):
     }, HTTPStatus.OK
 
 
-def _liquipedia_round_one_seeds(soup, db_names):
+def _load_liquipedia_event_aliases(event_url):
+    """Read local event_path, alias, team rows for an event and its subpages."""
+    if not LIQUIPEDIA_ALIASES_PATH.exists():
+        return {}
+
+    page_path = unquote(urlparse(event_url).path).replace(" ", "_").rstrip("/").casefold()
+    aliases = {}
+    with LIQUIPEDIA_ALIASES_PATH.open(encoding="utf-8-sig", newline="") as alias_file:
+        rows = csv.DictReader(alias_file)
+        if not {"event_path", "alias", "team"}.issubset(rows.fieldnames or ()):
+            raise ValueError("Liquipedia team aliases CSV must have event_path, alias, and team columns.")
+
+        for row in rows:
+            event_path = (row["event_path"] or "").strip().replace(" ", "_").rstrip("/").casefold()
+            alias = (row["alias"] or "").strip()
+            team = (row["team"] or "").strip()
+            if event_path and alias and team and (page_path == event_path or page_path.startswith(event_path + "/")):
+                aliases[alias] = team
+    return aliases
+
+
+def _liquipedia_round_one_seeds(soup, db_names, event_aliases=None):
     def normalize(name):
         words = re.sub(r"[^A-Z0-9\s]", "", name.upper()).split()
         noise = {"TEAM", "ESPORTS", "GAMING", "CLUB", "SQUAD", "GAMERS", "ORGANIZATION", "CLAN"}
         return "".join(word for word in words if word not in noise)
 
     db_by_name = {normalize(name): name for name in sorted(db_names)}
+    event_aliases = {normalize(alias): name for alias, name in (event_aliases or {}).items()}
     aliases = {
         "100T": "100 Thieves",
         "CW": "Chinggis Warriors",
         "EF": "Eternal Fire",
         "FLY": "FlyQuest",
-        "GOSH": "BC.Game",
         "LVG": "Lynn Vision",
+        "MONGOLZ": "The MongolZ",
+        "NAVI": "Natus Vincere",
         "NIP": "Ninjas in Pyjamas",
-        "PV": "PARIVISION",
     }
 
     def resolve_team(cell):
@@ -1600,7 +1624,11 @@ def _liquipedia_round_one_seeds(soup, db_names):
             text.get_text(" ", strip=True),
         ]
 
-        candidates = [label.strip() for label in labels if normalize(label) not in {"", "TBD", "BYE"}]
+        placeholders = {"", "BYE", "TBD", "TOBEDETERMINED", "TBDTOBEDETERMINED"}
+        candidates = [label.strip() for label in labels if normalize(label) not in placeholders]
+        for label in candidates:
+            if name := event_aliases.get(normalize(label)):
+                return db_by_name.get(normalize(name), name)
         for label in candidates:
             if name := db_by_name.get(normalize(label)):
                 return name
@@ -1642,7 +1670,7 @@ def _liquipedia_round_one_seeds(soup, db_names):
     pairs = [(resolve_team(left), resolve_team(right)) for left, right in opening_matches]
     seeds = [left for left, _ in pairs] + [right for _, right in pairs]
     if any(not name for name in seeds):
-        raise ValueError("Could not identify all 16 teams in the Liquipedia Round 1 matchups.")
+        raise ValueError("The Liquipedia Round 1 matchups are incomplete. All 16 teams are required.")
     if len({name.casefold() for name in seeds}) != 16:
         raise ValueError("The Liquipedia Round 1 matchups must contain 16 distinct teams.")
     return seeds
@@ -1656,6 +1684,7 @@ def scrape_liquipedia_event_teams(event_url: str):
     from bs4 import BeautifulSoup
     from ingestion.hltv_client import HLTVClient
 
+    event_aliases = _load_liquipedia_event_aliases(event_url)
     client = HLTVClient()
     try:
         db_names = set()
@@ -1676,7 +1705,7 @@ def scrape_liquipedia_event_teams(event_url: str):
         time.sleep(5)
 
         soup = BeautifulSoup(client.driver.page_source, "html.parser")
-        return _liquipedia_round_one_seeds(soup, db_names)
+        return _liquipedia_round_one_seeds(soup, db_names, event_aliases)
     finally:
         client.stop()
 

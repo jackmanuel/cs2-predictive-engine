@@ -8,6 +8,23 @@ import dashboard_server
 from ingestion import hltv_client
 
 
+SINGAPORE_URL = "https://liquipedia.net/counterstrike/PGL/2026/Singapore"
+
+
+@pytest.fixture
+def event_alias_file(monkeypatch, tmp_path):
+    alias_file = tmp_path / "liquipedia_team_aliases.csv"
+    alias_file.write_text(
+        "event_path,alias,team\n"
+        "/counterstrike/PGL/2026/Singapore,GOSH,BC.Game\n"
+        "/counterstrike/PGL/2026/Singapore,PVISION,PARIVISION\n"
+        "/counterstrike/PGL/2026/Singapore,The One,1win\n"
+        "/counterstrike/PGL/2026/Singapore,BB,BETBOOM\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dashboard_server, "LIQUIPEDIA_ALIASES_PATH", alias_file)
+
+
 def matchlist(title, matches):
     rows = []
     for left, right in matches:
@@ -28,13 +45,13 @@ def matchlist(title, matches):
     )
 
 
-def test_import_uses_round_one_match_rows_in_simulator_seed_order(monkeypatch, tmp_path):
+def test_import_uses_round_one_match_rows_in_simulator_seed_order(monkeypatch, tmp_path, event_alias_file):
     matches = [
         ("HEROIC", "Imperial"),
         ("9z", "LVG"),
         ("NIP", "M80"),
         ("100T", "CW"),
-        ("PV", "DENDELE"),
+        ('<a title="PVISION">PV</a>', "DENDELE"),
         ("Liquid", "GOSH"),
         ("FaZe", "Wildcard"),
         ("EF", "FLY"),
@@ -48,7 +65,7 @@ def test_import_uses_round_one_match_rows_in_simulator_seed_order(monkeypatch, t
     monkeypatch.setattr(dashboard_server.time, "sleep", lambda _: None)
     monkeypatch.setattr(dashboard_server, "CLEAN_MAPS_PATH", tmp_path / "missing.parquet")
 
-    url = "https://liquipedia.net/counterstrike/PGL/2026/Singapore/Stage_1"
+    url = f"{SINGAPORE_URL}/Stage_1"
     payload, status = dashboard_server.liquipedia_event_teams_payload({"url": url})
 
     assert requested_urls == [url]
@@ -67,10 +84,37 @@ def test_import_uses_round_one_match_rows_in_simulator_seed_order(monkeypatch, t
 
 
 @pytest.mark.parametrize(
+    ("stage", "invites", "expected"),
+    [
+        (
+            2,
+            ["FUT", "Nemiga", "G2", "The One", "NAVI", "Astralis", "MongolZ", "MIBR"],
+            ["FUT", "Nemiga", "G2", "1win", "Natus Vincere", "Astralis", "The MongolZ", "MIBR"],
+        ),
+        (
+            3,
+            ["MOUZ", "Vitality", "FURIA", "Aurora", "Spirit", '<a title="BB Team">BB</a>', "Falcons", "Legacy"],
+            ["MOUZ", "Vitality", "FURIA", "Aurora", "Spirit", "BetBoom", "Falcons", "Legacy"],
+        ),
+    ],
+)
+def test_import_resolves_later_stage_invites(stage, invites, expected, event_alias_file):
+    qualifiers = [f"Qualifier {seed}" for seed in range(1, 9)]
+    soup = BeautifulSoup(matchlist("Round 1 Matches", zip(invites, qualifiers)), "html.parser")
+    aliases = dashboard_server._load_liquipedia_event_aliases(f"{SINGAPORE_URL}/Stage_{stage}")
+
+    assert dashboard_server._liquipedia_round_one_seeds(soup, {"BetBoom"}, aliases) == expected + qualifiers
+
+
+def test_local_aliases_only_apply_to_the_configured_event(event_alias_file):
+    assert dashboard_server._load_liquipedia_event_aliases(f"{SINGAPORE_URL}_Qualifiers/Stage_1") == {}
+
+
+@pytest.mark.parametrize(
     ("matches", "error"),
     [
         ([("Alpha", "Bravo")] * 7, "eight two-team matches"),
-        ([("Alpha", "Bravo")] * 7 + [("Alpha", "TBD")], "identify all 16 teams"),
+        ([("Alpha", "Bravo")] * 7 + [("Alpha", '<a title="To Be Determined">TBD</a>')], "matchups are incomplete"),
         ([("Alpha", "Bravo")] * 8, "16 distinct teams"),
     ],
 )
