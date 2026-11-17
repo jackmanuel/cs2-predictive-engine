@@ -18,6 +18,7 @@ def event_alias_file(monkeypatch, tmp_path):
         "event_path,alias,team\n"
         "/counterstrike/PGL/2026/Singapore,GOSH,BC.Game\n"
         "/counterstrike/PGL/2026/Singapore,PVISION,PARIVISION\n"
+        "/counterstrike/PGL/2026/Singapore,DENDELE CS,DENDELE\n"
         "/counterstrike/PGL/2026/Singapore,The One,1win\n"
         "/counterstrike/PGL/2026/Singapore,BB,BETBOOM\n",
         encoding="utf-8",
@@ -51,7 +52,7 @@ def test_import_uses_round_one_match_rows_in_simulator_seed_order(monkeypatch, t
         ("9z", "LVG"),
         ("NIP", "M80"),
         ("100T", "CW"),
-        ('<a title="PVISION">PV</a>', "DENDELE"),
+        ('<a title="PVISION">PV</a>', "DENDELE CS"),
         ("Liquid", "GOSH"),
         ("FaZe", "Wildcard"),
         ("EF", "FLY"),
