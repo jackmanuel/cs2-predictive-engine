@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+from collections import Counter
 import pandas as pd
 import numpy as np
 
@@ -148,49 +149,37 @@ def get_dominance_metrics(history, current_date, days):
     
     return {"avg_win_margin": avg_win, "avg_loss_margin": avg_loss}
 
-def compute_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Computes map-level temporal features with dimensionality reduction.
-    Uses differentials and momentum (streaks) instead of absolute values.
-    """
-    # Ensure it is sorted by date!
-    df = df.sort_values("date").reset_index(drop=True)
-    
-    # 1. Pre-calculate match-level streaks to avoid data leakage
-    # A team's streak for a map is their win streak BEFORE that match started.
-    matches_df = df.groupby("match_id").agg({
-        "date": "min",
-        "team_a_id": "first",
-        "team_b_id": "first",
-        "winner_id": lambda x: x.value_counts().index[0], # Series winner
-        "match_has_forfeit": "first"
-    }).sort_values("date")
-    
-    streaks_before_match = {} # match_id -> {team_id: streak}
-    current_streaks = {}      # team_id -> streak
-    
-    for m_id, row in matches_df.iterrows():
-        t_a = row["team_a_id"]
-        t_b = row["team_b_id"]
-        winner = row["winner_id"]
-        
-        # Store what streaks were BEFORE this match
-        streaks_before_match[m_id] = {
-            t_a: current_streaks.get(t_a, 0),
-            t_b: current_streaks.get(t_b, 0)
-        }
-        
-        # Update current streaks (uncapped, we log-scale them later)
-        if row.get("match_has_forfeit"):
+def update_win_streaks(streaks, day_maps):
+    """Apply completed series from one date without assuming an intraday order."""
+    wins = Counter()
+    losses = set()
+    for _, series in day_maps.groupby("match_id", sort=False):
+        if "match_has_forfeit" in series and series["match_has_forfeit"].any():
             continue
 
-        if winner == t_a:
-            current_streaks[t_a] = current_streaks.get(t_a, 0) + 1
-            current_streaks[t_b] = 0
-        else:
-            current_streaks[t_b] = current_streaks.get(t_b, 0) + 1
-            current_streaks[t_a] = 0
-            
+        first_map = series.iloc[0]
+        team_a = first_map["team_a_id"]
+        team_b = first_map["team_b_id"]
+        map_wins = series["winner_id"].value_counts()
+        a_wins = map_wins.get(team_a, 0)
+        b_wins = map_wins.get(team_b, 0)
+        if a_wins > b_wins:
+            wins[team_a] += 1
+            losses.add(team_b)
+        elif b_wins > a_wins:
+            wins[team_b] += 1
+            losses.add(team_a)
+
+    for team, count in wins.items():
+        streaks[team] = streaks.get(team, 0) + count
+    # A loss on a mixed day leaves no guaranteed trailing wins.
+    for team in losses:
+        streaks[team] = 0
+
+
+def compute_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute map features from completed series on strictly earlier dates."""
+    current_streaks = {}
     features_list = []
     
     # State trackers for form
@@ -198,7 +187,6 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     team_map_history = {}     # team_id -> map_name -> [(datetime, int_win)]
     team_first_picks = {}     # team_id -> map_name -> [datetime]
     team_total_series = {}    # team_id -> [datetime]
-    match_picked_seen = {}    # match_id -> set(team_id)
     h2h_history = {}          # (team_x, team_y) (sorted) -> [(date, winner_id)]
     team_sos_history = {}     # team_id -> [(datetime, log_rank_opp)]
     team_lan_history = {}     # team_id -> [(datetime, is_lan_bool)]
@@ -217,9 +205,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         if tid not in team_lan_history:
             team_lan_history[tid] = []
 
-    logger.info("Computing reduced map-level features temporally...")
-    
-    for _, row in df.iterrows():
+    def calculate_row(row):
         t_a = row["team_a_id"]
         t_b = row["team_b_id"]
         m_id = row["match_id"]
@@ -230,12 +216,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         
         # Determine H2H prior
         h2h_key = tuple(sorted([str(t_a), str(t_b)]))
-        if h2h_key not in h2h_history:
-            h2h_history[h2h_key] = []
-
         h2h_cutoff = date - pd.Timedelta(days=H2H_WINDOW_DAYS)
-        recent_h2h = [(d, winner) for d, winner in h2h_history[h2h_key] if d >= h2h_cutoff]
-        h2h_history[h2h_key] = recent_h2h
+        recent_h2h = [(d, winner) for d, winner in h2h_history.get(h2h_key, []) if d >= h2h_cutoff]
         h2h_a_wins_30d = sum(1 for _, winner in recent_h2h if winner == str(t_a))
         h2h_b_wins_30d = sum(1 for _, winner in recent_h2h if winner == str(t_b))
         
@@ -246,8 +228,8 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         gen_a_7d = get_recent_stats(team_general_history[t_a], date, FORM_WINDOW_DAYS_SHORT)
         gen_b_7d = get_recent_stats(team_general_history[t_b], date, FORM_WINDOW_DAYS_SHORT)
         
-        s_a = streaks_before_match[m_id].get(t_a, 0)
-        s_b = streaks_before_match[m_id].get(t_b, 0)
+        s_a = current_streaks.get(t_a, 0)
+        s_b = current_streaks.get(t_b, 0)
         
         # Positive rank_diff = Team A is higher-ranked (favoured)
         r_a = max(row["team_a_world_rank"], 1)
@@ -352,10 +334,15 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         # 3. Label (What we are predicting)
         label_dict = {TARGET_COL: 1 if row["winner_id"] == t_a else 0}
         
-        # Combine everything into one row
-        features_list.append({**feat_dict, **meta_dict, **label_dict})
-        
-        # UPDATE STATES AFTER THE MAP (Prevent leakage)
+        return {**feat_dict, **meta_dict, **label_dict}
+
+    def update_map_history(row, picked_teams):
+        t_a = row["team_a_id"]
+        t_b = row["team_b_id"]
+        date = row["date"]
+        map_name = row["map_name"]
+        r_a = max(row["team_a_world_rank"], 1)
+        r_b = max(row["team_b_world_rank"], 1)
         score_a = row.get("score_a", 0)
         score_b = row.get("score_b", 0)
         win_a = 1 if row["winner_id"] == t_a else 0
@@ -377,25 +364,30 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         team_map_history[t_a][map_name].append((date, win_a))
         team_map_history[t_b][map_name].append((date, win_b))
         
-        # Track first picks for comfort
-        if m_id not in match_picked_seen:
-            match_picked_seen[m_id] = set()
-            
-        if row["team_a_picked"] and t_a not in match_picked_seen[m_id]:
-            if map_name not in team_first_picks[t_a]: team_first_picks[t_a][map_name] = []
-            team_first_picks[t_a][map_name].append(date)
-            team_total_series[t_a].append(date)
-            match_picked_seen[m_id].add(t_a)
-            
-        if row["team_b_picked"] and t_b not in match_picked_seen[m_id]:
-            if map_name not in team_first_picks[t_b]: team_first_picks[t_b][map_name] = []
-            team_first_picks[t_b][map_name].append(date)
-            team_total_series[t_b].append(date)
-            match_picked_seen[m_id].add(t_b)
-        
+        # Count the first known pick per team and series for map comfort.
+        for team, picked in ((t_a, row["team_a_picked"]), (t_b, row["team_b_picked"])):
+            if picked and team not in picked_teams:
+                team_first_picks[team].setdefault(map_name, []).append(date)
+                team_total_series[team].append(date)
+                picked_teams.add(team)
+
+        h2h_key = tuple(sorted([str(t_a), str(t_b)]))
         h2h_winner = str(t_a) if win_a else str(t_b)
-        h2h_history[h2h_key].append((date, h2h_winner))
-            
+        h2h_history.setdefault(h2h_key, []).append((date, h2h_winner))
+
+    logger.info("Computing reduced map-level features temporally...")
+    for _, day_maps in df.groupby(df["date"].dt.normalize()):
+        # Freeze history for every map/series on this date. Map-based counting
+        # below only becomes visible to feature rows on subsequent dates.
+        for _, row in day_maps.iterrows():
+            features_list.append(calculate_row(row))
+
+        picked_by_series = {}
+        for _, row in day_maps.iterrows():
+            picked_teams = picked_by_series.setdefault(row["match_id"], set())
+            update_map_history(row, picked_teams)
+        update_win_streaks(current_streaks, day_maps)
+
     return pd.DataFrame(features_list)
 
 def feature_pipeline():

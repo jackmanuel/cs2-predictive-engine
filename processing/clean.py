@@ -495,7 +495,7 @@ def load_raw_maps() -> pd.DataFrame:
                 
     df = pd.DataFrame(all_maps)
     if df.empty: return df
-    return df.sort_values("date").reset_index(drop=True)
+    return df.sort_values("date", kind="stable").reset_index(drop=True)
 
 
 def build_clean_maps(raw_maps: pd.DataFrame = None) -> pd.DataFrame:
@@ -520,36 +520,39 @@ def build_clean_maps(raw_maps: pd.DataFrame = None) -> pd.DataFrame:
 
 def repair_default_ranks(df: pd.DataFrame) -> pd.DataFrame:
     """Carry forward known team ranks only when a scrape is missing rank fields."""
-    rank_columns = [
-        ("team_a_id", "team_a_world_rank", "team_a_world_rank_missing"),
-        ("team_b_id", "team_b_world_rank", "team_b_world_rank_missing"),
-        ("team_a_id", "team_a_vrs_rank", "team_a_vrs_rank_missing"),
-        ("team_b_id", "team_b_vrs_rank", "team_b_vrs_rank_missing"),
-    ]
     repaired = df.copy()
     total_repaired = 0
 
-    for team_col, rank_col, missing_col in rank_columns:
-        if team_col not in repaired.columns or rank_col not in repaired.columns:
-            continue
-
+    for source in ("world", "vrs"):
+        rank_columns = [
+            (f"team_{side}_id", f"team_{side}_{source}_rank", f"team_{side}_{source}_rank_missing")
+            for side in ("a", "b")
+            if f"team_{side}_id" in repaired.columns
+            and f"team_{side}_{source}_rank" in repaired.columns
+        ]
+        # Rank history belongs to the team, regardless of its A/B position.
+        # Keep world and VRS histories separate.
         last_known_rank = {}
-        for idx, row in repaired.sort_values(["date", "match_id"]).iterrows():
-            team_id = row[team_col]
-            rank = row[rank_col]
+        for _, day_maps in repaired.groupby(repaired["date"].dt.normalize()):
+            observed_ranks = {}
+            for idx, row in day_maps.iterrows():
+                for team_col, rank_col, missing_col in rank_columns:
+                    team_id = row[team_col]
+                    rank = row[rank_col]
+                    rank = DEFAULT_TEAM_RANK if pd.isna(rank) else int(rank)
+                    rank_was_missing = bool(row.get(missing_col, False))
+                    if rank == DEFAULT_TEAM_RANK and rank_was_missing:
+                        previous_rank = last_known_rank.get(team_id)
+                        if previous_rank is not None:
+                            repaired.at[idx, rank_col] = previous_rank
+                            total_repaired += 1
+                    elif rank != DEFAULT_TEAM_RANK:
+                        observed_ranks.setdefault(team_id, set()).add(rank)
 
-            if pd.isna(rank):
-                rank = DEFAULT_TEAM_RANK
-
-            rank = int(rank)
-            rank_was_missing = bool(row.get(missing_col, False))
-            if rank == DEFAULT_TEAM_RANK and rank_was_missing:
-                previous_rank = last_known_rank.get(team_id)
-                if previous_rank is not None:
-                    repaired.at[idx, rank_col] = previous_rank
-                    total_repaired += 1
-            elif rank != DEFAULT_TEAM_RANK:
-                last_known_rank[team_id] = rank
+            # Carry forward a rank only when the day's observations agree.
+            for team_id, ranks in observed_ranks.items():
+                if len(ranks) == 1:
+                    last_known_rank[team_id] = ranks.pop()
 
     if total_repaired:
         logger.info(f"Repaired {total_repaired} transient default rank values using prior known ranks.")

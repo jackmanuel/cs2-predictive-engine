@@ -517,6 +517,7 @@ def add_h2h_window_features(df: pd.DataFrame, window_days: int) -> pd.DataFrame:
     a_col = f"h2h_a_wins_{window_days}d"
     b_col = f"h2h_b_wins_{window_days}d"
     if a_col in df.columns and b_col in df.columns:
+        # Prefer precomputed columns, which count H2H maps from the full clean history.
         return df
 
     enriched = df.copy()
@@ -525,21 +526,27 @@ def add_h2h_window_features(df: pd.DataFrame, window_days: int) -> pd.DataFrame:
     histories: dict[tuple[str, str], list[tuple[pd.Timestamp, str]]] = {}
     window = pd.Timedelta(days=window_days)
 
-    for idx, row in enriched.iterrows():
-        team_a = str(row["team_a_id"])
-        team_b = str(row["team_b_id"])
-        pair = tuple(sorted((team_a, team_b)))
-        current_date = row["date"]
+    maps = enriched.reset_index(drop=True)
+    for current_date, day_maps in maps.groupby(maps["date"].dt.normalize()):
         cutoff = current_date - window
-        history = histories.setdefault(pair, [])
-        recent = [(date, winner) for date, winner in history if date >= cutoff]
-        histories[pair] = recent
+        completed_maps = []
+        for idx, row in day_maps.iterrows():
+            team_a = str(row["team_a_id"])
+            team_b = str(row["team_b_id"])
+            pair = tuple(sorted((team_a, team_b)))
+            recent = [
+                (date, winner) for date, winner in histories.get(pair, [])
+                if date >= cutoff
+            ]
+            histories[pair] = recent
+            a_values[idx] = sum(1 for _, winner in recent if winner == team_a)
+            b_values[idx] = sum(1 for _, winner in recent if winner == team_b)
 
-        a_values[idx] = sum(1 for _, winner in recent if winner == team_a)
-        b_values[idx] = sum(1 for _, winner in recent if winner == team_b)
+            winner = team_a if int(row[TARGET_COL]) == 1 else team_b
+            completed_maps.append((pair, winner))
 
-        winner = team_a if int(row[TARGET_COL]) == 1 else team_b
-        recent.append((current_date, winner))
+        for pair, winner in completed_maps:
+            histories[pair].append((current_date, winner))
 
     enriched[a_col] = a_values
     enriched[b_col] = b_values

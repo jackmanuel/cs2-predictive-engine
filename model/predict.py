@@ -14,7 +14,7 @@ from typing import List, Tuple
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROCESSED_DIR, CHECKPOINT_DIR, DEFAULT_TEAM_RANK, FORM_WINDOW_DAYS, FORM_WINDOW_DAYS_SHORT, FORM_WINDOW_DAYS_LONG, MAP_WINDOW_DAYS, H2H_WINDOW_DAYS, DEFAULT_SOS_RANK, MC_ITERATIONS, MC_THRESHOLD
 from model.net import MatchPredictor
-from processing.features import MODEL_FEATURES, get_sos, get_recent_stats, get_dominance_metrics
+from processing.features import MODEL_FEATURES, get_sos, get_recent_stats, get_dominance_metrics, update_win_streaks
 import model.veto_sim as veto_sim
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -37,7 +37,7 @@ def load_latest_state():
     if not clean_path.exists():
         raise FileNotFoundError(f"Clean maps not found at {clean_path}. Please run clean.py first.")
         
-    df = pd.read_parquet(clean_path).sort_values("date").reset_index(drop=True)
+    df = pd.read_parquet(clean_path).sort_values("date", kind="stable").reset_index(drop=True)
     
     team_general_histories = {}
     team_map_histories = {}
@@ -50,24 +50,8 @@ def load_latest_state():
     current_streaks = {}   # team_id -> int
     match_picked_seen = {} # match_id -> set
     
-    matches_df = df.groupby("match_id").agg({
-        "date": "min",
-        "team_a_id": "first",
-        "team_b_id": "first",
-        "winner_id": lambda x: x.value_counts().index[0]
-    }).sort_values("date")
-    
-    for _, row in matches_df.iterrows():
-        t_a = row["team_a_id"]
-        t_b = row["team_b_id"]
-        winner = row["winner_id"]
-        
-        if winner == t_a:
-            current_streaks[t_a] = current_streaks.get(t_a, 0) + 1
-            current_streaks[t_b] = 0
-        else:
-            current_streaks[t_b] = current_streaks.get(t_b, 0) + 1
-            current_streaks[t_a] = 0
+    for _, day_maps in df.groupby(df["date"].dt.normalize()):
+        update_win_streaks(current_streaks, day_maps)
 
     for _, row in df.iterrows():
         t_a = row["team_a_id"]

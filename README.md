@@ -50,6 +50,8 @@ The production winner model is a tabular neural network trained on 17 temporal m
 
 The feature set is defined in `processing/features.py` and currently includes rank differential, 90/30/7-day form, team streaks, picker context, 30-day head-to-head counts, map win rate, map comfort, dominance/resilience, average rank tier, strength-of-schedule, and LAN-rate differential.
 
+Historical features for each map use only results from earlier calendar dates.
+
 Series predictions are built in two stages. First, `model/veto_sim.py` simulates likely BO1/BO3/BO5 map sequences using recent team map tendencies. Then `model/predict.py` scores each map with the neural network and combines the map probabilities into a series probability.
 
 ## Repository Layout
