@@ -1,3 +1,4 @@
+import json
 from http import HTTPStatus
 from types import SimpleNamespace
 
@@ -9,6 +10,14 @@ from ingestion import hltv_client
 
 
 SINGAPORE_URL = "https://liquipedia.net/counterstrike/PGL/2026/Singapore"
+SINGAPORE_STAGE_URLS = [f"{SINGAPORE_URL}/Stage_{stage}" for stage in range(1, 4)]
+
+
+@pytest.fixture
+def saved_links_path(monkeypatch, tmp_path):
+    path = tmp_path / "data" / "liquipedia_links.json"
+    monkeypatch.setattr(dashboard_server, "LIQUIPEDIA_LINKS_PATH", path)
+    return path
 
 
 @pytest.fixture
@@ -46,7 +55,9 @@ def matchlist(title, matches):
     )
 
 
-def test_import_uses_round_one_match_rows_in_simulator_seed_order(monkeypatch, tmp_path, event_alias_file):
+def test_import_uses_round_one_match_rows_in_simulator_seed_order(
+    monkeypatch, tmp_path, event_alias_file, saved_links_path
+):
     matches = [
         ("HEROIC", "Imperial"),
         ("9z", "LVG"),
@@ -71,6 +82,8 @@ def test_import_uses_round_one_match_rows_in_simulator_seed_order(monkeypatch, t
 
     assert requested_urls == [url]
     assert status == HTTPStatus.OK
+    assert payload["saved_links"] == SINGAPORE_STAGE_URLS
+    assert dashboard_server.load_liquipedia_links() == SINGAPORE_STAGE_URLS
     teams = payload["teams"]
     assert list(zip(teams[:8], teams[8:])) == [
         ("HEROIC", "Imperial"),
@@ -82,6 +95,40 @@ def test_import_uses_round_one_match_rows_in_simulator_seed_order(monkeypatch, t
         ("FaZe", "Wildcard"),
         ("Eternal Fire", "FlyQuest"),
     ]
+
+
+def test_saved_links_remember_stages_without_duplicates(saved_links_path):
+    assert dashboard_server.load_liquipedia_links() == []
+    for url in [*SINGAPORE_STAGE_URLS, SINGAPORE_STAGE_URLS[0]]:
+        dashboard_server.save_liquipedia_link(url)
+
+    assert dashboard_server.load_liquipedia_links() == SINGAPORE_STAGE_URLS
+
+
+def test_removal_keeps_other_shortcuts_from_older_caches(saved_links_path):
+    stage_one, stage_two, stage_three = SINGAPORE_STAGE_URLS
+    other_event = "https://liquipedia.net/counterstrike/An_Event"
+    saved_links_path.parent.mkdir()
+    saved_links_path.write_text(json.dumps([stage_one, other_event]), encoding="utf-8")
+
+    assert dashboard_server.load_liquipedia_links() == [*SINGAPORE_STAGE_URLS, other_event]
+    remaining_links = [stage_one, stage_three, other_event]
+    assert dashboard_server.remove_liquipedia_link(stage_two) == remaining_links
+    assert dashboard_server.load_liquipedia_links() == remaining_links
+    assert dashboard_server.remove_liquipedia_link(stage_two) == remaining_links
+    assert dashboard_server.save_liquipedia_link(stage_three) == remaining_links
+
+    assert dashboard_server.save_liquipedia_link(stage_two) == [*SINGAPORE_STAGE_URLS, other_event]
+
+
+def test_invalid_links_are_not_saved(saved_links_path):
+    payload, status = dashboard_server.liquipedia_event_teams_payload({
+        "url": "https://example.com/liquipedia.net/counterstrike/PGL/2026/Singapore/Stage_1",
+    })
+
+    assert status == HTTPStatus.BAD_REQUEST
+    assert "Invalid Liquipedia event URL" in payload["error"]
+    assert not saved_links_path.exists()
 
 
 @pytest.mark.parametrize(

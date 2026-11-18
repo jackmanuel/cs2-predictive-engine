@@ -260,12 +260,13 @@
                     </div>
 
                     <div class="bracket-hltv-import is-hidden" id="bracket-liquipedia-import-wrapper" hidden>
-                        <span>Import from Liquipedia Event Link</span>
+                        <span id="bracket-liquipedia-label">Import from Liquipedia</span>
                         <div class="hltv-import-input-group">
-                            <input id="bracket-liquipedia-url" type="url" placeholder="e.g. https://liquipedia.net/counterstrike/Intel_Extreme_Masters/2026/Cologne/Stage_1" autocomplete="off">
+                            <input id="bracket-liquipedia-url" type="url" placeholder="Paste a Liquipedia event URL" aria-labelledby="bracket-liquipedia-label" autocomplete="off">
                             <button class="secondary-button" id="bracket-liquipedia-fetch" type="button">Fetch Teams</button>
                         </div>
-                        <div id="bracket-liquipedia-error" class="bracket-hltv-error is-hidden" hidden></div>
+                        <div id="bracket-liquipedia-links" class="liquipedia-links is-hidden" role="group" aria-label="Saved and suggested Liquipedia links" data-saved-links="[]"></div>
+                        <div id="bracket-liquipedia-error" class="bracket-hltv-error is-hidden" role="status" hidden></div>
                     </div>
 
                     <div class="bracket-board-heading">
@@ -1519,58 +1520,166 @@
         document.getElementById("bracket-series-format").addEventListener("change", () => resetBracketResults());
         document.getElementById("bracket-grand-final-format").addEventListener("change", () => resetBracketResults());
         
-        document.getElementById("bracket-liquipedia-fetch").addEventListener("click", async () => {
-            const urlInput = document.getElementById("bracket-liquipedia-url");
-            const fetchBtn = document.getElementById("bracket-liquipedia-fetch");
-            const errDiv = document.getElementById("bracket-liquipedia-error");
-            
-            const url = urlInput.value.trim();
+        const liquipediaUrlInput = document.getElementById("bracket-liquipedia-url");
+        const liquipediaFetchButton = document.getElementById("bracket-liquipedia-fetch");
+        const liquipediaLinkList = document.getElementById("bracket-liquipedia-links");
+        const liquipediaError = document.getElementById("bracket-liquipedia-error");
+        let savedLiquipediaLinks = JSON.parse(liquipediaLinkList.dataset.savedLinks);
+
+        function liquipediaLinkOptions(value, suggestStages = false) {
+            try {
+                const originalUrl = value.trim();
+                const url = new URL(originalUrl);
+                url.pathname = url.pathname.replace(/\/+$/, "");
+                if (!["http:", "https:"].includes(url.protocol)
+                    || !["liquipedia.net", "www.liquipedia.net"].includes(url.host)
+                    || url.username || url.password || !url.pathname.startsWith("/counterstrike/")) {
+                    return [];
+                }
+                const pathParts = url.pathname.split("/");
+                const page = decodeURIComponent(pathParts.at(-1)).replaceAll("_", " ");
+                const stage = pathParts.length > 3 && pathParts.at(-1).match(/^Stage_([1-3])$/);
+                if (!stage) return [[originalUrl, page]];
+
+                const event = decodeURIComponent(pathParts.at(-2)).replaceAll("_", " ");
+                const major = /\bMajor$/i.test(event) ? event : `${event} Major`;
+                const baseUrl = `${url.origin}${pathParts.slice(0, -1).join("/")}`;
+                const currentStage = Number(stage[1]);
+                const stages = suggestStages ? [1, 2, 3] : [currentStage];
+                return stages.map(number => [
+                    number === currentStage ? originalUrl : `${baseUrl}/Stage_${number}`,
+                    `${major} Stage ${number}`,
+                ]);
+            } catch {
+                return [];
+            }
+        }
+
+        function renderLiquipediaLinks() {
+            const suggestions = liquipediaLinkOptions(liquipediaUrlInput.value, true);
+            const links = new Map(suggestions.length > 1 ? suggestions : []);
+            for (const [url, label] of savedLiquipediaLinks.flatMap(url => liquipediaLinkOptions(url))) {
+                links.set(url, label);
+            }
+            const shortcuts = Array.from(links, ([url, label]) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "secondary-button";
+                button.textContent = label;
+                button.title = url;
+                button.addEventListener("click", () => {
+                    liquipediaUrlInput.value = url;
+                    importLiquipediaTeams();
+                });
+                if (!savedLiquipediaLinks.includes(url)) return button;
+
+                const removeButton = document.createElement("button");
+                removeButton.type = "button";
+                removeButton.className = "liquipedia-remove";
+                removeButton.textContent = "\u00d7";
+                removeButton.title = `Remove ${label} from saved links`;
+                removeButton.setAttribute("aria-label", removeButton.title);
+                removeButton.addEventListener("click", () => removeLiquipediaLink(url));
+
+                const shortcut = document.createElement("span");
+                shortcut.className = "liquipedia-shortcut";
+                shortcut.append(button, removeButton);
+                return shortcut;
+            });
+            liquipediaLinkList.replaceChildren(...shortcuts);
+            liquipediaLinkList.classList.toggle("is-hidden", !shortcuts.length);
+        }
+
+        function showLiquipediaError(message = "") {
+            liquipediaError.textContent = message;
+            liquipediaError.hidden = !message;
+            liquipediaError.classList.toggle("is-hidden", !message);
+        }
+
+        function setLiquipediaBusy(busy) {
+            liquipediaFetchButton.disabled = busy;
+            liquipediaUrlInput.disabled = busy;
+            for (const button of liquipediaLinkList.querySelectorAll("button")) button.disabled = busy;
+        }
+
+        async function removeLiquipediaLink(url) {
+            if (liquipediaFetchButton.disabled) return;
+            showLiquipediaError();
+            setLiquipediaBusy(true);
+            try {
+                const response = await fetch("/api/liquipedia/saved-links", {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !Array.isArray(data.saved_links)) {
+                    throw new Error(data.error || "Could not remove the saved Liquipedia link.");
+                }
+                savedLiquipediaLinks = data.saved_links;
+                if (liquipediaLinkOptions(liquipediaUrlInput.value, true).some(([link]) => link === url)) {
+                    liquipediaUrlInput.value = "";
+                }
+            } catch (err) {
+                showLiquipediaError(err.message);
+            } finally {
+                setLiquipediaBusy(false);
+                renderLiquipediaLinks();
+            }
+        }
+
+        async function importLiquipediaTeams() {
+            if (liquipediaFetchButton.disabled) return;
+            const url = liquipediaUrlInput.value.trim();
             if (!url) {
-                errDiv.textContent = "Please enter a valid Liquipedia event link.";
-                errDiv.hidden = false;
-                errDiv.classList.remove("is-hidden");
+                showLiquipediaError("Please enter a valid Liquipedia event link.");
                 return;
             }
-            
-            // Clear any previous error
-            errDiv.textContent = "";
-            errDiv.hidden = true;
-            errDiv.classList.add("is-hidden");
-            
-            // Premium loading state
-            const originalText = fetchBtn.textContent;
-            fetchBtn.disabled = true;
-            fetchBtn.textContent = "Fetching...";
-            urlInput.disabled = true;
-            
+
+            showLiquipediaError();
+            const originalText = liquipediaFetchButton.textContent;
+            setLiquipediaBusy(true);
+            liquipediaFetchButton.textContent = "Fetching...";
+
             try {
                 const response = await fetch("/api/liquipedia/event-teams", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ url: url })
+                    body: JSON.stringify({ url }),
                 });
-                
+
                 const data = await response.json();
                 if (!response.ok) {
                     throw new Error(data.error || "Failed to retrieve teams from Liquipedia event link.");
                 }
-                
-                if (data.teams && data.teams.length === 16) {
-                    bracketLastTeams = data.teams;
-                    resetBracketResults(null, true);
-                } else {
+                if (data.teams?.length !== 16) {
                     throw new Error("Liquipedia response did not return exactly 16 teams.");
                 }
+
+                bracketLastTeams = data.teams;
+                resetBracketResults(null, true);
+                if (data.saved_links) {
+                    savedLiquipediaLinks = data.saved_links;
+                    liquipediaUrlInput.value = "";
+                }
+                showLiquipediaError(data.warning);
             } catch (err) {
-                errDiv.textContent = err.message;
-                errDiv.hidden = false;
-                errDiv.classList.remove("is-hidden");
+                showLiquipediaError(err.message);
             } finally {
-                fetchBtn.disabled = false;
-                fetchBtn.textContent = originalText;
-                urlInput.disabled = false;
+                setLiquipediaBusy(false);
+                liquipediaFetchButton.textContent = originalText;
+                renderLiquipediaLinks();
             }
+        }
+
+        liquipediaUrlInput.addEventListener("input", renderLiquipediaLinks);
+        liquipediaUrlInput.addEventListener("keydown", event => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            importLiquipediaTeams();
         });
+        liquipediaFetchButton.addEventListener("click", importLiquipediaTeams);
+        renderLiquipediaLinks();
 
         document.getElementById("bracket-clear").addEventListener("click", () => {
             bracketLastTeams = [];

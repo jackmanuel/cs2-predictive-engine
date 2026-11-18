@@ -26,6 +26,7 @@ SCALER_PATH = PROJECT_ROOT / "data" / "checkpoints" / "scaler.pkl"
 FORFEIT_MODEL_PATH = PROJECT_ROOT / "data" / "checkpoints" / "forfeit_model.joblib"
 CLEAN_MAPS_PATH = PROJECT_ROOT / "data" / "processed" / "clean_maps.parquet"
 LIQUIPEDIA_ALIASES_PATH = PROJECT_ROOT / "data" / "liquipedia_team_aliases.csv"
+LIQUIPEDIA_LINKS_PATH = PROJECT_ROOT / "data" / "liquipedia_links.json"
 SCRAPER_STATE_PATH = PROJECT_ROOT / "data" / "scraper_state.json"
 VENV_PYTHON_PATH = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
 PROJECT_PYTHON = str(VENV_PYTHON_PATH if VENV_PYTHON_PATH.exists() else Path(sys.executable))
@@ -1698,9 +1699,75 @@ def _liquipedia_round_one_seeds(soup, db_names, event_aliases=None):
     return seeds
 
 
+liquipedia_links_lock = threading.Lock()
+
+
+def liquipedia_stage_links(event_url):
+    try:
+        url = urlparse(event_url)
+    except ValueError:
+        return [event_url]
+    event_path, _, stage = url.path.rstrip("/").rpartition("/")
+    stage_names = ("Stage_1", "Stage_2", "Stage_3")
+    if not event_path.startswith("/counterstrike/") or stage not in stage_names:
+        return [event_url]
+
+    event_base = url._replace(path=event_path, params="", query="", fragment="").geturl()
+    return [event_url if name == stage else f"{event_base}/{name}" for name in stage_names]
+
+
+def load_liquipedia_links():
+    try:
+        links = json.loads(LIQUIPEDIA_LINKS_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return []
+    if isinstance(links, list):
+        # Older caches stored imported URLs and generated their sibling shortcuts in the browser.
+        stage_links = []
+        for link in links:
+            if isinstance(link, str):
+                stage_links.extend(liquipedia_stage_links(link))
+        return list(dict.fromkeys(stage_links))
+    links = links.get("links") if isinstance(links, dict) else None
+    return [link for link in links if isinstance(link, str)] if isinstance(links, list) else []
+
+
+def write_liquipedia_links(links):
+    LIQUIPEDIA_LINKS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    pending = LIQUIPEDIA_LINKS_PATH.with_suffix(".json.tmp")
+    pending.write_text(json.dumps({"links": links}, indent=2) + "\n", encoding="utf-8")
+    pending.replace(LIQUIPEDIA_LINKS_PATH)
+
+
+def save_liquipedia_link(event_url):
+    with liquipedia_links_lock:
+        saved_links = load_liquipedia_links()
+        stage_links = liquipedia_stage_links(event_url)
+        if any(link in saved_links for link in stage_links):
+            stage_links = [link for link in stage_links if link == event_url or link in saved_links]
+        updated_links = stage_links + [link for link in saved_links if link not in stage_links]
+        write_liquipedia_links(updated_links)
+        return updated_links
+
+
+def remove_liquipedia_link(event_url):
+    with liquipedia_links_lock:
+        links = load_liquipedia_links()
+        remaining_links = [link for link in links if link != event_url]
+        if remaining_links != links:
+            write_liquipedia_links(remaining_links)
+        return remaining_links
+
+
 def scrape_liquipedia_event_teams(event_url: str):
     """Fetch a Liquipedia event page and import its 16-team Swiss opening round."""
-    if "liquipedia.net/counterstrike/" not in event_url:
+    url = urlparse(event_url)
+    if (
+        url.scheme not in {"http", "https"}
+        or url.netloc.lower() not in {"liquipedia.net", "www.liquipedia.net"}
+        or not url.path.startswith("/counterstrike/")
+        or not url.path.removeprefix("/counterstrike/").strip("/")
+    ):
         raise ValueError("Invalid Liquipedia event URL format. Please provide a valid Counter-Strike Liquipedia link.")
 
     from bs4 import BeautifulSoup
@@ -1742,13 +1809,20 @@ def liquipedia_event_teams_payload(request):
         
     try:
         teams = scrape_liquipedia_event_teams(event_url)
-        return {"teams": teams}, HTTPStatus.OK
     except ValueError as exc:
         return {"error": str(exc)}, HTTPStatus.BAD_REQUEST
     except Exception as exc:
         import traceback
         traceback.print_exc()
         return {"error": f"Failed to retrieve Liquipedia teams: {str(exc)}"}, HTTPStatus.INTERNAL_SERVER_ERROR
+
+    result = {"teams": teams}
+    try:
+        result["saved_links"] = save_liquipedia_link(event_url)
+    except OSError as exc:
+        print(f"[Liquipedia Scraper] Could not save event link: {exc}")
+        result["warning"] = "Teams imported, but the Liquipedia link could not be saved."
+    return result, HTTPStatus.OK
 
 
 def playground_prediction_payload(request):
@@ -2067,11 +2141,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
+    def do_DELETE(self):
+        if urlparse(self.path).path != "/api/liquipedia/saved-links":
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        try:
+            payload = self.read_request_json()
+        except ValueError:
+            payload = None
+        event_url = payload.get("url") if isinstance(payload, dict) else None
+        if not isinstance(event_url, str) or not event_url.strip():
+            self.send_json({"error": "Please specify a saved Liquipedia link."}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            links = remove_liquipedia_link(event_url)
+        except OSError as exc:
+            print(f"[Liquipedia Scraper] Could not remove saved link: {exc}")
+            self.send_json({"error": "Could not remove the saved Liquipedia link."}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self.send_json({"saved_links": links})
+
     def serve_dashboard(self):
         html = TEMPLATE_PATH.read_text(encoding="utf-8")
         prediction = latest_prediction_report()
         prediction_label = prediction.name if prediction else "No prediction report found"
         html = html.replace("__PREDICTION_REPORT_LABEL__", escape_html(prediction_label))
+        try:
+            with liquipedia_links_lock:
+                saved_links = load_liquipedia_links()
+        except OSError:
+            saved_links = []
+        escaped_links = escape_html(json.dumps(saved_links))
+        html = html.replace('data-saved-links="[]"', f'data-saved-links="{escaped_links}"', 1)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")

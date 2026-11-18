@@ -1895,6 +1895,7 @@ textarea {
 
 .hltv-import-input-group input {
     flex: 1;
+    min-width: 0;
     min-height: 38px;
     background: #0d1117;
     border: 1px solid var(--line);
@@ -1931,6 +1932,62 @@ textarea {
 
 .hltv-import-input-group button:disabled {
     opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.liquipedia-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.liquipedia-links .secondary-button {
+    min-height: 32px;
+    max-width: 100%;
+    padding: 5px 10px;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
+.liquipedia-links .secondary-button:hover:not(:disabled),
+.liquipedia-links .secondary-button:focus-visible {
+    border-color: var(--accent);
+}
+
+.liquipedia-shortcut {
+    position: relative;
+    display: inline-flex;
+    max-width: 100%;
+}
+
+.liquipedia-shortcut .secondary-button {
+    padding-right: 30px;
+}
+
+.liquipedia-remove {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.liquipedia-remove:hover:not(:disabled),
+.liquipedia-remove:focus-visible {
+    background: var(--line);
+    color: var(--text);
+}
+
+.liquipedia-remove:disabled {
+    opacity: .55;
     cursor: not-allowed;
 }
 
