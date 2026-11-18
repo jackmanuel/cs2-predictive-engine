@@ -821,7 +821,7 @@ def get_playground_forfeit_context():
 
 
 def playground_options_payload():
-    from config import DEFAULT_TEAM_RANK, MC_ITERATIONS, MC_THRESHOLD
+    from config import DEFAULT_TEAM_RANK, MC_ITERATIONS, MC_THRESHOLD, SWISS_STAGE_ITERATIONS, SWISS_VETO_ITERATIONS
     from model.veto_sim import MAP_POOL
 
     teams = []
@@ -865,7 +865,16 @@ def playground_options_payload():
             ]
             teams.sort(key=lambda item: (item["rank"] if item["rank"] != DEFAULT_TEAM_RANK else 9999, item["name"]))
 
-    return {"teams": teams, "maps": maps, "defaults": {"iterations": MC_ITERATIONS, "threshold": MC_THRESHOLD}}
+    return {
+        "teams": teams,
+        "maps": maps,
+        "defaults": {
+            "iterations": MC_ITERATIONS,
+            "threshold": MC_THRESHOLD,
+            "swiss_veto_iterations": SWISS_VETO_ITERATIONS,
+            "swiss_iterations": SWISS_STAGE_ITERATIONS,
+        },
+    }
 
 
 def normalize_map_names(raw_maps):
@@ -1451,8 +1460,8 @@ def simulate_swiss_stage(teams, series_format, threshold, iters, probability_loo
 
 
 def bracket_simulation_payload(request):
-    from config import MC_ITERATIONS, MC_THRESHOLD
-    from model.predict import calculate_expected_series_win
+    from config import MC_ITERATIONS, MC_THRESHOLD, SWISS_STAGE_ITERATIONS, SWISS_VETO_ITERATIONS
+    from model.predict import SeriesPredictionCache, calculate_expected_series_win
 
     raw_teams = request.get("teams", [])
     if isinstance(raw_teams, str):
@@ -1485,9 +1494,13 @@ def bracket_simulation_payload(request):
     grand_final_format = str(request.get("grand_final_format", "bo5")).lower()
     if grand_final_format not in {"bo1", "bo3", "bo5"}:
         grand_final_format = "bo5"
-    iters = parse_positive_int(request.get("iters"), MC_ITERATIONS, minimum=100, maximum=25000)
+    legacy_iters = request.get("iters")
+    veto_default = SWISS_VETO_ITERATIONS if team_count == 16 else MC_ITERATIONS
+    veto_iters = parse_positive_int(
+        request.get("veto_iters", legacy_iters), veto_default, minimum=100, maximum=25000
+    )
     threshold = parse_probability(request.get("threshold"), MC_THRESHOLD)
-    ctx = get_playground_predictor_context()
+    prediction_cache = SeriesPredictionCache(get_playground_predictor_context())
     matchup_cache = {}
 
     def probability_lookup(team_a, team_b, match_format):
@@ -1498,17 +1511,23 @@ def bracket_simulation_payload(request):
                 team_b,
                 series_format=match_format,
                 threshold=threshold,
-                iters=iters,
+                iters=veto_iters,
                 starts_veto=None,
-                ctx=ctx,
+                cache=prediction_cache,
             )
             matchup_cache[key] = float(result["expected_win_prob"])
         return matchup_cache[key]
 
     bo3_only = bool(request.get("bo3_only", False))
     pickem_optimization = None
+    swiss_iters = None
     if team_count == 16:
-        rounds, champion_probabilities, pickem_optimization = simulate_swiss_stage(teams, series_format, threshold, iters, probability_lookup, bo3_only=bo3_only)
+        swiss_iters = parse_positive_int(
+            request.get("swiss_iters", legacy_iters), SWISS_STAGE_ITERATIONS, minimum=100, maximum=25000
+        )
+        rounds, champion_probabilities, pickem_optimization = simulate_swiss_stage(
+            teams, series_format, threshold, swiss_iters, probability_lookup, bo3_only=bo3_only
+        )
     elif team_count == 6:
         quarter_1 = bracket_match_payload("quarterfinal", "Quarter-final 1", {teams[2]: 1.0}, {teams[5]: 1.0}, series_format, probability_lookup)
         quarter_2 = bracket_match_payload("quarterfinal", "Quarter-final 2", {teams[3]: 1.0}, {teams[4]: 1.0}, series_format, probability_lookup)
@@ -1559,7 +1578,10 @@ def bracket_simulation_payload(request):
         "settings": {
             "series_format": series_format,
             "grand_final_format": grand_final_format,
-            "iterations": iters,
+            # The previous Swiss dashboard uses iterations to normalize its record counts.
+            "iterations": swiss_iters if team_count == 16 else veto_iters,
+            "veto_iterations": veto_iters,
+            "swiss_iterations": swiss_iters,
             "threshold": threshold,
             "bo3_only": bo3_only,
         },

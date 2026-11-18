@@ -39,6 +39,8 @@ DEFAULT_SOS_RANK = 100      # Fallback opponent rank for SoS when no history exi
 # --- Monte Carlo Simulation ---
 MC_ITERATIONS = 10000       # Default iterations for veto simulation
 MC_THRESHOLD = 0.90         # Cumulative probability cutoff for path selection
+SWISS_VETO_ITERATIONS = 1000
+SWISS_STAGE_ITERATIONS = 10000
 
 # --- Model Hyperparameters ---
 LEARNING_RATE = 1e-3

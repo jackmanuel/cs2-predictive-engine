@@ -227,6 +227,16 @@ class PredictorContext:
         self.model.load_state_dict(torch.load(model_path, weights_only=True, map_location=torch.device('cpu')))
         self.model.eval()
 
+
+def _map_picker(index: int, map_count: int, veto_starter: str) -> str:
+    # Bo1 has no picks. Bo5 alternates for four picks, and Bo3 for two.
+    picked_map_count = 4 if map_count == 5 else 2
+    if map_count == 1 or index >= picked_map_count:
+        return "neutral"
+    pick_order = ("a", "b") if veto_starter == "a" else ("b", "a")
+    return pick_order[index % 2]
+
+
 def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps: List[str], picker_override: str = "neutral", veto_starter: str = "a", is_lan: bool = False) -> List[float]:
     """
     Calculates map-level win probabilities for a given matchup and map set.
@@ -268,33 +278,13 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
         h2h_a_30d = sum(1 for winner in recent_h2h if winner == str(t_a_id))
         h2h_b_30d = sum(1 for winner in recent_h2h if winner == str(t_b_id))
         
-        is_a_picker = 0
-        is_b_picker = 0
-        if picker_override.lower() in ["team_a", "a"]: is_a_picker = 1
-        elif picker_override.lower() in ["team_b", "b"]: is_b_picker = 1
-        elif len(maps) == 3: # Bo3: Veto starter picks map[0], other picks map[1], Decider
-            if veto_starter == "a":
-                is_a_picker = 1 if i == 0 else 0
-                is_b_picker = 1 if i == 1 else 0
-            else:  # Team B started the veto -> B picks first
-                is_a_picker = 1 if i == 1 else 0
-                is_b_picker = 1 if i == 0 else 0
-        elif len(maps) == 5: # Bo5: Starter picks first pair, other picks second pair
-            if veto_starter == "a":
-                is_a_picker = 1 if i in [0, 2] else 0
-                is_b_picker = 1 if i in [1, 3] else 0
-            else:
-                is_a_picker = 1 if i in [1, 3] else 0
-                is_b_picker = 1 if i in [0, 2] else 0
-        elif len(maps) == 1: # Bo1: Neutral (no picks, only bans)
-            pass
-        else: # Default fallback
-            if veto_starter == "a":
-                is_a_picker = 1 if i == 0 else 0
-                is_b_picker = 1 if i == 1 else 0
-            else:
-                is_a_picker = 1 if i == 1 else 0
-                is_b_picker = 1 if i == 0 else 0
+        override = picker_override.lower()
+        if override in {"team_a", "a"}:
+            picker = "a"
+        elif override in {"team_b", "b"}:
+            picker = "b"
+        else:
+            picker = _map_picker(i, len(maps), veto_starter)
 
         m_a_90d = get_recent_stats(ctx.map_histories.get(t_a_id, {}).get(m_name, []), now, MAP_WINDOW_DAYS)
         m_b_90d = get_recent_stats(ctx.map_histories.get(t_b_id, {}).get(m_name, []), now, MAP_WINDOW_DAYS)
@@ -344,7 +334,7 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             "win_rate_7d_diff": wr_7d_diff,
             "team_a_win_streak": np.log1p(s_a),
             "team_b_win_streak": np.log1p(s_b),
-            "picker_diff": is_a_picker - is_b_picker,
+            "picker_diff": (picker == "a") - (picker == "b"),
             "h2h_a_wins_30d": h2h_a_30d,
             "h2h_b_wins_30d": h2h_b_30d,
             "map_win_rate_diff": map_wr_diff,
@@ -365,23 +355,64 @@ def get_win_probabilities(ctx: PredictorContext, t_a_id: str, t_b_id: str, maps:
             
     return map_probs
 
-def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", threshold=MC_THRESHOLD, iters=MC_ITERATIONS, starts_veto=None, ctx=None):
+
+class SeriesPredictionCache:
+    """Reuse veto stats and map scores within a bracket or standalone series run."""
+
+    def __init__(self, ctx: PredictorContext):
+        self.ctx = ctx
+        self._veto_df = None
+        self._team_stats = {}
+        self._map_probabilities = {}
+
+    def get_team_stats(self, team_id: str) -> dict:
+        if team_id not in self._team_stats:
+            if self._veto_df is None:
+                self._veto_df = veto_sim.load_data()
+            self._team_stats[team_id] = veto_sim.get_team_stats(team_id, self._veto_df)
+        return self._team_stats[team_id]
+
+    def get_map_probabilities(
+        self, team_a_id: str, team_b_id: str, maps: List[str], veto_starter: str
+    ) -> List[float]:
+        probabilities = []
+        for index, map_name in enumerate(maps):
+            picker = _map_picker(index, len(maps), veto_starter)
+            key = (team_a_id, team_b_id, map_name, picker)
+            if key not in self._map_probabilities:
+                self._map_probabilities[key] = get_win_probabilities(
+                    self.ctx, team_a_id, team_b_id, [map_name], picker_override=picker
+                )[0]
+            probabilities.append(self._map_probabilities[key])
+        return probabilities
+
+
+def calculate_expected_series_win(
+    team_a_raw,
+    team_b_raw,
+    series_format="bo3",
+    threshold=MC_THRESHOLD,
+    iters=MC_ITERATIONS,
+    starts_veto=None,
+    ctx=None,
+    *,
+    cache: SeriesPredictionCache | None = None,
+):
     """
     Calculates the Expected Series Win Probability by mating the Veto Simulator
     and the Neural Network Predictor using the Law of Total Probability.
     Correctly tracks which team starts the veto to assign picker roles.
     """
-    # 1. Initialize Predictor context (expensive state load)
-    if ctx is None:
-        ctx = PredictorContext()
+    # 1. Initialize a cache for a standalone series or reuse the bracket's cache.
+    if cache is None:
+        cache = SeriesPredictionCache(ctx if ctx is not None else PredictorContext())
         
     t_a_id = normalize_name(team_a_raw)
     t_b_id = normalize_name(team_b_raw)
 
     # 2. Prepare veto sim stats
-    veto_df = veto_sim.load_data()
-    stats_a = veto_sim.get_team_stats(t_a_id, veto_df)
-    stats_b = veto_sim.get_team_stats(t_b_id, veto_df)
+    stats_a = cache.get_team_stats(t_a_id)
+    stats_b = cache.get_team_stats(t_b_id)
     
     bo = int(series_format.replace("bo", ""))
     
@@ -451,7 +482,7 @@ def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", t
             maps = path_str.split(",")
             
             # Fetch map-level win probabilities with picker assignment
-            map_probs = get_win_probabilities(ctx, t_a_id, t_b_id, maps, veto_starter=starter)
+            map_probs = cache.get_map_probabilities(t_a_id, t_b_id, maps, starter)
             
             # Conditional series win probability: P(Win | Path)
             p_win_given_path = combine_probs(map_probs, bo)
@@ -468,7 +499,7 @@ def calculate_expected_series_win(team_a_raw, team_b_raw, series_format="bo3", t
         "sequence_counts": sequence_counts,
         "team_a_id": t_a_id,
         "team_b_id": t_b_id,
-        "predictor_ctx": ctx
+        "predictor_ctx": cache.ctx
     }
 
 def predict_matchup(team_raw_a: str, team_raw_b: str, maps: List[str], picker_override: str = "neutral"):

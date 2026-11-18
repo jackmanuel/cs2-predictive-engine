@@ -246,7 +246,11 @@
                         <div class="advanced-fields bracket-advanced-fields is-hidden" id="bracket-advanced-fields" hidden>
                             <label>
                                 <span>Veto simulations per matchup</span>
-                                <input id="bracket-iters" name="iters" type="number" min="100" max="25000" step="100" value="">
+                                <input id="bracket-iters" name="veto_iters" type="number" min="100" max="25000" step="100" value="">
+                            </label>
+                            <label class="is-hidden" id="bracket-swiss-iters-wrapper" hidden>
+                                <span>Swiss stage simulations</span>
+                                <input id="bracket-swiss-iters" name="swiss_iters" type="number" min="100" max="25000" step="100" disabled>
                             </label>
                             <label>
                                 <span>Path coverage threshold</span>
@@ -549,6 +553,7 @@
         }
 
         let playgroundOptionsLoaded = false;
+        let bracketDefaults = {};
         let bracketLastTeams = [];
         let bracketLastResult = null;
         let bracketExpandedCards = new Set();
@@ -598,8 +603,10 @@
             if (data.defaults?.threshold && document.getElementById("playground-threshold").value === "90") {
                 document.getElementById("playground-threshold").value = Math.round(data.defaults.threshold * 100);
             }
-            if (!document.getElementById("bracket-iters").value) {
-                document.getElementById("bracket-iters").value = data.defaults?.iterations || 10000;
+            bracketDefaults = data.defaults ?? {};
+            const swissIters = document.getElementById("bracket-swiss-iters");
+            if (!swissIters.value) {
+                swissIters.value = bracketDefaults.swiss_iterations ?? 10000;
             }
             if (!document.getElementById("bracket-threshold").value) {
                 document.getElementById("bracket-threshold").value = data.defaults?.threshold ? Math.round(data.defaults.threshold * 100) : 90;
@@ -635,6 +642,20 @@
         function syncBracketFields() {
             const count = Number(document.getElementById("bracket-format").value);
             const isSwiss = count === 16;
+
+            const vetoIters = document.getElementById("bracket-iters");
+            const useDefaultVetoIters = !vetoIters.value || vetoIters.value === vetoIters.defaultValue;
+            vetoIters.defaultValue = isSwiss
+                ? (bracketDefaults.swiss_veto_iterations ?? 1000)
+                : (bracketDefaults.iterations ?? 10000);
+            if (useDefaultVetoIters) {
+                vetoIters.value = vetoIters.defaultValue;
+            }
+
+            const swissItersWrapper = document.getElementById("bracket-swiss-iters-wrapper");
+            swissItersWrapper.hidden = !isSwiss;
+            swissItersWrapper.classList.toggle("is-hidden", !isSwiss);
+            document.getElementById("bracket-swiss-iters").disabled = !isSwiss;
             
             const seriesWrapper = document.getElementById("bracket-series-format-wrapper");
             const grandFinalWrapper = document.getElementById("bracket-grand-final-wrapper");
@@ -1082,7 +1103,7 @@
                     return match ? match.format : defaultFormat;
                 };
 
-                const iters = bracketLastResult?.settings?.iterations || 10000;
+                const swissIterations = bracketLastResult?.settings?.swiss_iterations;
 
                 // Helper to extract top teams sorted by probability of achieving a specific Swiss record
                 const getTopTeamsForRecord = (recordKey, maxTeams = 5, showAll = false) => {
@@ -1090,7 +1111,7 @@
                     return bracketLastResult.champion_probabilities
                         .map(item => {
                             const count = item.records ? (item.records[recordKey] || 0) : 0;
-                            const prob = count / iters;
+                            const prob = count / swissIterations;
                             return { team: item.team, probability: prob };
                         })
                         .filter(entry => showAll || entry.probability > 0.005) // Show all if expanded, else > 0.5%
@@ -1164,7 +1185,7 @@
                             <header class="swiss-dashboard-header">
                                 <div class="header-main">
                                     <h3>Simulation Results Dashboard</h3>
-                                    <span class="subtle">Monte Carlo probability distributions based on ${fmtNumber(iters)} iterations</span>
+                                    <span class="subtle">Probabilities from ${fmtNumber(swissIterations)} Swiss stage simulations</span>
                                 </div>
                             </header>
 
@@ -1178,7 +1199,7 @@
                                             const elimProb = 1.0 - qualProb;
                                             const qualColorClass = qualProb >= 0.5 ? "status-qualified" : "status-eliminated";
                                             const rec = item.records || {};
-                                            const recTooltip = `3-0: ${pct((rec["3-0"] || 0) / iters)}&#10;3-1: ${pct((rec["3-1"] || 0) / iters)}&#10;3-2: ${pct((rec["3-2"] || 0) / iters)}&#10;2-3: ${pct((rec["2-3"] || 0) / iters)}&#10;1-3: ${pct((rec["1-3"] || 0) / iters)}&#10;0-3: ${pct((rec["0-3"] || 0) / iters)}`;
+                                            const recTooltip = `3-0: ${pct((rec["3-0"] || 0) / swissIterations)}&#10;3-1: ${pct((rec["3-1"] || 0) / swissIterations)}&#10;3-2: ${pct((rec["3-2"] || 0) / swissIterations)}&#10;2-3: ${pct((rec["2-3"] || 0) / swissIterations)}&#10;1-3: ${pct((rec["1-3"] || 0) / swissIterations)}&#10;0-3: ${pct((rec["0-3"] || 0) / swissIterations)}`;
                                             
                                             return `
                                                 <div class="swiss-standing-card ${qualColorClass}" title="${recTooltip}">
@@ -1233,7 +1254,7 @@
                                                 <div class="pickem-team-pills">
                                                     ${bracketLastResult.pickem_optimization.picks_3_0.map(team => {
                                                         const teamData = bracketLastResult.champion_probabilities.find(item => item.team === team);
-                                                        const teamProb30 = teamData ? (teamData.records ? (teamData.records["3-0"] || 0) / iters : 0) : 0;
+                                                        const teamProb30 = (teamData?.records?.["3-0"] || 0) / swissIterations;
                                                         return `
                                                             <div class="pickem-pill pill-3-0" title="Individual 3-0 Probability: ${pct(teamProb30)}">
                                                                 <span class="pill-team-name">${escapeText(team)}</span>
@@ -1249,8 +1270,8 @@
                                                 <div class="pickem-team-pills qual-pills">
                                                     ${bracketLastResult.pickem_optimization.picks_qual.map(team => {
                                                         const teamData = bracketLastResult.champion_probabilities.find(item => item.team === team);
-                                                        const teamProb31 = teamData ? (teamData.records ? (teamData.records["3-1"] || 0) / iters : 0) : 0;
-                                                        const teamProb32 = teamData ? (teamData.records ? (teamData.records["3-2"] || 0) / iters : 0) : 0;
+                                                        const teamProb31 = (teamData?.records?.["3-1"] || 0) / swissIterations;
+                                                        const teamProb32 = (teamData?.records?.["3-2"] || 0) / swissIterations;
                                                         const totalQualNotUndefeated = teamProb31 + teamProb32;
                                                         return `
                                                             <div class="pickem-pill pill-qual" title="Individual 3-1: ${pct(teamProb31)} | 3-2: ${pct(teamProb32)}">
@@ -1267,7 +1288,7 @@
                                                 <div class="pickem-team-pills">
                                                     ${bracketLastResult.pickem_optimization.picks_0_3.map(team => {
                                                         const teamData = bracketLastResult.champion_probabilities.find(item => item.team === team);
-                                                        const teamProb03 = teamData ? (teamData.records ? (teamData.records["0-3"] || 0) / iters : 0) : 0;
+                                                        const teamProb03 = (teamData?.records?.["0-3"] || 0) / swissIterations;
                                                         return `
                                                             <div class="pickem-pill pill-0-3" title="Individual 0-3 Probability: ${pct(teamProb03)}">
                                                                 <span class="pill-team-name">${escapeText(team)}</span>
@@ -1420,7 +1441,8 @@
             bracketLastResult = data;
             if (data.format === 16) {
                 const matchType = data.settings.bo3_only ? "BO3-only matches" : "dynamic BO1/BO3 matches";
-                document.getElementById("bracket-summary").textContent = `16-team Swiss Stage, ${matchType}, ${fmtNumber(data.settings.iterations)} iterations, ${fmtNumber(data.matchup_count)} unique matchups evaluated.`;
+                const { swiss_iterations, veto_iterations } = data.settings;
+                document.getElementById("bracket-summary").textContent = `16-team Swiss Stage, ${matchType}, ${fmtNumber(swiss_iterations)} simulated brackets, ${fmtNumber(veto_iterations)} veto simulations per matchup, ${fmtNumber(data.matchup_count)} unique matchups evaluated.`;
             } else {
                 document.getElementById("bracket-summary").textContent = `${data.format}-team playoff, ${String(data.settings.series_format).toUpperCase()} through semis, ${String(data.settings.grand_final_format).toUpperCase()} final, ${fmtNumber(data.matchup_count)} possible matchups evaluated.`;
             }
@@ -1614,11 +1636,14 @@
                 format: document.getElementById("bracket-format").value,
                 series_format: document.getElementById("bracket-series-format").value,
                 grand_final_format: document.getElementById("bracket-grand-final-format").value,
-                iters: document.getElementById("bracket-iters").value,
+                veto_iters: document.getElementById("bracket-iters").value,
                 threshold: document.getElementById("bracket-threshold").value,
                 bo3_only: document.getElementById("bracket-bo3-only") ? document.getElementById("bracket-bo3-only").checked : false,
                 teams: collectBracketTeams(),
             };
+            if (body.format === "16") {
+                body.swiss_iters = document.getElementById("bracket-swiss-iters").value;
+            }
             bracketLastTeams = body.teams;
             board.classList.add("is-running");
             document.getElementById("bracket-summary").textContent = "Simulating bracket...";
