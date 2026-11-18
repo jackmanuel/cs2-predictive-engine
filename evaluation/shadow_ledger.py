@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS model_versions (
     weights_path     TEXT,
     scaler_path      TEXT,
     test_brier_score REAL,
-    test_log_loss    REAL
+    test_log_loss    REAL,
+    is_active        INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS model_version_evaluations (
@@ -165,6 +166,7 @@ def get_db():
         [
             ("test_brier_score", "REAL"),
             ("test_log_loss", "REAL"),
+            ("is_active", "INTEGER DEFAULT 0"),
         ],
     )
     _add_missing_columns(
@@ -252,13 +254,14 @@ def register_model_version(
 
     conn = get_db()
     try:
+        conn.execute("UPDATE model_versions SET is_active = 0")
         conn.execute(
             """INSERT OR REPLACE INTO model_versions
                (version_id, trained_at, best_val_loss, epochs_run,
                 num_features, features_json, hyperparams_json,
                 data_stats_json, architecture_hash, weights_path, scaler_path,
-                test_brier_score, test_log_loss)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                test_brier_score, test_log_loss, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
             (
                 version_id,
                 trained_at,
@@ -362,13 +365,37 @@ def register_model_evaluation(
 
 
 def get_latest_version_id():
-    """Returns the version_id of the most recently trained model."""
+    """Returns the active model version_id, or the most recently trained one."""
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT version_id FROM model_versions ORDER BY trained_at DESC LIMIT 1"
+            """SELECT version_id
+               FROM model_versions
+               ORDER BY COALESCE(is_active, 0) DESC, trained_at DESC
+               LIMIT 1"""
         ).fetchone()
         return row["version_id"] if row else None
+    finally:
+        conn.close()
+
+
+def set_active_model_version(version_id: str) -> dict:
+    """Marks an existing model_versions row as the active model version."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM model_versions WHERE version_id = ?",
+            (version_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Unknown model version: {version_id}")
+        conn.execute("UPDATE model_versions SET is_active = 0")
+        conn.execute(
+            "UPDATE model_versions SET is_active = 1 WHERE version_id = ?",
+            (version_id,),
+        )
+        conn.commit()
+        return dict(row)
     finally:
         conn.close()
 
