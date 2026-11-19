@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPORTS_DIR = PROJECT_ROOT / "reports"
@@ -2040,6 +2040,28 @@ def escape_html(value):
     )
 
 
+def render_team_placeholder_svg(letter=""):
+    cleaned = "".join(ch for ch in str(letter or "").strip() if ch.isprintable())
+    glyph = escape_html(cleaned[:1].upper() if cleaned else "?")
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Team placeholder">'
+        "<defs>"
+        '<linearGradient id="shieldBg" x1="0" y1="0" x2="1" y2="1">'
+        '<stop offset="0%" stop-color="#1f2b38"/>'
+        '<stop offset="100%" stop-color="#111820"/>'
+        "</linearGradient>"
+        "</defs>"
+        '<path d="M32 4 L54 12 V31 C54 45.5 44.5 55.2 32 60 C19.5 55.2 10 45.5 10 31 V12 Z" '
+        'fill="url(#shieldBg)" stroke="#334155" stroke-width="2.5" stroke-linejoin="round"/>'
+        '<path d="M32 9.5 L49 15.8 V30.8 C49 42.3 41.5 50.2 32 54.2 C22.5 50.2 15 42.3 15 30.8 V15.8 Z" '
+        'fill="none" stroke="#65d1b4" stroke-opacity="0.22" stroke-width="1.5" stroke-linejoin="round"/>'
+        '<text x="32" y="34" text-anchor="middle" dominant-baseline="central" '
+        'fill="#eef4f8" font-family="system-ui, -apple-system, Segoe UI, sans-serif" '
+        f'font-size="26" font-weight="700">{glyph}</text>'
+        "</svg>"
+    )
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "CS2Dashboard/1.0"
 
@@ -2063,6 +2085,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.serve_file(FAVICON_PATH)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+        elif path == "/dynamic-svg/teamplaceholder":
+            letter = parse_qs(parsed.query).get("letter", [""])[0]
+            self.serve_team_placeholder_svg(letter)
         elif path == "/api/model-info":
             self.send_json(model_info_payload())
         elif path == "/api/playground/options":
@@ -2253,6 +2278,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         with path.open("rb") as handle:
             self.wfile.write(handle.read())
+
+    def serve_team_placeholder_svg(self, letter):
+        body = render_team_placeholder_svg(letter).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_html_message(self, title, body):
         html = (
