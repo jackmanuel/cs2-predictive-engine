@@ -82,7 +82,9 @@ def test_import_uses_round_one_match_rows_in_simulator_seed_order(
 
     assert requested_urls == [url]
     assert status == HTTPStatus.OK
+    assert payload["cached"] is False
     assert payload["saved_links"] == SINGAPORE_STAGE_URLS
+    assert payload["cached_links"] == [url]
     assert dashboard_server.load_liquipedia_links() == SINGAPORE_STAGE_URLS
     teams = payload["teams"]
     assert list(zip(teams[:8], teams[8:])) == [
@@ -95,6 +97,58 @@ def test_import_uses_round_one_match_rows_in_simulator_seed_order(
         ("FaZe", "Wildcard"),
         ("Eternal Fire", "FlyQuest"),
     ]
+
+    cached_payload, cached_status = dashboard_server.liquipedia_event_teams_payload({"url": url})
+    assert cached_status == HTTPStatus.OK
+    assert cached_payload["cached"] is True
+    assert cached_payload["teams"] == teams
+    assert cached_payload["saved_links"] == SINGAPORE_STAGE_URLS
+    assert cached_payload["cached_links"] == [url]
+    assert requested_urls == [url]
+
+    trailing_payload, trailing_status = dashboard_server.liquipedia_event_teams_payload({"url": f"{url}/"})
+    assert trailing_status == HTTPStatus.OK
+    assert trailing_payload["cached"] is True
+    assert trailing_payload["teams"] == teams
+    assert requested_urls == [url]
+
+    refreshed_payload, refreshed_status = dashboard_server.liquipedia_event_teams_payload({"url": url, "refresh": True})
+    assert refreshed_status == HTTPStatus.OK
+    assert refreshed_payload["cached"] is False
+    assert refreshed_payload["teams"] == teams
+    assert requested_urls == [url, url]
+
+
+def test_removing_saved_link_clears_its_cached_matchups(saved_links_path):
+    stage_one, stage_two, _ = SINGAPORE_STAGE_URLS
+    stage_one_teams = [f"Stage 1 Team {i}" for i in range(1, 17)]
+    stage_two_teams = [f"Stage 2 Team {i}" for i in range(1, 17)]
+
+    dashboard_server.save_liquipedia_link(stage_one, teams=stage_one_teams)
+    dashboard_server.save_liquipedia_link(stage_two, teams=stage_two_teams)
+
+    links, matchups = dashboard_server.load_liquipedia_cache()
+    assert links == SINGAPORE_STAGE_URLS
+    assert matchups == {stage_one: stage_one_teams, stage_two: stage_two_teams}
+
+    dashboard_server.remove_liquipedia_link(stage_one)
+    links, matchups = dashboard_server.load_liquipedia_cache()
+    assert stage_one not in links
+    assert stage_one not in matchups
+    assert matchups == {stage_two: stage_two_teams}
+
+
+def test_invalid_cached_matchups_are_ignored(saved_links_path):
+    stage_one = SINGAPORE_STAGE_URLS[0]
+    saved_links_path.parent.mkdir(parents=True, exist_ok=True)
+    saved_links_path.write_text(
+        json.dumps({"links": [stage_one], "matchups": {stage_one: ["Only Two", "Teams"]}}),
+        encoding="utf-8",
+    )
+
+    links, matchups = dashboard_server.load_liquipedia_cache()
+    assert links == [stage_one]
+    assert matchups == {}
 
 
 def test_saved_links_remember_stages_without_duplicates(saved_links_path):

@@ -1964,10 +1964,14 @@ textarea {
     padding-right: 30px;
 }
 
+.liquipedia-shortcut.has-cached-matchups .secondary-button {
+    padding-right: 54px;
+}
+
+.liquipedia-refresh,
 .liquipedia-remove {
     position: absolute;
     top: 2px;
-    right: 2px;
     width: 24px;
     height: 24px;
     padding: 0;
@@ -1975,17 +1979,29 @@ textarea {
     border-radius: 5px;
     background: transparent;
     color: var(--muted);
-    font-size: 16px;
+    font-size: 15px;
     line-height: 1;
     cursor: pointer;
 }
 
+.liquipedia-refresh {
+    right: 26px;
+}
+
+.liquipedia-remove {
+    right: 2px;
+    font-size: 16px;
+}
+
+.liquipedia-refresh:hover:not(:disabled),
+.liquipedia-refresh:focus-visible,
 .liquipedia-remove:hover:not(:disabled),
 .liquipedia-remove:focus-visible {
     background: var(--line);
     color: var(--text);
 }
 
+.liquipedia-refresh:disabled,
 .liquipedia-remove:disabled {
     opacity: .55;
     cursor: not-allowed;

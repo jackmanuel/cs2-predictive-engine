@@ -1717,51 +1717,7 @@ def liquipedia_stage_links(event_url):
     return [event_url if name == stage else f"{event_base}/{name}" for name in stage_names]
 
 
-def load_liquipedia_links():
-    try:
-        links = json.loads(LIQUIPEDIA_LINKS_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
-        return []
-    if isinstance(links, list):
-        # Older caches stored imported URLs and generated their sibling shortcuts in the browser.
-        stage_links = []
-        for link in links:
-            if isinstance(link, str):
-                stage_links.extend(liquipedia_stage_links(link))
-        return list(dict.fromkeys(stage_links))
-    links = links.get("links") if isinstance(links, dict) else None
-    return [link for link in links if isinstance(link, str)] if isinstance(links, list) else []
-
-
-def write_liquipedia_links(links):
-    LIQUIPEDIA_LINKS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    pending = LIQUIPEDIA_LINKS_PATH.with_suffix(".json.tmp")
-    pending.write_text(json.dumps({"links": links}, indent=2) + "\n", encoding="utf-8")
-    pending.replace(LIQUIPEDIA_LINKS_PATH)
-
-
-def save_liquipedia_link(event_url):
-    with liquipedia_links_lock:
-        saved_links = load_liquipedia_links()
-        stage_links = liquipedia_stage_links(event_url)
-        if any(link in saved_links for link in stage_links):
-            stage_links = [link for link in stage_links if link == event_url or link in saved_links]
-        updated_links = stage_links + [link for link in saved_links if link not in stage_links]
-        write_liquipedia_links(updated_links)
-        return updated_links
-
-
-def remove_liquipedia_link(event_url):
-    with liquipedia_links_lock:
-        links = load_liquipedia_links()
-        remaining_links = [link for link in links if link != event_url]
-        if remaining_links != links:
-            write_liquipedia_links(remaining_links)
-        return remaining_links
-
-
-def scrape_liquipedia_event_teams(event_url: str):
-    """Fetch a Liquipedia event page and import its 16-team Swiss opening round."""
+def _validate_liquipedia_url(event_url: str):
     url = urlparse(event_url)
     if (
         url.scheme not in {"http", "https"}
@@ -1770,6 +1726,94 @@ def scrape_liquipedia_event_teams(event_url: str):
         or not url.path.removeprefix("/counterstrike/").strip("/")
     ):
         raise ValueError("Invalid Liquipedia event URL format. Please provide a valid Counter-Strike Liquipedia link.")
+    return url
+
+
+def _valid_swiss_teams(teams):
+    if not isinstance(teams, list) or len(teams) != 16:
+        return False
+    cleaned = [team.strip() for team in teams if isinstance(team, str) and team.strip()]
+    return len(cleaned) == 16 and len({team.casefold() for team in cleaned}) == 16
+
+
+def load_liquipedia_cache():
+    try:
+        data = json.loads(LIQUIPEDIA_LINKS_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return [], {}
+    if isinstance(data, list):
+        # Older caches stored imported URLs and generated their sibling shortcuts in the browser.
+        stage_links = []
+        for link in data:
+            if isinstance(link, str):
+                stage_links.extend(liquipedia_stage_links(link))
+        return list(dict.fromkeys(stage_links)), {}
+    if not isinstance(data, dict):
+        return [], {}
+    raw_links = data.get("links")
+    links = [link for link in raw_links if isinstance(link, str)] if isinstance(raw_links, list) else []
+    raw_matchups = data.get("matchups")
+    matchups = {}
+    if isinstance(raw_matchups, dict):
+        for link, teams in raw_matchups.items():
+            if isinstance(link, str) and _valid_swiss_teams(teams):
+                matchups[link] = [team.strip() for team in teams]
+    return links, matchups
+
+
+def load_liquipedia_links():
+    links, _ = load_liquipedia_cache()
+    return links
+
+
+def write_liquipedia_cache(links, matchups=None):
+    LIQUIPEDIA_LINKS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"links": links}
+    if matchups:
+        cached = {
+            link: [team.strip() for team in teams]
+            for link, teams in matchups.items()
+            if link in links and _valid_swiss_teams(teams)
+        }
+        if cached:
+            payload["matchups"] = cached
+    pending = LIQUIPEDIA_LINKS_PATH.with_suffix(".json.tmp")
+    pending.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    pending.replace(LIQUIPEDIA_LINKS_PATH)
+
+
+def write_liquipedia_links(links):
+    write_liquipedia_cache(links)
+
+
+def save_liquipedia_link(event_url, teams=None):
+    with liquipedia_links_lock:
+        saved_links, matchups = load_liquipedia_cache()
+        stage_links = liquipedia_stage_links(event_url)
+        if any(link in saved_links for link in stage_links):
+            stage_links = [link for link in stage_links if link == event_url or link in saved_links]
+        updated_links = stage_links + [link for link in saved_links if link not in stage_links]
+        if teams is not None and _valid_swiss_teams(teams):
+            matchups[event_url] = [team.strip() for team in teams]
+        write_liquipedia_cache(updated_links, matchups)
+        return updated_links
+
+
+def remove_liquipedia_link(event_url):
+    with liquipedia_links_lock:
+        links, matchups = load_liquipedia_cache()
+        remaining_links = [link for link in links if link != event_url]
+        had_matchups = event_url in matchups
+        if had_matchups:
+            matchups.pop(event_url, None)
+        if remaining_links != links or had_matchups:
+            write_liquipedia_cache(remaining_links, matchups)
+        return remaining_links
+
+
+def scrape_liquipedia_event_teams(event_url: str):
+    """Fetch a Liquipedia event page and import its 16-team Swiss opening round."""
+    _validate_liquipedia_url(event_url)
 
     from bs4 import BeautifulSoup
     from ingestion.hltv_client import HLTVClient
@@ -1807,7 +1851,34 @@ def liquipedia_event_teams_payload(request):
     event_url = str(request.get("url", "")).strip()
     if not event_url:
         return {"error": "Please enter a Liquipedia event link."}, HTTPStatus.BAD_REQUEST
-        
+
+    try:
+        _validate_liquipedia_url(event_url)
+    except ValueError as exc:
+        return {"error": str(exc)}, HTTPStatus.BAD_REQUEST
+
+    force_refresh = bool(request.get("refresh"))
+    if not force_refresh:
+        try:
+            with liquipedia_links_lock:
+                saved_links, matchups = load_liquipedia_cache()
+        except OSError:
+            saved_links, matchups = [], {}
+        cached_teams = matchups.get(event_url)
+        if cached_teams is None:
+            normalized_url = event_url.rstrip("/")
+            cached_teams = next(
+                (teams for link, teams in matchups.items() if link.rstrip("/") == normalized_url),
+                None,
+            )
+        if cached_teams is not None:
+            return {
+                "teams": cached_teams,
+                "saved_links": saved_links,
+                "cached_links": [link for link in saved_links if link in matchups],
+                "cached": True,
+            }, HTTPStatus.OK
+
     try:
         teams = scrape_liquipedia_event_teams(event_url)
     except ValueError as exc:
@@ -1817,12 +1888,16 @@ def liquipedia_event_teams_payload(request):
         traceback.print_exc()
         return {"error": f"Failed to retrieve Liquipedia teams: {str(exc)}"}, HTTPStatus.INTERNAL_SERVER_ERROR
 
-    result = {"teams": teams}
+    result = {"teams": teams, "cached": False}
     try:
-        result["saved_links"] = save_liquipedia_link(event_url)
+        saved_links = save_liquipedia_link(event_url, teams=teams)
+        with liquipedia_links_lock:
+            _, matchups = load_liquipedia_cache()
+        result["saved_links"] = saved_links
+        result["cached_links"] = [link for link in saved_links if link in matchups]
     except OSError as exc:
         print(f"[Liquipedia Scraper] Could not save event link: {exc}")
-        result["warning"] = "Teams imported, but the Liquipedia link could not be saved."
+        result["warning"] = "Teams imported, but the Liquipedia link and matchups could not be saved."
     return result, HTTPStatus.OK
 
 
@@ -2188,11 +2263,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         try:
             links = remove_liquipedia_link(event_url)
+            with liquipedia_links_lock:
+                _, matchups = load_liquipedia_cache()
+            cached_links = [link for link in links if link in matchups]
         except OSError as exc:
             print(f"[Liquipedia Scraper] Could not remove saved link: {exc}")
             self.send_json({"error": "Could not remove the saved Liquipedia link."}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
-        self.send_json({"saved_links": links})
+        self.send_json({"saved_links": links, "cached_links": cached_links})
 
     def serve_dashboard(self):
         html = TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -2201,11 +2279,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         html = html.replace("__PREDICTION_REPORT_LABEL__", escape_html(prediction_label))
         try:
             with liquipedia_links_lock:
-                saved_links = load_liquipedia_links()
+                saved_links, matchups = load_liquipedia_cache()
         except OSError:
-            saved_links = []
+            saved_links, matchups = [], {}
+        cached_links = [link for link in saved_links if link in matchups]
         escaped_links = escape_html(json.dumps(saved_links))
+        escaped_cached = escape_html(json.dumps(cached_links))
         html = html.replace('data-saved-links="[]"', f'data-saved-links="{escaped_links}"', 1)
+        html = html.replace('data-cached-links="[]"', f'data-cached-links="{escaped_cached}"', 1)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
