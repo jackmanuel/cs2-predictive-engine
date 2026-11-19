@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPORTS_DIR = PROJECT_ROOT / "reports"
 STATIC_DIR = PROJECT_ROOT / "static"
+FAVICON_PATH = STATIC_DIR / "dashboard" / "favicon.ico"
 TEMPLATE_PATH = PROJECT_ROOT / "templates" / "dashboard.html"
 TRAINING_STATE_PATH = PROJECT_ROOT / "data" / "training_state.json"
 PERFORMANCE_REPORT_PATH = REPORTS_DIR / "dashboard_shadow_ledger_report.html"
@@ -2057,6 +2058,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/":
             self.serve_dashboard()
+        elif path == "/favicon.ico":
+            if FAVICON_PATH.exists() and FAVICON_PATH.is_file():
+                self.serve_file(FAVICON_PATH)
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND, "Not found")
         elif path == "/api/model-info":
             self.send_json(model_info_payload())
         elif path == "/api/playground/options":

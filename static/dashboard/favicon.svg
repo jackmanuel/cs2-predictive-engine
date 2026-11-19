@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a2430"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="trend" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#48b89b"/>
+      <stop offset="100%" stop-color="#65d1b4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded dark badge -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)" stroke="#2d3744" stroke-width="2.5"/>
+
+  <!-- Tactical reticle ring -->
+  <circle cx="32" cy="32" r="19" fill="none" stroke="#65d1b4" stroke-opacity="0.24" stroke-width="2.2"/>
+
+  <!-- Crosshair ticks (N, S, W, E) -->
+  <g stroke="#65d1b4" stroke-opacity="0.72" stroke-width="3" stroke-linecap="round">
+    <line x1="32" y1="8.5" x2="32" y2="16"/>
+    <line x1="32" y1="48" x2="32" y2="55.5"/>
+    <line x1="8.5" y1="32" x2="16" y2="32"/>
+    <line x1="48" y1="32" x2="55.5" y2="32"/>
+  </g>
+
+  <!-- Upward predictive signal line -->
+  <polyline
+    points="15,43 26,33 34,37 46,20"
+    fill="none"
+    stroke="url(#trend)"
+    stroke-width="5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Gold target lock at prediction peak -->
+  <circle cx="46" cy="20" r="8" fill="#f4c95d" fill-opacity="0.24"/>
+  <circle cx="46" cy="20" r="4.8" fill="#f4c95d"/>
+  <circle cx="46" cy="20" r="1.7" fill="#0d1117"/>
+</svg>
